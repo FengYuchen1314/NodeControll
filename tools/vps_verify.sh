@@ -1937,6 +1937,7 @@ verify_elf_binaries() {
   local package_root="$1"
   docker run --rm --network none --read-only \
     -v "${package_root}:/compiled:ro" "${RUST_IMAGE_ID}" bash -Eeuo pipefail -c '
+    export LC_ALL=C
     for binary in /compiled/bin/nodecontroll-master /compiled/bin/nodecontroll-agent; do
       file "${binary}" | grep -Eq "ELF 64-bit LSB (pie )?executable, x86-64"
       readelf --file-header "${binary}" | grep -Eq "Machine:[[:space:]]+Advanced Micro Devices X86-64"
@@ -1946,12 +1947,26 @@ verify_elf_binaries() {
         echo "${binary} has an unresolved shared library" >&2
         exit 2
       fi
+      if ! dynamic_output="$(readelf --dynamic "${binary}")"; then
+        echo "failed to read dynamic entries for ${binary}" >&2
+        exit 2
+      fi
+      if ! needed_libraries="$(
+        sed -n "s/.*Shared library: \[\([^]]*\)\].*/\1/p" <<< "${dynamic_output}"
+      )"; then
+        echo "failed to parse DT_NEEDED entries for ${binary}" >&2
+        exit 2
+      fi
+      if [[ -z "${needed_libraries}" ]]; then
+        echo "${binary} has no auditable DT_NEEDED entries" >&2
+        exit 2
+      fi
       while IFS= read -r library; do
         case "${library}" in
-          libc.so.6 | libdl.so.2 | libgcc_s.so.1 | libm.so.6 | libpthread.so.0 | librt.so.1) ;;
+          ld-linux-x86-64.so.2 | libc.so.6 | libdl.so.2 | libgcc_s.so.1 | libm.so.6 | libpthread.so.0 | librt.so.1) ;;
           *) echo "unexpected shared library for ${binary}: ${library}" >&2; exit 2 ;;
         esac
-      done < <(readelf --dynamic "${binary}" | sed -n "s/.*Shared library: \[\([^]]*\)\].*/\1/p")
+      done <<< "${needed_libraries}"
       maximum_glibc="$(readelf --version-info "${binary}" | sed -n "s/.*Name: GLIBC_\([0-9.]*\).*/\1/p" | sort -Vu | tail -n1)"
       if [[ -n "${maximum_glibc}" && "$(printf "%s\n%s\n" "${maximum_glibc}" 2.36 | sort -V | tail -n1)" != "2.36" ]]; then
         echo "${binary} requires GLIBC_${maximum_glibc}, newer than 2.36" >&2

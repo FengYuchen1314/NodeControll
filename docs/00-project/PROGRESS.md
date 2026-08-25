@@ -27,6 +27,13 @@
 
 ## 已完成内容与代码说明
 
+### 2026-08-26 — mode 合同通过；ELF loader allowlist 缺项被正式门拒绝
+
+- commit `332b204b47d418513e4f9e5850921f744762038a` 的 Actions run `32904404331` attempt 1 全绿，job `97985122463` 用时 3 分 1 秒。artifact `9584322069` 为 4,165,204 bytes，GitHub API digest 与下载 payload SHA-256 都是 `f31986a99336a80000d5d8345afceec6d5509f96c60dccc6805e1d2f39c262ea`。
+- VPS 预检确认 archive 有 676 个 `0755` 目录、868 个 `0644` 普通文件，只有 Master/Agent 两个 ELF 为 `0755`。上一份 artifact 相对新 exact-mode 合同共有 19 个 evidence mode 需要归一化：14 个可写的 `0666` 文件触发了当时的正式拒绝，另有 5 个不应执行的 `0755` evidence；新包中两类都已消失。两个 ELF 都只包含 `/cargo-home/registry`，不再包含 `/usr/local/cargo`、Actions workspace、runner home 或 VPS target 路径。
+- fresh full clone 上的正式 run `20260825T221048400560496Z-p5` 通过了公开 checkout、196 个 tracked blob/mode、GitHub run/artifact provenance、CycloneDX CLI、1546 个规范 archive member、869 个 package 文件、645 个锁定组件、844 份证据、20/20 overrides 和 CycloneDX schema，随后在 `actions-elf-check` fail-closed。
+- 失败原因已经缩小到动态库 allowlist：Master 为 `__tls_get_addr@GLIBC_2.3` 合法声明了 `DT_NEEDED ld-linux-x86-64.so.2`；固定 builder 的 loader SONAME 与程序解释器都是这个精确名称，`ldd` 也已解析成功。verifier 原先只允许 libc/libm/libgcc 等库，漏了 loader。本轮只加入该精确 SONAME，未知或未解析的动态库仍然拒绝；同时不再用无法传播 `readelf` 失败状态的 process substitution，并明确拒绝空 `DT_NEEDED` 集合。
+
 ### 2026-08-26 — Actions 首次全绿；正式 VPS verifier 拒绝不安全 mode
 
 - push SHA `7fd836d9fc73a66fe89ebbd3da131506cbe2f7b8` 的 Actions run `32901899767` attempt 1 在 2 分 49 秒内全部通过：Rust release、OpenAPI 导出/校验、Node/pnpm、公开分析边界、依赖安装、645 组件/844 证据收集、SDK/typecheck/Web production、generated drift、tracked source/工作树闭包、确定性 package 和 artifact 上传。artifact `9583470546` 为 4,165,254 bytes，GitHub API 与下载 payload 的 SHA-256 都是 `405626249d443586fce002d58dfc106455134afaa661de45b37ff10ad5e00039`。
@@ -236,6 +243,8 @@
 | 2026-08-26（第二次 push run） | Actions 前置环境 | run `32901554308` | source pinning 已通过；setup-python 不支持 Debian container 而失败，未编译、无 artifact；改用固定 image 自带 Python 3.11.2 |
 | 2026-08-26（第三次 push run） | GitHub Actions 正式编译 | run `32901899767`、artifact `9583470546` | Actions 全绿；artifact 4,165,254 bytes、SHA-256 `405626...0039`；尚未通过 VPS verifier |
 | 2026-08-26（首次正式 artifact run） | VPS provenance/archive | run `20260825T214246348535211Z-p5` | provenance、source、CycloneDX CLI 通过；`actions-archive-members` 因 14 个 sysroot evidence 为 `0666` 而拒绝，状态 failed |
+| 2026-08-26（mode/Cargo 修复 push） | GitHub Actions 正式编译 | run `32904404331`、artifact `9584322069` | Actions 全绿；mode 与嵌入路径预检通过；artifact SHA-256 `f31986...c262ea` |
+| 2026-08-26（第二次正式 artifact run） | VPS archive/license/ELF | run `20260825T221048400560496Z-p5` | archive、package/license/SBOM 通过；`actions-elf-check` 因 allowlist 漏列合法 loader SONAME 而拒绝，状态 failed |
 
 ## 风险与约束
 
@@ -247,7 +256,7 @@
 
 ## 下一步
 
-1. 推送生成文件 mode 与统一 `/cargo-home` 修复，取得新 SHA 的成功 attempt 1 artifact。
-2. 先确认新 archive 不含 group/world writable member，再在 VPS fresh standalone full checkout 运行完整正式 verifier；只有二进制、OpenAPI、Web、许可证和 provenance 全部形成正式 run manifest 后，才登记发布门通过。
+1. 推送 ELF loader 精确 allowlist 与解析失败传播修复，取得新 SHA 的成功 attempt 1 artifact。
+2. 在新的 commit-scoped artifact 目录和 fresh standalone full checkout 运行完整正式 verifier；失败过的 `332b204...` checkout 不复用。只有二进制、OpenAPI、Web、许可证和 provenance 全部形成正式 run manifest 后，才登记发布门通过。
 3. 补齐 WP-02 登录/session/MFA/RBAC 与 SetupPage 浏览器 E2E，再完成 P5.2 Agent protocol/enrollment handshake。
 4. 按 WP-02～WP-20 和 358 条追踪矩阵逐项实现、测试并更新状态；不得用 schema/页面壳替代产品行为验收。
