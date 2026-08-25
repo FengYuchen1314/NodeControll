@@ -17,11 +17,11 @@
 | Runner | `ubuntu-24.04` | GitHub 托管的 x86-64 构建环境 |
 | Job container | `rust@sha256:e536cf...001d5` | Debian 12/glibc 2.36 ABI 基线；与 VPS runtime 兼容 |
 | Rust | `1.98.0` | workspace release binaries 与 OpenAPI exporter |
+| Python | `3.11.2` | 固定 Rust job container 自带的源码校验运行时 |
 | Node.js | `24.19.0` | OpenAPI 校验、SDK 生成和 Web 构建 |
 | pnpm | `11.24.0` | frozen-lock 安装与 workspace scripts |
 | CycloneDX CLI | `0.33.1`，SHA-256 `bfc8b253...c58746` | 仅由正式 VPS verifier 按官方 CycloneDX 1.6 schema 校验 SBOM |
 | `actions/checkout` | `de0fac2e4500dabe0009e67214ff5f5447ce83dd` (`v6.0.2`) | 只读检出 |
-| `actions/setup-python` | `a309ff8b426b58ec0e2a45f0f869d46889d02405` (`v6.2.0`) | 安装精确 Python 3.13.7，运行独立源码校验器 |
 | `actions/setup-node` | `820762786026740c76f36085b0efc47a31fe5020` (`v7.0.0`) | 安装精确 Node 版本 |
 | `actions/upload-artifact` | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` (`v7.0.1`) | 上传不可变构建产物 |
 
@@ -30,7 +30,6 @@ Action 的标签仅作为行尾审计注释，真正执行的是 40 位不可变
 官方来源：
 
 - <https://github.com/actions/checkout/releases>
-- <https://github.com/actions/setup-python/releases>
 - <https://github.com/actions/setup-node/releases>
 - <https://github.com/actions/upload-artifact/releases>
 

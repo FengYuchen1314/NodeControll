@@ -27,11 +27,12 @@
 
 ## 已完成内容与代码说明
 
-### 2026-08-26 — 公开根提交已发布；Actions attempt 1 在编译前失败
+### 2026-08-26 — 公开根提交已发布；Actions 前置环境修复中
 
 - 公开仓库已建立为 `FengYuchen1314/NodeControll`，`main` 的首个 commit 是无父根提交 `607f54b652ec7b3525852cbc4c65441743b8ddce`。远端只有 `main`，没有 tag；author/committer 均使用 GitHub noreply 地址。旧的 5 个私有工作提交没有推送，因为其中保留过 VPS 地址、本机路径、原始网页归档和全文提取。公开根树只有 196 个审计文件，不含 `docs/03-mmwx-gap/evidence/raw` 或 `extracted`。
 - 本地到 GitHub 的 HTTPS push 遇到连接重置，改由 VPS 使用一次性 write deploy key 推送只含 `main` 的完整 Git bundle。推送后已从 GitHub 删除该 deploy key，并删除 VPS 上的私钥、bundle 与临时 clone；该凭据不可恢复，也没有进入 commit 或 run artifact。
 - 首次 Actions run `32901202453` 对应根 SHA、event=`push`、attempt=1，但在第一个源码 pinning step 因 job container 与 host checkout 的 UID 不同触发 Git `dubious ownership`，尚未进入 Rust 编译，也没有 artifact。修复不放宽源码验证：workflow 改用进程级 `GIT_CONFIG_COUNT/KEY/VALUE`，把唯一 `safe.directory` 固定为 `${{ github.workspace }}`，不写全局 Git config。下一次 run 通过前，正式编译和 VPS artifact verifier 仍是未完成状态。
+- 第二次 push run `32901554308` 已证明上述 ownership 修复有效：checkout 与 source-pinning step 通过。下一步 `actions/setup-python` 因 Debian 12 job container 不在其 3.13.7 二进制 manifest 中失败，仍未编译、无 artifact。固定 Rust image 本身已在 VPS 断网容器中确认提供 `/usr/bin/python3` 3.11.2；源码校验器不需要 3.13 特性，因此移除不适用于该 container 的 setup action，改为核对 image 内置的精确版本。该运行时受完整 job image digest 约束，不通过 apt 或浮动下载引入。
 
 ### 2026-08-26 — 发布前源码、依赖与双端重建门禁冻结
 
@@ -225,6 +226,7 @@
 | 2026-08-26 02:35 | SetupPage Web 预检 | VPS Vue typecheck、ESLint、Vitest | 通过，2 files、13/13 tests；SetupPage 11 项 |
 | 2026-08-26（公开根提交） | public projection | root commit、GitHub branches/tags/commit API、敏感字符串与 tree mode 扫描 | 通过；`607f54b...` 无父、196 files、仅 `main`、无 tag、无私有路径/凭据/原始 X 网页全文 |
 | 2026-08-26（Actions attempt 1） | 正式编译 | run `32901202453` | 失败；container ownership 在首个 source-pinning step 拒绝，未编译、无 artifact；修复待下一 run 验证 |
+| 2026-08-26（第二次 push run） | Actions 前置环境 | run `32901554308` | source pinning 已通过；setup-python 不支持 Debian container 而失败，未编译、无 artifact；改用固定 image 自带 Python 3.11.2 |
 
 ## 风险与约束
 
@@ -236,7 +238,7 @@
 
 ## 下一步
 
-1. 推送 Actions container `safe.directory` 修复，取得同一新 SHA 的成功 attempt 1 artifact。
+1. 推送 Actions container 内置 Python 修复，取得同一新 SHA 的成功 attempt 1 artifact。
 2. 在 VPS 对该 SHA 建立 fresh standalone full checkout，运行完整正式 verifier；只有二进制、OpenAPI、Web、许可证和 provenance 全部形成正式 run manifest 后，才登记发布门通过。
 3. 补齐 WP-02 登录/session/MFA/RBAC 与 SetupPage 浏览器 E2E，再完成 P5.2 Agent protocol/enrollment handshake。
 4. 按 WP-02～WP-20 和 358 条追踪矩阵逐项实现、测试并更新状态；不得用 schema/页面壳替代产品行为验收。

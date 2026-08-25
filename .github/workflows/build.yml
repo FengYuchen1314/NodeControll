@@ -26,7 +26,7 @@ env:
   TZ: UTC
   RUST_VERSION: 1.98.0
   RUSTUP_TOOLCHAIN: 1.98.0
-  PYTHON_VERSION: 3.13.7
+  PYTHON_VERSION: 3.11.2
   NODE_VERSION: 24.19.0
   PNPM_VERSION: 11.24.0
 
@@ -72,12 +72,6 @@ jobs:
           verifier_sha256="${verifier_record%% *}"
           [[ "${verifier_sha256}" =~ ^[0-9a-f]{64}$ ]]
           printf 'sha256=%s\n' "${verifier_sha256}" >> "${GITHUB_OUTPUT}"
-
-      - name: Install the pinned Python runtime
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: 3.13.7
-          check-latest: false
 
       - name: Verify pinned tracked source before build
         shell: bash
