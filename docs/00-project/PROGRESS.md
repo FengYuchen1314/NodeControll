@@ -27,6 +27,12 @@
 
 ## 已完成内容与代码说明
 
+### 2026-08-26 — 公开根提交已发布；Actions attempt 1 在编译前失败
+
+- 公开仓库已建立为 `FengYuchen1314/NodeControll`，`main` 的首个 commit 是无父根提交 `607f54b652ec7b3525852cbc4c65441743b8ddce`。远端只有 `main`，没有 tag；author/committer 均使用 GitHub noreply 地址。旧的 5 个私有工作提交没有推送，因为其中保留过 VPS 地址、本机路径、原始网页归档和全文提取。公开根树只有 196 个审计文件，不含 `docs/03-mmwx-gap/evidence/raw` 或 `extracted`。
+- 本地到 GitHub 的 HTTPS push 遇到连接重置，改由 VPS 使用一次性 write deploy key 推送只含 `main` 的完整 Git bundle。推送后已从 GitHub 删除该 deploy key，并删除 VPS 上的私钥、bundle 与临时 clone；该凭据不可恢复，也没有进入 commit 或 run artifact。
+- 首次 Actions run `32901202453` 对应根 SHA、event=`push`、attempt=1，但在第一个源码 pinning step 因 job container 与 host checkout 的 UID 不同触发 Git `dubious ownership`，尚未进入 Rust 编译，也没有 artifact。修复不放宽源码验证：workflow 改用进程级 `GIT_CONFIG_COUNT/KEY/VALUE`，把唯一 `safe.directory` 固定为 `${{ github.workspace }}`，不写全局 Git config。下一次 run 通过前，正式编译和 VPS artifact verifier 仍是未完成状态。
+
 ### 2026-08-26 — 发布前源码、依赖与双端重建门禁冻结
 
 - 最终临时许可证重收集在 VPS `/opt/nodecontroll/tmp/collector-final.<run>` 连续运行两次；两轮均为 645 components、844 evidence files、npm 425、override 20/20、`issues=[]`、`warnings=[]`，目录和文件内容逐字节一致。6 个 SQLx 0.9.0 包各有 MIT 与 Apache-2.0 的完整固定上游证据。CycloneDX CLI 0.33.1 已按固定 SHA-256 校验后通过官方 1.6 schema。该目录没有正式 run manifest，也没有同 SHA Actions artifact，只是发布前证据，不能登记为正式制品门通过。
@@ -217,6 +223,8 @@
 | 2026-08-26（发布前负向 fixture） | tracked source provenance | commit blob/mode、index-hidden changes、replacement refs | 正向 2 blobs 通过；被 `skip-worktree`/`assume-unchanged` 隐藏的内容变更和 mode 篡改均拒绝；replacement ref 被禁用 |
 | 2026-08-26（发布前依赖闭包） | fresh pnpm inventory | 私有空 store、断共享缓存安装后独立枚举 | 安装 425 个 package identity，与收集器 inventory 精确双向相等 |
 | 2026-08-26 02:35 | SetupPage Web 预检 | VPS Vue typecheck、ESLint、Vitest | 通过，2 files、13/13 tests；SetupPage 11 项 |
+| 2026-08-26（公开根提交） | public projection | root commit、GitHub branches/tags/commit API、敏感字符串与 tree mode 扫描 | 通过；`607f54b...` 无父、196 files、仅 `main`、无 tag、无私有路径/凭据/原始 X 网页全文 |
+| 2026-08-26（Actions attempt 1） | 正式编译 | run `32901202453` | 失败；container ownership 在首个 source-pinning step 拒绝，未编译、无 artifact；修复待下一 run 验证 |
 
 ## 风险与约束
 
@@ -228,7 +236,7 @@
 
 ## 下一步
 
-1. 冻结并审计公开投影，建立公开无父提交的 `main`；让 GitHub Actions 生成同 SHA 制品，再在 VPS fresh checkout 中跑完整正式 verifier。
-2. 只有 Actions/VPS 的二进制、OpenAPI、Web、许可证和 provenance 全部形成正式 run manifest 后，才把本轮发布门登记为通过。
+1. 推送 Actions container `safe.directory` 修复，取得同一新 SHA 的成功 attempt 1 artifact。
+2. 在 VPS 对该 SHA 建立 fresh standalone full checkout，运行完整正式 verifier；只有二进制、OpenAPI、Web、许可证和 provenance 全部形成正式 run manifest 后，才登记发布门通过。
 3. 补齐 WP-02 登录/session/MFA/RBAC 与 SetupPage 浏览器 E2E，再完成 P5.2 Agent protocol/enrollment handshake。
 4. 按 WP-02～WP-20 和 358 条追踪矩阵逐项实现、测试并更新状态；不得用 schema/页面壳替代产品行为验收。

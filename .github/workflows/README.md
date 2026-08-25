@@ -7,6 +7,7 @@
 - `main` 分支 push、所有 pull request 和手工 `workflow_dispatch` 会触发构建。
 - `GITHUB_TOKEN` 只有 `contents: read` 权限。
 - checkout 禁用凭据持久化；工作流不写仓库、不发布 Release、不部署。
+- Job container 通过进程级 Git config 把唯一 `safe.directory` 固定为 `${{ github.workspace }}`，解决 host checkout 与 container 用户不同导致的 ownership 拒绝；不改全局 Git 配置文件。
 - 同一 ref 的新构建会取消尚未完成的旧构建。
 
 ## 固定版本
