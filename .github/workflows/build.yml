@@ -1,0 +1,424 @@
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  GIT_NO_REPLACE_OBJECTS: "1"
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+  TZ: UTC
+  RUST_VERSION: 1.98.0
+  RUSTUP_TOOLCHAIN: 1.98.0
+  PYTHON_VERSION: 3.13.7
+  NODE_VERSION: 24.19.0
+  PNPM_VERSION: 11.24.0
+
+jobs:
+  build:
+    name: Rust, OpenAPI, and Web
+    runs-on: ubuntu-24.04
+    container:
+      image: rust@sha256:e536cf316987faedfe8ae120f83b70c7df0068fdb4fc9efcce55c71a625001d5
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Pin the trusted source verifier from the checked-out commit
+        id: pinned_verifier
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git --no-replace-objects -C "${GITHUB_WORKSPACE}" rev-parse --verify HEAD)" = "${GITHUB_SHA}"
+          test "$(git --no-replace-objects -C "${GITHUB_WORKSPACE}" cat-file -t "${GITHUB_SHA}")" = commit
+          test -z "$(git --no-replace-objects -C "${GITHUB_WORKSPACE}" for-each-ref \
+            --count=1 --format='%(refname)' refs/replace/)"
+
+          verifier="${RUNNER_TEMP}/verify_tracked_source.py"
+          test ! -e "${verifier}"
+          test ! -L "${verifier}"
+          verifier_tmp="$(mktemp "${RUNNER_TEMP}/verify-tracked-source.XXXXXX.py")"
+          trap 'rm -f -- "${verifier_tmp}"' EXIT
+          git --no-replace-objects -C "${GITHUB_WORKSPACE}" cat-file blob \
+            "${GITHUB_SHA}:tools/verify_tracked_source.py" > "${verifier_tmp}"
+          test -s "${verifier_tmp}"
+          chmod 0500 "${verifier_tmp}"
+          mv "${verifier_tmp}" "${verifier}"
+          trap - EXIT
+
+          verifier_record="$(sha256sum -- "${verifier}")"
+          verifier_sha256="${verifier_record%% *}"
+          [[ "${verifier_sha256}" =~ ^[0-9a-f]{64}$ ]]
+          printf 'sha256=%s\n' "${verifier_sha256}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install the pinned Python runtime
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: 3.13.7
+          check-latest: false
+
+      - name: Verify pinned tracked source before build
+        shell: bash
+        env:
+          PINNED_VERIFIER_SHA256: ${{ steps.pinned_verifier.outputs.sha256 }}
+        run: |
+          set -Eeuo pipefail
+          verifier="${RUNNER_TEMP}/verify_tracked_source.py"
+          test -f "${verifier}"
+          test ! -L "${verifier}"
+          test "$(stat -c '%a' -- "${verifier}")" = 500
+          test "$(stat -c '%u' -- "${verifier}")" = "$(id -u)"
+          verifier_record="$(sha256sum -- "${verifier}")"
+          test "${verifier_record%% *}" = "${PINNED_VERIFIER_SHA256}"
+          test "$(git --no-replace-objects -C "${GITHUB_WORKSPACE}" rev-parse --verify HEAD)" = "${GITHUB_SHA}"
+          test "$(python3 --version)" = "Python ${PYTHON_VERSION}"
+          python3 -I -B "${verifier}" \
+            "${GITHUB_SHA}" "${GITHUB_WORKSPACE}" "${GITHUB_WORKSPACE}"
+
+      - name: Verify the pinned Rust and ABI baseline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(rustc --version | awk '{print $2}')" = "${RUST_VERSION}"
+          test "$(rustc --version --verbose | sed -n 's/^host: //p')" = "x86_64-unknown-linux-gnu"
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.36"
+          rustc --version --verbose
+          cargo --version --verbose
+          getconf GNU_LIBC_VERSION
+
+      - name: Normalize the reproducible build environment
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source_date_epoch="$(git --no-replace-objects -C "${GITHUB_WORKSPACE}" show -s --format=%ct "${GITHUB_SHA}")"
+          [[ "${source_date_epoch}" =~ ^[0-9]+$ ]]
+          printf 'SOURCE_DATE_EPOCH=%s\n' "${source_date_epoch}" >> "${GITHUB_ENV}"
+
+      - name: Build all Rust binaries
+        shell: bash
+        run: cargo build --locked --workspace --bins --release
+
+      - name: Export OpenAPI from the compiled backend
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          openapi_tmp="${RUNNER_TEMP}/nodecontroll-v1.json"
+          target/release/export-openapi > "${openapi_tmp}"
+          test -s "${openapi_tmp}"
+          mv "${openapi_tmp}" openapi/nodecontroll-v1.json
+
+      - name: Install the pinned Node.js runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+          check-latest: false
+          package-manager-cache: false
+
+      - name: Install the pinned pnpm CLI
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm install --global --ignore-scripts --no-audit --no-fund "pnpm@${PNPM_VERSION}"
+          test "$(node --version)" = "v${NODE_VERSION}"
+          test "$(pnpm --version)" = "${PNPM_VERSION}"
+          node --version
+          npm --version
+          pnpm --version
+
+      - name: Validate the generated OpenAPI document
+        run: node tools/validate_openapi.mjs openapi/nodecontroll-v1.json
+
+      - name: Validate the public upstream-analysis boundary
+        run: node tools/sanitize_upstream_generated.mjs
+
+      - name: Install Web dependencies from the frozen lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Collect third-party licenses and component inventory
+        shell: bash
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+        run: node tools/collect_third_party_licenses.mjs artifacts/notices
+
+      - name: Generate the typed Web API SDK
+        run: pnpm web:generate
+
+      - name: Type-check the Web application
+        run: pnpm web:typecheck
+
+      - name: Build the Web application
+        run: pnpm --filter @nodecontroll/web exec vite build
+
+      - name: Reject stale generated contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git --no-replace-objects add --intent-to-add -- \
+            openapi/nodecontroll-v1.json \
+            apps/web/src/api/generated
+          git --no-replace-objects diff --exit-code -- \
+            openapi/nodecontroll-v1.json \
+            apps/web/src/api/generated
+
+      - name: Reject every tracked source mutation before packaging
+        shell: bash
+        run: git --no-replace-objects diff --exit-code HEAD --
+
+      - name: Verify post-build source closure before packaging
+        shell: bash
+        env:
+          PINNED_VERIFIER_SHA256: ${{ steps.pinned_verifier.outputs.sha256 }}
+        run: |
+          set -Eeuo pipefail
+          workspace="${GITHUB_WORKSPACE}"
+          verifier="${RUNNER_TEMP}/verify_tracked_source.py"
+          test -f "${verifier}"
+          test ! -L "${verifier}"
+          test "$(stat -c '%a' -- "${verifier}")" = 500
+          test "$(stat -c '%u' -- "${verifier}")" = "$(id -u)"
+          verifier_record="$(sha256sum -- "${verifier}")"
+          test "${verifier_record%% *}" = "${PINNED_VERIFIER_SHA256}"
+          test "$(git --no-replace-objects -C "${workspace}" rev-parse --verify HEAD)" = "${GITHUB_SHA}"
+
+          replace_ref="$(git --no-replace-objects -C "${workspace}" for-each-ref \
+            --count=1 --format='%(refname)' refs/replace/)"
+          if [[ -n "${replace_ref}" ]]; then
+            printf 'replacement ref is forbidden: %s\n' "${replace_ref}" >&2
+            exit 1
+          fi
+          python3 -I -B "${verifier}" \
+            "${GITHUB_SHA}" "${workspace}" "${workspace}"
+
+          for allowed_root in \
+            target \
+            node_modules \
+            apps/web/node_modules \
+            artifacts \
+            apps/web/dist
+          do
+            allowed_path="${workspace}/${allowed_root}"
+            if [[ -e "${allowed_path}" || -L "${allowed_path}" ]]; then
+              if [[ ! -d "${allowed_path}" || -L "${allowed_path}" ]]; then
+                printf 'allowed generated root must be a real directory: %s\n' "${allowed_root}" >&2
+                exit 1
+              fi
+            fi
+          done
+
+          committed_paths="$(mktemp "${RUNNER_TEMP}/committed-paths.XXXXXX")"
+          committed_nodes="$(mktemp "${RUNNER_TEMP}/committed-nodes.XXXXXX")"
+          current_nodes="$(mktemp "${RUNNER_TEMP}/current-nodes.XXXXXX")"
+          extra_nodes="$(mktemp "${RUNNER_TEMP}/extra-nodes.XXXXXX")"
+          trap 'rm -f -- "${committed_paths}" "${committed_nodes}" "${current_nodes}" "${extra_nodes}"' EXIT
+
+          git --no-replace-objects -C "${workspace}" ls-tree \
+            -r -z --full-tree --name-only "${GITHUB_SHA}" > "${committed_paths}"
+          : > "${committed_nodes}"
+          while IFS= read -r -d '' path; do
+            test -n "${path}"
+            printf '%s\0' "${path}" >> "${committed_nodes}"
+            parent="${path}"
+            while [[ "${parent}" == */* ]]; do
+              parent="${parent%/*}"
+              printf '%s\0' "${parent}" >> "${committed_nodes}"
+            done
+          done < "${committed_paths}"
+          sort -z -u -o "${committed_nodes}" -- "${committed_nodes}"
+
+          (
+            cd -- "${workspace}"
+            find . -mindepth 1 -path './.git' -prune -o -printf '%P\0'
+          ) | sort -z -u > "${current_nodes}"
+          comm -z -2 -3 -- "${current_nodes}" "${committed_nodes}" > "${extra_nodes}"
+
+          unexpected=0
+          while IFS= read -r -d '' path; do
+            case "${path}" in
+              target|target/*|node_modules|node_modules/*|apps/web/node_modules|apps/web/node_modules/*|artifacts|artifacts/*|apps/web/dist|apps/web/dist/*)
+                ;;
+              *)
+                printf 'unexpected untracked or ignored worktree node: %q\n' "${path}" >&2
+                unexpected=1
+                ;;
+            esac
+          done < "${extra_nodes}"
+          test "${unexpected}" -eq 0
+
+          replace_ref="$(git --no-replace-objects -C "${workspace}" for-each-ref \
+            --count=1 --format='%(refname)' refs/replace/)"
+          test -z "${replace_ref}"
+
+      - name: Package build outputs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 022
+          mkdir -p artifacts/package/bin artifacts/package/openapi artifacts/package/web
+          install -m 0644 LICENSE artifacts/package/LICENSE
+          install -m 0644 THIRD_PARTY_NOTICES.md artifacts/package/THIRD_PARTY_NOTICES.md
+          cp -a artifacts/notices artifacts/package/notices
+          printf '%s\n' \
+            "run_id=${GITHUB_RUN_ID}" \
+            "run_attempt=${GITHUB_RUN_ATTEMPT}" \
+            "commit=${GITHUB_SHA}" \
+            "target=x86_64-unknown-linux-gnu" \
+            "glibc=2.36" \
+            "builder=rust@sha256:e536cf316987faedfe8ae120f83b70c7df0068fdb4fc9efcce55c71a625001d5" \
+            "source=https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}" \
+            > artifacts/package/BUILD-METADATA
+          install -m 0755 target/release/nodecontroll-master artifacts/package/bin/nodecontroll-master
+          install -m 0755 target/release/nodecontroll-agent artifacts/package/bin/nodecontroll-agent
+          install -m 0644 openapi/nodecontroll-v1.json artifacts/package/openapi/nodecontroll-v1.json
+          cp -a apps/web/dist/. artifacts/package/web/
+          (
+            cd artifacts/package
+            find . -type f ! -name CONTENTS.sha256 -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              > CONTENTS.sha256
+          )
+
+          test "${SOURCE_DATE_EPOCH:-}" = \
+            "$(git --no-replace-objects -C "${GITHUB_WORKSPACE}" show -s --format=%ct "${GITHUB_SHA}")"
+          tar \
+            --format=gnu \
+            --sort=name \
+            --mtime="@${SOURCE_DATE_EPOCH}" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -cf - \
+            -C artifacts/package . \
+            | gzip -n -9 > artifacts/nodecontroll-linux-x86_64-glibc2.36.tar.gz
+          rm -rf artifacts/package
+
+      - name: Verify source closure after packaging
+        shell: bash
+        env:
+          PINNED_VERIFIER_SHA256: ${{ steps.pinned_verifier.outputs.sha256 }}
+        run: |
+          set -Eeuo pipefail
+          workspace="${GITHUB_WORKSPACE}"
+          verifier="${RUNNER_TEMP}/verify_tracked_source.py"
+          test -f "${verifier}"
+          test ! -L "${verifier}"
+          test "$(stat -c '%a' -- "${verifier}")" = 500
+          test "$(stat -c '%u' -- "${verifier}")" = "$(id -u)"
+          verifier_record="$(sha256sum -- "${verifier}")"
+          test "${verifier_record%% *}" = "${PINNED_VERIFIER_SHA256}"
+          test "$(git --no-replace-objects -C "${workspace}" rev-parse --verify HEAD)" = "${GITHUB_SHA}"
+
+          replace_ref="$(git --no-replace-objects -C "${workspace}" for-each-ref \
+            --count=1 --format='%(refname)' refs/replace/)"
+          if [[ -n "${replace_ref}" ]]; then
+            printf 'replacement ref is forbidden: %s\n' "${replace_ref}" >&2
+            exit 1
+          fi
+          python3 -I -B "${verifier}" \
+            "${GITHUB_SHA}" "${workspace}" "${workspace}"
+
+          for allowed_root in \
+            target \
+            node_modules \
+            apps/web/node_modules \
+            artifacts \
+            apps/web/dist
+          do
+            allowed_path="${workspace}/${allowed_root}"
+            if [[ -e "${allowed_path}" || -L "${allowed_path}" ]]; then
+              if [[ ! -d "${allowed_path}" || -L "${allowed_path}" ]]; then
+                printf 'allowed generated root must be a real directory: %s\n' "${allowed_root}" >&2
+                exit 1
+              fi
+            fi
+          done
+
+          committed_paths="$(mktemp "${RUNNER_TEMP}/committed-paths.XXXXXX")"
+          committed_nodes="$(mktemp "${RUNNER_TEMP}/committed-nodes.XXXXXX")"
+          current_nodes="$(mktemp "${RUNNER_TEMP}/current-nodes.XXXXXX")"
+          extra_nodes="$(mktemp "${RUNNER_TEMP}/extra-nodes.XXXXXX")"
+          trap 'rm -f -- "${committed_paths}" "${committed_nodes}" "${current_nodes}" "${extra_nodes}"' EXIT
+
+          git --no-replace-objects -C "${workspace}" ls-tree \
+            -r -z --full-tree --name-only "${GITHUB_SHA}" > "${committed_paths}"
+          : > "${committed_nodes}"
+          while IFS= read -r -d '' path; do
+            test -n "${path}"
+            printf '%s\0' "${path}" >> "${committed_nodes}"
+            parent="${path}"
+            while [[ "${parent}" == */* ]]; do
+              parent="${parent%/*}"
+              printf '%s\0' "${parent}" >> "${committed_nodes}"
+            done
+          done < "${committed_paths}"
+          sort -z -u -o "${committed_nodes}" -- "${committed_nodes}"
+
+          (
+            cd -- "${workspace}"
+            find . -mindepth 1 -path './.git' -prune -o -printf '%P\0'
+          ) | sort -z -u > "${current_nodes}"
+          comm -z -2 -3 -- "${current_nodes}" "${committed_nodes}" > "${extra_nodes}"
+
+          unexpected=0
+          while IFS= read -r -d '' path; do
+            case "${path}" in
+              target|target/*|node_modules|node_modules/*|apps/web/node_modules|apps/web/node_modules/*|artifacts|artifacts/*|apps/web/dist|apps/web/dist/*)
+                ;;
+              *)
+                printf 'unexpected untracked or ignored worktree node: %q\n' "${path}" >&2
+                unexpected=1
+                ;;
+            esac
+          done < "${extra_nodes}"
+          test "${unexpected}" -eq 0
+
+          replace_ref="$(git --no-replace-objects -C "${workspace}" for-each-ref \
+            --count=1 --format='%(refname)' refs/replace/)"
+          test -z "${replace_ref}"
+
+      - name: Upload compiled artifacts
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nodecontroll-linux-x86_64-glibc2.36.tar.gz
+          path: artifacts/nodecontroll-linux-x86_64-glibc2.36.tar.gz
+          archive: false
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 14
+
+      - name: Record artifact provenance
+        shell: bash
+        env:
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          set -Eeuo pipefail
+          test "${ARTIFACT_DIGEST}" = "$(sha256sum artifacts/nodecontroll-linux-x86_64-glibc2.36.tar.gz | cut -d' ' -f1)"
+          printf '%s\n' \
+            "### Compiled artifact" \
+            "- Artifact ID: ${ARTIFACT_ID}" \
+            "- SHA-256: \`${ARTIFACT_DIGEST}\`" \
+            "- Download: ${ARTIFACT_URL}" \
+            >> "${GITHUB_STEP_SUMMARY}"

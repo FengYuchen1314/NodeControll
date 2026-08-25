@@ -1,0 +1,16 @@
+[package]
+name = "nodecontroll-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+config.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

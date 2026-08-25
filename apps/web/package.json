@@ -1,0 +1,48 @@
+{
+  "name": "@nodecontroll/web",
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.19.0"
+  },
+  "scripts": {
+    "generate:api": "openapi-ts",
+    "typecheck": "vue-tsc --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "build": "pnpm generate:api && pnpm typecheck && vite build"
+  },
+  "dependencies": {
+    "@tanstack/vue-query": "5.102.3",
+    "pinia": "4.0.3",
+    "vue": "3.5.41",
+    "vue-i18n": "11.4.9",
+    "vue-router": "5.2.0",
+    "vuetify": "4.1.11",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@hey-api/openapi-ts": "0.99.0",
+    "@testing-library/vue": "8.1.0",
+    "@types/node": "26.3.0",
+    "@vitejs/plugin-vue": "6.0.8",
+    "@vitest/coverage-v8": "4.1.11",
+    "@vue/compiler-sfc": "3.5.41",
+    "eslint": "10.9.1",
+    "eslint-config-prettier": "10.1.8",
+    "eslint-plugin-vue": "10.10.0",
+    "jsdom": "30.0.1",
+    "prettier": "3.9.6",
+    "sass": "1.103.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.68.0",
+    "vite": "8.2.2",
+    "vite-plugin-vuetify": "2.1.3",
+    "vitest": "4.1.11",
+    "vue-eslint-parser": "10.4.1",
+    "vue-tsc": "3.3.11"
+  }
+}

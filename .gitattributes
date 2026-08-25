@@ -1,0 +1,20 @@
+* text=auto
+
+*.go text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.mjs text eol=lf
+*.py text eol=lf
+*.rs text eol=lf
+*.sh text eol=lf
+*.sql text eol=lf
+*.toml text eol=lf
+*.ts text eol=lf
+*.vue text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Preserve upstream evidence bytes exactly; the collector verifies their SHA-256.
+third_party/dependency-license-overrides/** -text whitespace=-blank-at-eof
+third_party/dependency-license-overrides/README.md text eol=lf
+third_party/dependency-license-overrides/overrides.json text eol=lf

@@ -1,0 +1,37 @@
+packages:
+  - "apps/web"
+
+autoInstallPeers: false
+blockExoticSubdeps: true
+engineStrict: true
+minimumReleaseAge: 1440
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+minimumReleaseAgeExcludePrune: true
+strictPeerDependencies: true
+trustLockfile: false
+verifyDepsBeforeRun: error
+
+allowBuilds:
+  "@parcel/watcher": false
+  vue-demi: false
+
+# These exact versions were queried and reviewed on 2026-08-25 before the
+# default 24-hour maturity window elapsed. Transitive entries are pinned by
+# the shared lockfile and are pruned automatically when no longer resolved.
+minimumReleaseAgeExclude:
+  - "@tanstack/query-core@5.102.3"
+  - "@tanstack/vue-query@5.102.3"
+  - "@types/node@26.3.0"
+  - "@typescript-eslint/eslint-plugin@8.68.0"
+  - "@typescript-eslint/parser@8.68.0"
+  - "@typescript-eslint/project-service@8.68.0"
+  - "@typescript-eslint/scope-manager@8.68.0"
+  - "@typescript-eslint/tsconfig-utils@8.68.0"
+  - "@typescript-eslint/type-utils@8.68.0"
+  - "@typescript-eslint/types@8.68.0"
+  - "@typescript-eslint/typescript-estree@8.68.0"
+  - "@typescript-eslint/utils@8.68.0"
+  - "@typescript-eslint/visitor-keys@8.68.0"
+  - "eslint@10.9.1"
+  - "typescript-eslint@8.68.0"

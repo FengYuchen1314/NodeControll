@@ -1,0 +1,44 @@
+# Upstream repositories and transport artifacts are read-only research inputs.
+/upstream/
+/docs/03-mmwx-gap/evidence/raw/
+/docs/03-mmwx-gap/evidence/extracted/
+
+# Local and remote build outputs.
+/target/
+/node_modules/
+/apps/web/node_modules/
+/apps/web/dist/
+/apps/web/coverage/
+/apps/web/test-results/
+/playwright-report/
+/.pnpm-store/
+**/artifacts/
+# Environment and local secret material at any workspace depth.
+**/.env
+**/.env.*
+!**/.env.example
+/.secrets/
+**/.secrets/
+*.key
+*.pem
+**/id_rsa
+**/id_ed25519
+**/*.root-key
+**/*.setup-token
+**/*.p12
+**/*.pfx
+
+# Local runtime data and verification outputs.
+/artifacts/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+*.bak
+
+# Editor and operating-system metadata.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

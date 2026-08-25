@@ -1,0 +1,10 @@
+FROM rust@sha256:e536cf316987faedfe8ae120f83b70c7df0068fdb4fc9efcce55c71a625001d5
+
+RUN rustup component add clippy rustfmt \
+    && rustc --version \
+    && cargo --version \
+    && cargo clippy --version \
+    && rustfmt --version
+
+WORKDIR /workspace
+

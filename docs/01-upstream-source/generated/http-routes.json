@@ -1,0 +1,611 @@
+[
+  {
+    "path": "/api/setup/status",
+    "access": "公开或 Handler 内校验",
+    "handler": "NewSetupStatusHandler",
+    "line": 156,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/setup/init",
+    "access": "公开或 Handler 内校验",
+    "handler": "NewInitialSetupHandler",
+    "line": 157,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/setup/restore-backup",
+    "access": "公开或 Handler 内校验",
+    "handler": "NewSetupRestoreBackupHandler",
+    "line": 158,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/captcha/config",
+    "access": "公开或 Handler 内校验",
+    "handler": "inline HandlerFunc",
+    "line": 160,
+    "registration": "HandleFunc"
+  },
+  {
+    "path": "/api/login",
+    "access": "公开或 Handler 内校验",
+    "handler": "NewLoginHandler",
+    "line": 168,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/login/2fa",
+    "access": "公开或 Handler 内校验",
+    "handler": "NewTwoFactorLoginHandler",
+    "line": 169,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/login/recovery",
+    "access": "公开或 Handler 内校验",
+    "handler": "NewRecoveryLoginHandler",
+    "line": 170,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/credentials",
+    "access": "管理员 UI 会话",
+    "handler": "NewCredentialsHandler",
+    "line": 173,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/users",
+    "access": "管理员 UI 会话",
+    "handler": "NewUserListHandler",
+    "line": 174,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/users/create",
+    "access": "管理员 UI 会话",
+    "handler": "NewUserCreateHandler",
+    "line": 175,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/users/delete",
+    "access": "管理员 UI 会话",
+    "handler": "NewUserDeleteHandler",
+    "line": 176,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/users/status",
+    "access": "管理员 UI 会话",
+    "handler": "NewUserStatusHandler",
+    "line": 177,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/users/reset-password",
+    "access": "管理员 UI 会话",
+    "handler": "NewUserResetPasswordHandler",
+    "line": 178,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/users/remark",
+    "access": "管理员 UI 会话",
+    "handler": "NewUserRemarkHandler",
+    "line": 179,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/users/custom-short-code",
+    "access": "管理员 UI 会话",
+    "handler": "NewUserCustomShortCodeHandler",
+    "line": 180,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/users/",
+    "access": "管理员 UI 会话",
+    "handler": "NewUserSubscriptionsHandler",
+    "line": 181,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/security/",
+    "access": "管理员 UI 会话",
+    "handler": "securityLogHandler",
+    "line": 183,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/security/turnstile",
+    "access": "管理员 UI 会话",
+    "handler": "NewTurnstileSettingsHandler",
+    "line": 184,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/tasks/",
+    "access": "管理员 UI 会话",
+    "handler": "NewTaskLogHandler",
+    "line": 185,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/operations",
+    "access": "管理员 UI 会话",
+    "handler": "NewOperationLogHandler",
+    "line": 186,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/subscriptions",
+    "access": "管理员 UI 会话",
+    "handler": "NewSubscriptionAdminHandler",
+    "line": 187,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/subscriptions/",
+    "access": "管理员 UI 会话",
+    "handler": "NewSubscriptionAdminHandler",
+    "line": 188,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/subscribe-files",
+    "access": "管理员 UI 会话",
+    "handler": "NewSubscribeFilesHandler",
+    "line": 189,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/subscribe-files/",
+    "access": "管理员 UI 会话",
+    "handler": "NewSubscribeFilesHandler",
+    "line": 190,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/probe-config",
+    "access": "管理员 UI 会话",
+    "handler": "NewProbeConfigHandler",
+    "line": 191,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/probe-sync",
+    "access": "管理员 UI 会话",
+    "handler": "NewProbeSyncHandler",
+    "line": 192,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/rules/",
+    "access": "管理员 UI 会话",
+    "handler": "NewRuleEditorHandler",
+    "line": 193,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/rule-templates",
+    "access": "已登录 UI 会话",
+    "handler": "NewRuleTemplatesHandler",
+    "line": 194,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/rule-templates/",
+    "access": "已登录 UI 会话",
+    "handler": "NewRuleTemplatesHandler",
+    "line": 195,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/default-template",
+    "access": "已登录 UI 会话",
+    "handler": "NewUserDefaultTemplateHandler",
+    "line": 196,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/template-v3/",
+    "access": "管理员 UI 会话",
+    "handler": "NewTemplateV3Handler",
+    "line": 197,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/nodes",
+    "access": "管理员 UI 会话",
+    "handler": "NewNodesHandler",
+    "line": 198,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/nodes/",
+    "access": "管理员 UI 会话",
+    "handler": "NewNodesHandler",
+    "line": 199,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/sync-external-subscriptions",
+    "access": "管理员 UI 会话",
+    "handler": "NewSyncExternalSubscriptionsHandler",
+    "line": 200,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/sync-external-subscription",
+    "access": "管理员 UI 会话",
+    "handler": "NewSyncSingleExternalSubscriptionHandler",
+    "line": 201,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/sync-external-subscriptions/confirm",
+    "access": "管理员 UI 会话",
+    "handler": "NewConfirmExternalSyncHandler",
+    "line": 202,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/rules/latest",
+    "access": "管理员 UI 会话",
+    "handler": "NewRuleMetadataHandler",
+    "line": 203,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/custom-rules",
+    "access": "管理员 UI 会话",
+    "handler": "NewCustomRulesHandler",
+    "line": 204,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/custom-rules/",
+    "access": "管理员 UI 会话",
+    "handler": "NewCustomRuleHandler",
+    "line": 205,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/apply-custom-rules",
+    "access": "管理员 UI 会话",
+    "handler": "NewApplyCustomRulesHandler",
+    "line": 206,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/override-scripts",
+    "access": "管理员 UI 会话",
+    "handler": "NewOverrideScriptsHandler",
+    "line": 207,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/override-scripts/",
+    "access": "管理员 UI 会话",
+    "handler": "NewOverrideScriptsHandler",
+    "line": 208,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/templates",
+    "access": "管理员 UI 会话",
+    "handler": "NewTemplatesHandler",
+    "line": 209,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/templates/",
+    "access": "管理员 UI 会话",
+    "handler": "NewTemplateHandler",
+    "line": 210,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/templates/convert",
+    "access": "管理员 UI 会话",
+    "handler": "NewTemplateConvertHandler",
+    "line": 211,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/templates/fetch-source",
+    "access": "管理员 UI 会话",
+    "handler": "NewTemplateFetchSourceHandler",
+    "line": 212,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/backup/download",
+    "access": "管理员 UI 会话",
+    "handler": "NewBackupDownloadHandler",
+    "line": 213,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/backup/restore",
+    "access": "管理员 UI 会话",
+    "handler": "NewBackupRestoreHandler",
+    "line": 214,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/update/check",
+    "access": "管理员 UI 会话",
+    "handler": "NewUpdateCheckHandler",
+    "line": 215,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/update/apply",
+    "access": "管理员 UI 会话",
+    "handler": "NewUpdateApplyHandler",
+    "line": 216,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/update/apply-sse",
+    "access": "管理员 UI 会话",
+    "handler": "NewUpdateApplySSEHandler",
+    "line": 217,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/proxy-groups/sync",
+    "access": "管理员 UI 会话",
+    "handler": "NewProxyGroupsSyncHandler",
+    "line": 218,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/notify-config",
+    "access": "管理员 UI 会话",
+    "handler": "NewNotifyConfigHandler",
+    "line": 219,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/notify-config/",
+    "access": "管理员 UI 会话",
+    "handler": "NewNotifyConfigHandler",
+    "line": 220,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/tcping",
+    "access": "管理员 UI 会话",
+    "handler": "NewTCPingHandler",
+    "line": 223,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/tcping/batch",
+    "access": "管理员 UI 会话",
+    "handler": "NewTCPingBatchHandler",
+    "line": 224,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/proxy-groups",
+    "access": "已登录 UI 会话",
+    "handler": "NewProxyGroupsHandler",
+    "line": 227,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/password",
+    "access": "已登录 UI 会话",
+    "handler": "NewPasswordHandler",
+    "line": 228,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/profile",
+    "access": "已登录 UI 会话",
+    "handler": "NewProfileHandler",
+    "line": 229,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/settings",
+    "access": "已登录 UI 会话",
+    "handler": "NewUserSettingsHandler",
+    "line": 230,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/config",
+    "access": "已登录 UI 会话",
+    "handler": "NewUserConfigHandler",
+    "line": 231,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/2fa/status",
+    "access": "已登录 UI 会话",
+    "handler": "NewTwoFactorStatusHandler",
+    "line": 232,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/2fa/setup",
+    "access": "已登录 UI 会话",
+    "handler": "NewTwoFactorSetupHandler",
+    "line": 233,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/2fa/verify-setup",
+    "access": "已登录 UI 会话",
+    "handler": "NewTwoFactorVerifySetupHandler",
+    "line": 234,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/2fa/disable",
+    "access": "已登录 UI 会话",
+    "handler": "NewTwoFactorDisableHandler",
+    "line": 235,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/token",
+    "access": "已登录 UI 会话",
+    "handler": "NewUserTokenHandler",
+    "line": 236,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/external-subscriptions",
+    "access": "已登录 UI 会话",
+    "handler": "NewExternalSubscriptionsHandler",
+    "line": 237,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/external-subscriptions/nodes",
+    "access": "已登录 UI 会话",
+    "handler": "NewExternalSubscriptionNodesHandler",
+    "line": 238,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/external-subscriptions/check-filter",
+    "access": "已登录 UI 会话",
+    "handler": "NewExternalSubscriptionCheckFilterHandler",
+    "line": 239,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/proxy-provider-configs",
+    "access": "已登录 UI 会话",
+    "handler": "NewProxyProviderConfigsHandler",
+    "line": 240,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/proxy-provider-cache/refresh",
+    "access": "已登录 UI 会话",
+    "handler": "NewProxyProviderCacheRefreshHandler",
+    "line": 241,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/proxy-provider-cache/status",
+    "access": "已登录 UI 会话",
+    "handler": "NewProxyProviderCacheStatusHandler",
+    "line": 242,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/proxy-provider-nodes",
+    "access": "已登录 UI 会话",
+    "handler": "NewProxyProviderNodesHandler",
+    "line": 243,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/proxy-provider/",
+    "access": "端点内订阅鉴权",
+    "handler": "NewProxyProviderServeHandler",
+    "line": 244,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/debug/",
+    "access": "已登录 UI 会话",
+    "handler": "NewDebugHandler",
+    "line": 247,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/traffic/summary",
+    "access": "已登录 UI 会话",
+    "handler": "trafficHandler",
+    "line": 249,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/traffic/subscribe",
+    "access": "已登录 UI 会话",
+    "handler": "trafficHandler, http.HandlerFunc",
+    "line": 250,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/subscriptions",
+    "access": "已登录 UI 会话",
+    "handler": "NewSubscriptionListHandler",
+    "line": 251,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/dns/resolve",
+    "access": "已登录 UI 会话",
+    "handler": "NewDNSHandler",
+    "line": 252,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/subscribe-files",
+    "access": "已登录 UI 会话",
+    "handler": "NewSubscribeFilesListHandler",
+    "line": 253,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/clash/subscribe",
+    "access": "端点内订阅鉴权",
+    "handler": "NewSubscriptionEndpoint",
+    "line": 257,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/short-link",
+    "access": "已登录 UI 会话",
+    "handler": "NewShortLinkResetHandler",
+    "line": 260,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/user/custom-short-code",
+    "access": "已登录 UI 会话",
+    "handler": "NewUserCustomShortCodeSelfHandler",
+    "line": 261,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/speedtest/",
+    "access": "管理员 UI 会话",
+    "handler": "speedTestHandler",
+    "line": 267,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/speedtest/tester/ws",
+    "access": "端点内 tester 鉴权",
+    "handler": "speedTesterWS",
+    "line": 268,
+    "registration": "Handle"
+  },
+  {
+    "path": "/api/admin/temp-subscription",
+    "access": "管理员 UI 会话",
+    "handler": "NewTempSubscriptionHandler",
+    "line": 271,
+    "registration": "Handle"
+  },
+  {
+    "path": "/",
+    "access": "混合：SPA/短链/临时订阅",
+    "handler": "tempSubAccessHandler, shortLinkHandler, web.Handler",
+    "line": 286,
+    "registration": "HandleFunc"
+  }
+]

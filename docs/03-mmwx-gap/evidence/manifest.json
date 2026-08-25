@@ -1,0 +1,3368 @@
+[
+  {
+    "slug": "about",
+    "url": "https://miaomiaowux.com/docs/about",
+    "canonical": "https://miaomiaowux.com/docs/about",
+    "title": "关于妙妙屋X | 妙妙屋X 文档",
+    "description": "妙妙屋X 是妙妙屋的增强版，专注于远程服务器管理和 Xray 配置",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 50964,
+    "sha256_html": "b195ae8fcd199165d3b3029c02182d8a339df236671e4c4ab38825435213bf33",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "关于妙妙屋X"
+      },
+      {
+        "level": 2,
+        "text": "什么是妙妙屋X"
+      },
+      {
+        "level": 2,
+        "text": "架构概览"
+      },
+      {
+        "level": 2,
+        "text": "与妙妙屋的区别"
+      },
+      {
+        "level": 2,
+        "text": "下一步"
+      }
+    ]
+  },
+  {
+    "slug": "backup-restore",
+    "url": "https://miaomiaowux.com/docs/backup-restore",
+    "canonical": "https://miaomiaowux.com/docs/backup-restore",
+    "title": "备份与恢复 | 妙妙屋X 文档",
+    "description": "导出、校验并恢复主控数据",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 50864,
+    "sha256_html": "f76281b248ba855f80552722bc775c2225b228b2e6ef968125364c644b508bbf",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "备份与恢复"
+      },
+      {
+        "level": 2,
+        "text": "备份内容"
+      },
+      {
+        "level": 3,
+        "text": "数据库"
+      },
+      {
+        "level": 3,
+        "text": "订阅资源"
+      },
+      {
+        "level": 3,
+        "text": "证书"
+      },
+      {
+        "level": 2,
+        "text": "恢复步骤"
+      },
+      {
+        "level": 2,
+        "text": "PostgreSQL 备份"
+      },
+      {
+        "level": 2,
+        "text": "数据库启动恢复"
+      }
+    ]
+  },
+  {
+    "slug": "certificates",
+    "url": "https://miaomiaowux.com/docs/certificates",
+    "canonical": "https://miaomiaowux.com/docs/certificates",
+    "title": "证书管理 | 妙妙屋X 文档",
+    "description": "TLS 证书申请与自动续期",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 101119,
+    "sha256_html": "b300c9796b39b400b45b791e28cf656c8207814c9c5eefbdefbcbe430e7b9f7e",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "证书管理"
+      },
+      {
+        "level": 2,
+        "text": "在线演示:证书管理"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "支持的 DNS 提供商"
+      },
+      {
+        "level": 2,
+        "text": "申请证书"
+      },
+      {
+        "level": 2,
+        "text": "下载与自动部署"
+      },
+      {
+        "level": 2,
+        "text": "自动续期"
+      },
+      {
+        "level": 2,
+        "text": "证书存储"
+      },
+      {
+        "level": 2,
+        "text": "使用场景"
+      },
+      {
+        "level": 2,
+        "text": "Webhook 上传证书（Certimate 集成）"
+      },
+      {
+        "level": 3,
+        "text": "接口"
+      },
+      {
+        "level": 3,
+        "text": "请求字段"
+      },
+      {
+        "level": 3,
+        "text": "行为"
+      },
+      {
+        "level": 3,
+        "text": "Certimate 配置示例"
+      },
+      {
+        "level": 3,
+        "text": "curl 验证（PEM 直传）"
+      }
+    ]
+  },
+  {
+    "slug": "changelog",
+    "url": "https://miaomiaowux.com/docs/changelog",
+    "canonical": "https://miaomiaowux.com/docs/changelog",
+    "title": "更新日志 | 妙妙屋X 文档",
+    "description": "版本更新记录",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 48841,
+    "sha256_html": "5edd2e5d4b5d2d448f39298367e69591de8f5fd1c70d1b90f81969ade0021c04",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "更新日志"
+      },
+      {
+        "level": 4,
+        "text": "问题修复"
+      },
+      {
+        "level": 4,
+        "text": "问题修复"
+      },
+      {
+        "level": 4,
+        "text": "问题修复"
+      },
+      {
+        "level": 4,
+        "text": "问题修复"
+      },
+      {
+        "level": 4,
+        "text": "问题修复"
+      },
+      {
+        "level": 4,
+        "text": "问题修复"
+      },
+      {
+        "level": 4,
+        "text": "问题修复"
+      },
+      {
+        "level": 4,
+        "text": "问题修复"
+      },
+      {
+        "level": 4,
+        "text": "问题修复"
+      }
+    ]
+  },
+  {
+    "slug": "cloudflare-tunnel",
+    "url": "https://miaomiaowux.com/docs/cloudflare-tunnel",
+    "canonical": "https://miaomiaowux.com/docs/cloudflare-tunnel",
+    "title": "使用 Cloudflare Tunnel 发布主控 | 妙妙屋X 文档",
+    "description": "无需本地证书和入站端口，为主控与订阅域名提供 HTTPS",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 68615,
+    "sha256_html": "a7b8c260de971f055efe4ba4240e4fe4778dbba32016f6c220ebe31b1b247e17",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "使用 Cloudflare Tunnel 发布主控"
+      },
+      {
+        "level": 2,
+        "text": "1. 限制主控监听地址"
+      },
+      {
+        "level": 3,
+        "text": "裸机或 systemd 安装"
+      },
+      {
+        "level": 3,
+        "text": "Docker 安装"
+      },
+      {
+        "level": 2,
+        "text": "2. 创建 Tunnel"
+      },
+      {
+        "level": 2,
+        "text": "3. 添加发布路由"
+      },
+      {
+        "level": 2,
+        "text": "4. 使用本地配置文件（可选）"
+      },
+      {
+        "level": 2,
+        "text": "5. 更新妙妙屋X设置"
+      },
+      {
+        "level": 2,
+        "text": "6. 验证"
+      },
+      {
+        "level": 2,
+        "text": "安全与排障"
+      }
+    ]
+  },
+  {
+    "slug": "comparison",
+    "url": "https://miaomiaowux.com/docs/comparison",
+    "canonical": "https://miaomiaowux.com/docs/comparison",
+    "title": "与妙妙屋的区别 | 妙妙屋X 文档",
+    "description": "详细了解妙妙屋X与妙妙屋的共同点和差异",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 72775,
+    "sha256_html": "dd42929b3d06e80c976fcbe04dabe2d314ab67516294751d75ad65a2da3cb27c",
+    "pro_mentions": 2,
+    "headings": [
+      {
+        "level": 1,
+        "text": "与妙妙屋的区别"
+      },
+      {
+        "level": 2,
+        "text": "功能对比总览"
+      },
+      {
+        "level": 2,
+        "text": "流量管理"
+      },
+      {
+        "level": 3,
+        "text": "妙妙屋"
+      },
+      {
+        "level": 3,
+        "text": "妙妙屋X"
+      },
+      {
+        "level": 2,
+        "text": "节点管理"
+      },
+      {
+        "level": 3,
+        "text": "妙妙屋"
+      },
+      {
+        "level": 3,
+        "text": "妙妙屋X"
+      },
+      {
+        "level": 2,
+        "text": "用户管理"
+      },
+      {
+        "level": 3,
+        "text": "妙妙屋"
+      },
+      {
+        "level": 3,
+        "text": "妙妙屋X"
+      },
+      {
+        "level": 2,
+        "text": "服务器管理"
+      },
+      {
+        "level": 3,
+        "text": "妙妙屋"
+      },
+      {
+        "level": 3,
+        "text": "妙妙屋X"
+      },
+      {
+        "level": 2,
+        "text": "妙妙屋X 独有功能"
+      },
+      {
+        "level": 3,
+        "text": "内嵌 Xray (PRO)"
+      },
+      {
+        "level": 3,
+        "text": "路由出站"
+      },
+      {
+        "level": 3,
+        "text": "共享服务器"
+      },
+      {
+        "level": 3,
+        "text": "证书管理"
+      },
+      {
+        "level": 3,
+        "text": "套餐管理"
+      },
+      {
+        "level": 3,
+        "text": "Nginx 管理"
+      },
+      {
+        "level": 2,
+        "text": "共同功能"
+      },
+      {
+        "level": 2,
+        "text": "总结"
+      }
+    ]
+  },
+  {
+    "slug": "custom-rules",
+    "url": "https://miaomiaowux.com/docs/custom-rules",
+    "canonical": "https://miaomiaowux.com/docs/custom-rules",
+    "title": "自定义规则 | 妙妙屋X 文档",
+    "description": "订阅分流规则自定义",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 46553,
+    "sha256_html": "cb04df1dfd704968c0d569feaeb3cf6121b7f3c37f272186d0e33a60a4ff0062",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "自定义规则"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "规则类型"
+      },
+      {
+        "level": 2,
+        "text": "策略"
+      },
+      {
+        "level": 2,
+        "text": "配置示例"
+      }
+    ]
+  },
+  {
+    "slug": "embedded-xray",
+    "url": "https://miaomiaowux.com/docs/embedded-xray",
+    "canonical": "https://miaomiaowux.com/docs/embedded-xray",
+    "title": "内嵌 Xray | 妙妙屋X 文档",
+    "description": "将 Xray 内核直接运行在 Agent 进程内，解锁限速推送和实时流量控制（PRO）",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 99451,
+    "sha256_html": "b4a3bd8c5d105fa19b33992609684fb66c6073a309f2c0c23d12f30a7cfeba81",
+    "pro_mentions": 8,
+    "headings": [
+      {
+        "level": 1,
+        "text": "内嵌 Xray"
+      },
+      {
+        "level": 2,
+        "text": "在线演示:外置 vs 内嵌 Xray"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "内嵌 vs 外置模式"
+      },
+      {
+        "level": 2,
+        "text": "工作原理"
+      },
+      {
+        "level": 2,
+        "text": "核心能力"
+      },
+      {
+        "level": 3,
+        "text": "实时限速推送"
+      },
+      {
+        "level": 3,
+        "text": "XTLS Vision 限速"
+      },
+      {
+        "level": 3,
+        "text": "自动限速规则"
+      },
+      {
+        "level": 3,
+        "text": "在线用户与设备追踪"
+      },
+      {
+        "level": 3,
+        "text": "自定义调度器"
+      },
+      {
+        "level": 2,
+        "text": "启用内嵌模式"
+      },
+      {
+        "level": 3,
+        "text": "方式一：主控切换"
+      },
+      {
+        "level": 3,
+        "text": "方式二：Agent 配置文件"
+      },
+      {
+        "level": 2,
+        "text": "启动行为"
+      },
+      {
+        "level": 2,
+        "text": "流量统计"
+      },
+      {
+        "level": 2,
+        "text": "注意事项"
+      }
+    ]
+  },
+  {
+    "slug": "faq",
+    "url": "https://miaomiaowux.com/docs/faq",
+    "canonical": "https://miaomiaowux.com/docs/faq",
+    "title": "常见问题 | 妙妙屋X 文档",
+    "description": "按主题分组的常见问题清单。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 47411,
+    "sha256_html": "1196cf71b24cfc195cdcefd540867317e065f14ec0318d3756af35825882f976",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "常见问题"
+      },
+      {
+        "level": 3,
+        "text": "拼车教程"
+      },
+      {
+        "level": 3,
+        "text": "安装与部署"
+      },
+      {
+        "level": 3,
+        "text": "常见操作"
+      },
+      {
+        "level": 3,
+        "text": "服务器管理"
+      },
+      {
+        "level": 3,
+        "text": "协议与入站"
+      },
+      {
+        "level": 3,
+        "text": "订阅与客户端"
+      }
+    ]
+  },
+  {
+    "slug": "faq-carpool",
+    "url": "https://miaomiaowux.com/docs/faq-carpool",
+    "canonical": "https://miaomiaowux.com/docs/faq-carpool",
+    "title": "拼车教程 | 妙妙屋X 文档",
+    "description": "妙妙屋X 没有使用类似流量狗（端口区分）的流量区分方式，而是使用 xray 原生的「按入站 / 出站 + 用户」三维计量方式。这意味着同一台服务器上同一端口可以被多个用户共用，每个用户的流量按身份（client.email）单独累计，不需要给每个用户单独开一个端口。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 53080,
+    "sha256_html": "3a81e0f41597f340430c8e3ec86bec9d2efdd619031fda377f5fb834adecae4a",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "拼车教程"
+      },
+      {
+        "level": 3,
+        "text": "流量计量方式"
+      },
+      {
+        "level": 3,
+        "text": "拼车 4 步走"
+      },
+      {
+        "level": 4,
+        "text": "1. 服务管理：添加一台服务器"
+      },
+      {
+        "level": 4,
+        "text": "2. 节点管理：添加节点"
+      },
+      {
+        "level": 4,
+        "text": "3. 套餐管理：添加套餐 + 选节点"
+      },
+      {
+        "level": 4,
+        "text": "4. 用户管理：添加用户 + 绑定套餐"
+      },
+      {
+        "level": 3,
+        "text": "小工具"
+      },
+      {
+        "level": 4,
+        "text": "TG Bot & Mini App"
+      },
+      {
+        "level": 4,
+        "text": "OpenClaw & Hermes（MCP）"
+      }
+    ]
+  },
+  {
+    "slug": "faq-common-ops",
+    "url": "https://miaomiaowux.com/docs/faq-common-ops",
+    "canonical": "https://miaomiaowux.com/docs/faq-common-ops",
+    "title": "常见操作 | 妙妙屋X 文档",
+    "description": "日常操作中最常碰到的问题(订阅、节点、限额等)。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 49678,
+    "sha256_html": "72edc5e46d89d3dfac0222b24b6b1c01cab47d41b8393bccbfa6f0acd4ab73d2",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "常见操作"
+      },
+      {
+        "level": 3,
+        "text": "怎么添加入站 / 节点?"
+      },
+      {
+        "level": 3,
+        "text": "怎么指定节点出站(给节点配落地)?"
+      },
+      {
+        "level": 3,
+        "text": "怎么开车 / 拼车 给别人开账号?"
+      },
+      {
+        "level": 3,
+        "text": "我从妙妙屋(mmw)迁移过来,怎么看不到妙妙屋的原有功能?"
+      },
+      {
+        "level": 3,
+        "text": "管理员密码忘记了怎么办?"
+      }
+    ]
+  },
+  {
+    "slug": "faq-install-deploy",
+    "url": "https://miaomiaowux.com/docs/faq-install-deploy",
+    "canonical": "https://miaomiaowux.com/docs/faq-install-deploy",
+    "title": "安装与部署 | 妙妙屋X 文档",
+    "description": "安装、Agent 部署、与升级常见问答。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 44373,
+    "sha256_html": "b42eac9488ed02f43d82b17f884e76fb6a96ecfabec4682900fd1d8e4a2906bc",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "安装与部署"
+      },
+      {
+        "level": 3,
+        "text": "妙妙屋X 和妙妙屋有什么区别？"
+      },
+      {
+        "level": 3,
+        "text": "需要什么系统环境？"
+      },
+      {
+        "level": 3,
+        "text": "可以在同一台机器上运行主控和 Agent 吗？"
+      }
+    ]
+  },
+  {
+    "slug": "faq-node-management",
+    "url": "https://miaomiaowux.com/docs/faq-node-management",
+    "canonical": "https://miaomiaowux.com/docs/faq-node-management",
+    "title": "节点的创建与使用(入站与出站) | 妙妙屋X 文档",
+    "description": "妙妙屋X 节点管理页面的 5 个关键按钮及其作用,带交互气泡演示。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 48156,
+    "sha256_html": "0744df7bd2308cefea8040ddb14f124039d1996622b17cfd6a7b80eace32f854",
+    "pro_mentions": 3,
+    "headings": [
+      {
+        "level": 1,
+        "text": "节点的创建与使用(入站与出站)"
+      },
+      {
+        "level": 3,
+        "text": "快速理解"
+      },
+      {
+        "level": 4,
+        "text": "红框 — 添加节点(入站)"
+      },
+      {
+        "level": 4,
+        "text": "蓝框 — 行内「新增落地节点」"
+      },
+      {
+        "level": 4,
+        "text": "绿框 — 行内「查看节点路由」"
+      },
+      {
+        "level": 4,
+        "text": "黑框 — Tunnel 管理"
+      },
+      {
+        "level": 4,
+        "text": "黄框 — 路由出站管理(全局)"
+      }
+    ]
+  },
+  {
+    "slug": "faq-protocol-inbound",
+    "url": "https://miaomiaowux.com/docs/faq-protocol-inbound",
+    "canonical": "https://miaomiaowux.com/docs/faq-protocol-inbound",
+    "title": "协议与入站 | 妙妙屋X 文档",
+    "description": "协议选择、入站配置、证书等相关问答。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 44146,
+    "sha256_html": "39b3cf09b1708d300b6345b89595f76a7f5c58e7ed4803b0c11816694a7bbaa5",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "协议与入站"
+      },
+      {
+        "level": 3,
+        "text": "推荐使用什么协议？"
+      },
+      {
+        "level": 3,
+        "text": "REALITY 和 TLS 有什么区别？"
+      },
+      {
+        "level": 3,
+        "text": "为什么 Trojan 不支持 XTLS-Vision？"
+      }
+    ]
+  },
+  {
+    "slug": "faq-server-management",
+    "url": "https://miaomiaowux.com/docs/faq-server-management",
+    "canonical": "https://miaomiaowux.com/docs/faq-server-management",
+    "title": "服务器管理 | 妙妙屋X 文档",
+    "description": "远程服务器添加、Token、状态、连接相关问答。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 42888,
+    "sha256_html": "20a06020f20bac8c145226b892ea2d96edbd8da20ff8776396aed550648814f9",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "服务器管理"
+      },
+      {
+        "level": 3,
+        "text": "远程服务器连接不上怎么办？"
+      },
+      {
+        "level": 3,
+        "text": "WebSocket、HTTP、Pull 连接模式怎么选？"
+      }
+    ]
+  },
+  {
+    "slug": "faq-sub-client",
+    "url": "https://miaomiaowux.com/docs/faq-sub-client",
+    "canonical": "https://miaomiaowux.com/docs/faq-sub-client",
+    "title": "订阅与客户端 | 妙妙屋X 文档",
+    "description": "订阅链接、客户端兼容、格式转换相关问答。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 42604,
+    "sha256_html": "e26d7e94fee7eb8b2214a436473eaa14a8943558de35d3418ef4fa4d02f0c20f",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "订阅与客户端"
+      },
+      {
+        "level": 3,
+        "text": "订阅链接打不开或节点为空？"
+      },
+      {
+        "level": 3,
+        "text": "mihomo 中 Trojan 节点连不上？"
+      }
+    ]
+  },
+  {
+    "slug": "features",
+    "url": "https://miaomiaowux.com/docs/features",
+    "canonical": "https://miaomiaowux.com/docs/features",
+    "title": "核心特性 | 妙妙屋X 文档",
+    "description": "妙妙屋X 的主要功能和特性概览",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 59581,
+    "sha256_html": "fe6b9f0d483bb8253087953c719d5f75be19591208d0314340dceaedfc8057de",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "核心特性"
+      },
+      {
+        "level": 3,
+        "text": "远程服务器管理"
+      },
+      {
+        "level": 3,
+        "text": "Xray 服务管理"
+      },
+      {
+        "level": 3,
+        "text": "Xray 入站管理"
+      },
+      {
+        "level": 3,
+        "text": "协议矩阵"
+      },
+      {
+        "level": 3,
+        "text": "证书管理"
+      },
+      {
+        "level": 3,
+        "text": "套餐管理"
+      },
+      {
+        "level": 3,
+        "text": "用户管理"
+      },
+      {
+        "level": 3,
+        "text": "订阅生成"
+      },
+      {
+        "level": 3,
+        "text": "模板系统"
+      },
+      {
+        "level": 3,
+        "text": "自定义规则"
+      },
+      {
+        "level": 3,
+        "text": "Nginx 管理"
+      },
+      {
+        "level": 3,
+        "text": "Agent 升级管理"
+      },
+      {
+        "level": 3,
+        "text": "系统监控"
+      },
+      {
+        "level": 3,
+        "text": "域名延迟探测"
+      },
+      {
+        "level": 3,
+        "text": "系统设置"
+      }
+    ]
+  },
+  {
+    "slug": "generator",
+    "url": "https://miaomiaowux.com/docs/generator",
+    "canonical": "https://miaomiaowux.com/docs/generator",
+    "title": "生成订阅 | 妙妙屋X 文档",
+    "description": "为用户一键生成订阅链接,自动转换为 Clash / Mihomo / Shadowrocket / Surge / Stash / Surfboard / V2Ray / SingBox / Quantumult X 等 12+ 客户端格式;支持模板叠加和自定义规则。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 46795,
+    "sha256_html": "52e1ce88bc5d933600ce69fe26b24fb2220aee17dbd08bb8c6e4a73e6c85928d",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "生成订阅"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "支持的客户端格式"
+      },
+      {
+        "level": 2,
+        "text": "订阅链接"
+      },
+      {
+        "level": 2,
+        "text": "转换流程"
+      }
+    ]
+  },
+  {
+    "slug": "index",
+    "url": "https://miaomiaowux.com/docs",
+    "canonical": "https://miaomiaowux.com/docs",
+    "title": "欢迎使用妙妙屋X文档 | 妙妙屋X 文档",
+    "description": "妙妙屋X 是妙妙屋的增强版，支持远程服务器管理、Xray 入站/出站配置、证书管理等高级功能，采用 Master-Agent 架构实现多服务器统一管理。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 56950,
+    "sha256_html": "eb17a1061f40aa7439f9f150e92034083d958a583c4ae46bb36e1d400e6b335d",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "欢迎使用妙妙屋X文档"
+      },
+      {
+        "level": 2,
+        "text": "核心功能"
+      },
+      {
+        "level": 3,
+        "text": "远程服务器"
+      },
+      {
+        "level": 3,
+        "text": "Xray 入站管理"
+      },
+      {
+        "level": 3,
+        "text": "协议参考"
+      },
+      {
+        "level": 3,
+        "text": "证书管理"
+      },
+      {
+        "level": 3,
+        "text": "用户与套餐"
+      },
+      {
+        "level": 3,
+        "text": "安装部署"
+      },
+      {
+        "level": 2,
+        "text": "与妙妙屋的区别"
+      },
+      {
+        "level": 3,
+        "text": "远程服务器管理"
+      },
+      {
+        "level": 3,
+        "text": "Xray 完整管理"
+      },
+      {
+        "level": 3,
+        "text": "证书管理"
+      },
+      {
+        "level": 3,
+        "text": "套餐管理"
+      },
+      {
+        "level": 2,
+        "text": "快速导航"
+      }
+    ]
+  },
+  {
+    "slug": "install-agent",
+    "url": "https://miaomiaowux.com/docs/install-agent",
+    "canonical": "https://miaomiaowux.com/docs/install-agent",
+    "title": "Agent 部署 | 妙妙屋X 文档",
+    "description": "通过一键命令在远程服务器上部署 MMWX Agent",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 98313,
+    "sha256_html": "315ba19b55c5c01907067d22235fec48a7c48fc4add42083a6091c4df04a4de9",
+    "pro_mentions": 1,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Agent 部署"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "Xray 模式选择"
+      },
+      {
+        "level": 2,
+        "text": "一键安装（推荐）"
+      },
+      {
+        "level": 3,
+        "text": "步骤 1：在主控端添加服务器"
+      },
+      {
+        "level": 3,
+        "text": "在线演示:添加服务器"
+      },
+      {
+        "level": 3,
+        "text": "在线演示:添加服务器"
+      },
+      {
+        "level": 3,
+        "text": "步骤 2：复制一键安装命令"
+      },
+      {
+        "level": 4,
+        "text": "安装脚本参数"
+      },
+      {
+        "level": 3,
+        "text": "步骤 3：在远程服务器上执行"
+      },
+      {
+        "level": 2,
+        "text": "Docker 部署"
+      },
+      {
+        "level": 3,
+        "text": "docker run"
+      },
+      {
+        "level": 3,
+        "text": "Docker Compose"
+      },
+      {
+        "level": 3,
+        "text": "强制约束 / 常见问题"
+      },
+      {
+        "level": 2,
+        "text": "自动安装 Xray"
+      },
+      {
+        "level": 2,
+        "text": "生成的配置文件"
+      },
+      {
+        "level": 3,
+        "text": "/etc/mmw-agent/config.yaml"
+      },
+      {
+        "level": 2,
+        "text": "生成的 systemd 服务"
+      },
+      {
+        "level": 3,
+        "text": "/etc/systemd/system/mmw-agent.service"
+      },
+      {
+        "level": 2,
+        "text": "连接模式"
+      },
+      {
+        "level": 2,
+        "text": "常用运维命令"
+      },
+      {
+        "level": 2,
+        "text": "重新安装"
+      },
+      {
+        "level": 2,
+        "text": "支持的架构"
+      }
+    ]
+  },
+  {
+    "slug": "install-direct",
+    "url": "https://miaomiaowux.com/docs/install-direct",
+    "canonical": "https://miaomiaowux.com/docs/install-direct",
+    "title": "直接安装 | 妙妙屋X 文档",
+    "description": "通过二进制文件直接部署妙妙屋X",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 52926,
+    "sha256_html": "7637a9c5abf5e08f1f24b1625f1b16c9c39cbffd0fbd972b46bfe318ffdb666f",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "直接安装"
+      },
+      {
+        "level": 2,
+        "text": "一键安装(推荐)"
+      },
+      {
+        "level": 2,
+        "text": "下载"
+      },
+      {
+        "level": 2,
+        "text": "配置"
+      },
+      {
+        "level": 2,
+        "text": "Systemd 服务"
+      }
+    ]
+  },
+  {
+    "slug": "install-docker",
+    "url": "https://miaomiaowux.com/docs/install-docker",
+    "canonical": "https://miaomiaowux.com/docs/install-docker",
+    "title": "Docker 安装 | 妙妙屋X 文档",
+    "description": "使用 Docker 快速部署妙妙屋X",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 54905,
+    "sha256_html": "02348fdf60c391ac5c7e231d7a9db287f049ca3e97fa7f56a7c39ae95c4738cd",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Docker 安装"
+      },
+      {
+        "level": 2,
+        "text": "快速部署"
+      },
+      {
+        "level": 2,
+        "text": "在容器中开启 HTTPS"
+      },
+      {
+        "level": 2,
+        "text": "Docker Compose"
+      },
+      {
+        "level": 2,
+        "text": "使用 PostgreSQL"
+      },
+      {
+        "level": 2,
+        "text": "数据持久化"
+      }
+    ]
+  },
+  {
+    "slug": "install-external-probe",
+    "url": "https://miaomiaowux.com/docs/install-external-probe",
+    "canonical": "https://miaomiaowux.com/docs/install-external-probe",
+    "title": "外置探针部署 | 妙妙屋X 文档",
+    "description": "使用 Cloudflare Workers 部署独立的妙妙屋X服务器探针。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 53065,
+    "sha256_html": "8f31f98c2516754e9977303a0e9402daf37493bcb7e8a87be0c3239d3b6662c0",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "外置探针部署"
+      },
+      {
+        "level": 2,
+        "text": "部署方式"
+      },
+      {
+        "level": 2,
+        "text": "部署前准备"
+      },
+      {
+        "level": 2,
+        "text": "1. 打开一键部署页面"
+      },
+      {
+        "level": 2,
+        "text": "2. 配置 Cloudflare 项目"
+      },
+      {
+        "level": 2,
+        "text": "3. 验证并绑定域名"
+      },
+      {
+        "level": 2,
+        "text": "4. 启用 fork 自动更新"
+      },
+      {
+        "level": 2,
+        "text": "常见问题"
+      }
+    ]
+  },
+  {
+    "slug": "mcp",
+    "url": "https://miaomiaowux.com/docs/mcp",
+    "canonical": "https://miaomiaowux.com/docs/mcp",
+    "title": "接入 AI Agent(MCP) | 妙妙屋X 文档",
+    "description": "妙妙屋X 内置 MCP 服务,让 OpenClaw / Hermes 等 AI Agent 用自然语言运维你的主控",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 58629,
+    "sha256_html": "eae99236654c231564dbfbb452cd338ba7f47bd379a519535ba76e8b16431d9f",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "接入 AI Agent(MCP)"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "第一步:生成 API 令牌"
+      },
+      {
+        "level": 2,
+        "text": "第二步:在 AI Agent 里配置"
+      },
+      {
+        "level": 3,
+        "text": "OpenClaw(openclaw.json)"
+      },
+      {
+        "level": 3,
+        "text": "Hermes Agent(~/.hermes/config.yaml,顶层加 mcp_servers)"
+      },
+      {
+        "level": 2,
+        "text": "工具一览"
+      },
+      {
+        "level": 2,
+        "text": "配套技能包(Skills)"
+      },
+      {
+        "level": 2,
+        "text": "安全建议"
+      }
+    ]
+  },
+  {
+    "slug": "node-ratelimit",
+    "url": "https://miaomiaowux.com/docs/node-ratelimit",
+    "canonical": "https://miaomiaowux.com/docs/node-ratelimit",
+    "title": "节点限速 | 妙妙屋X 文档",
+    "description": "通过套餐为用户设置下载速度和设备数量限制（PRO）",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 80098,
+    "sha256_html": "592d182a1986433e1a9dfa17d671b91058dcb7380d7c76e62a9f4f317abd044c",
+    "pro_mentions": 5,
+    "headings": [
+      {
+        "level": 1,
+        "text": "节点限速"
+      },
+      {
+        "level": 2,
+        "text": "在线演示:节点限速(套餐 + 用户两层)"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "工作原理"
+      },
+      {
+        "level": 2,
+        "text": "限速参数"
+      },
+      {
+        "level": 3,
+        "text": "下载限速 (Mbps)"
+      },
+      {
+        "level": 3,
+        "text": "连接数限制"
+      },
+      {
+        "level": 2,
+        "text": "连接数限制怎么理解"
+      },
+      {
+        "level": 2,
+        "text": "不同场景推荐的连接数"
+      },
+      {
+        "level": 2,
+        "text": "用户级覆盖"
+      },
+      {
+        "level": 2,
+        "text": "自动推送时机"
+      },
+      {
+        "level": 2,
+        "text": "配置步骤"
+      },
+      {
+        "level": 2,
+        "text": "套餐完整参数"
+      },
+      {
+        "level": 2,
+        "text": "注意事项"
+      }
+    ]
+  },
+  {
+    "slug": "node-speedtest",
+    "url": "https://miaomiaowux.com/docs/node-speedtest",
+    "canonical": "https://miaomiaowux.com/docs/node-speedtest",
+    "title": "节点测速 | 妙妙屋X 文档",
+    "description": "用 mihomo 内核对节点测下行速度与真连接延迟,支持主控本机与家用测速端、单/多线程切换",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 82330,
+    "sha256_html": "7977015c271bd686159600e690155e6c9f87b296ecb8d61c2b5080e71a34006a",
+    "pro_mentions": 2,
+    "headings": [
+      {
+        "level": 1,
+        "text": "节点测速"
+      },
+      {
+        "level": 2,
+        "text": "在线演示:节点测速"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 3,
+        "text": "🖥️ 主控本机"
+      },
+      {
+        "level": 3,
+        "text": "🏠 家用测速端"
+      },
+      {
+        "level": 2,
+        "text": "两种测试类型"
+      },
+      {
+        "level": 3,
+        "text": "⚡ 测速(下行 + 延迟)"
+      },
+      {
+        "level": 3,
+        "text": "🔌 真连接延迟"
+      },
+      {
+        "level": 2,
+        "text": "使用步骤"
+      },
+      {
+        "level": 3,
+        "text": "发起测速"
+      },
+      {
+        "level": 2,
+        "text": "配置家用测速端"
+      },
+      {
+        "level": 3,
+        "text": "步骤"
+      },
+      {
+        "level": 3,
+        "text": "测速端支持的能力"
+      },
+      {
+        "level": 2,
+        "text": "典型场景对照"
+      },
+      {
+        "level": 2,
+        "text": "注意事项"
+      }
+    ]
+  },
+  {
+    "slug": "nodes",
+    "url": "https://miaomiaowux.com/docs/nodes",
+    "canonical": "https://miaomiaowux.com/docs/nodes",
+    "title": "节点管理 | 妙妙屋X 文档",
+    "description": "管理所有代理节点 — 支持三种来源(Xray 入站自动同步 / 远程服务器同步 / 外部订阅导入),节点启停 / 重命名 / 排序 / 分组,以及隧道转发与可视化在线状态指示器。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 70203,
+    "sha256_html": "3e605fa3dbaaf9492aec5581c73201fcdade85453559ed374990fc3af168b94b",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "节点管理"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "节点来源"
+      },
+      {
+        "level": 2,
+        "text": "自动同步"
+      },
+      {
+        "level": 2,
+        "text": "节点操作"
+      },
+      {
+        "level": 2,
+        "text": "端口转发"
+      },
+      {
+        "level": 3,
+        "text": "隧道配置"
+      },
+      {
+        "level": 4,
+        "text": "链式隧道"
+      },
+      {
+        "level": 4,
+        "text": "端口转发"
+      },
+      {
+        "level": 3,
+        "text": "中转配置"
+      },
+      {
+        "level": 2,
+        "text": "URI 管理"
+      },
+      {
+        "level": 2,
+        "text": "节点流量与倍率"
+      },
+      {
+        "level": 2,
+        "text": "排序模式"
+      },
+      {
+        "level": 2,
+        "text": "Tunnel(任意门转发)管理"
+      },
+      {
+        "level": 3,
+        "text": "添加 Tunnel(两种模式)"
+      },
+      {
+        "level": 3,
+        "text": "① 转发已有节点(推荐)"
+      },
+      {
+        "level": 3,
+        "text": "② 端口转发(转发到固定目标)"
+      },
+      {
+        "level": 3,
+        "text": "端口转发复用模式(按域名 / IP 分流)"
+      },
+      {
+        "level": 3,
+        "text": "切换节点的服务器地址(中转)"
+      },
+      {
+        "level": 3,
+        "text": "「被 tunnel 转发」标识"
+      },
+      {
+        "level": 2,
+        "text": "注意事项"
+      }
+    ]
+  },
+  {
+    "slug": "packages",
+    "url": "https://miaomiaowux.com/docs/packages",
+    "canonical": "https://miaomiaowux.com/docs/packages",
+    "title": "套餐管理 | 妙妙屋X 文档",
+    "description": "用户套餐与流量配额",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 88009,
+    "sha256_html": "e434f5f06e30debd057e1fc2690880ed5b5b7e3a6744fdc87961ae7319bd1826",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "套餐管理"
+      },
+      {
+        "level": 2,
+        "text": "在线演示:套餐管理"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "套餐属性"
+      },
+      {
+        "level": 2,
+        "text": "创建套餐"
+      },
+      {
+        "level": 2,
+        "text": "限速与设备数"
+      },
+      {
+        "level": 3,
+        "text": "限速"
+      },
+      {
+        "level": 3,
+        "text": "自动限速 / 解除"
+      },
+      {
+        "level": 2,
+        "text": "流量统计与计费倍率"
+      }
+    ]
+  },
+  {
+    "slug": "probe-api",
+    "url": "https://miaomiaowux.com/docs/probe-api",
+    "canonical": "https://miaomiaowux.com/docs/probe-api",
+    "title": "探针 API 字段说明 | 妙妙屋X 文档",
+    "description": "内置与独立探针的数据接口、字段单位、返回条件和历史序列查询说明。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 53000,
+    "sha256_html": "524b824102421a8cfde9eb055c456f396d0c78cd6c3e61f7687582a7db914733",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "探针 API 字段说明"
+      },
+      {
+        "level": 2,
+        "text": "访问与鉴权"
+      },
+      {
+        "level": 2,
+        "text": "服务器快照字段"
+      },
+      {
+        "level": 2,
+        "text": "servers[] 字段"
+      },
+      {
+        "level": 2,
+        "text": "嵌套结构"
+      },
+      {
+        "level": 2,
+        "text": "历史序列"
+      },
+      {
+        "level": 2,
+        "text": "字段缺省规则"
+      }
+    ]
+  },
+  {
+    "slug": "protocol-anytls",
+    "url": "https://miaomiaowux.com/docs/protocol-anytls",
+    "canonical": "https://miaomiaowux.com/docs/protocol-anytls",
+    "title": "AnyTLS | 妙妙屋X 文档",
+    "description": "AnyTLS 协议配置详解",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 58991,
+    "sha256_html": "898a0281c9594cf32871bc2b218d03c045c5a956bff3e940d0eea132aa4d8bc7",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "AnyTLS"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "支持的组合"
+      },
+      {
+        "level": 2,
+        "text": "客户端兼容性"
+      },
+      {
+        "level": 2,
+        "text": "Padding Scheme（流量整形）"
+      },
+      {
+        "level": 2,
+        "text": "注意事项"
+      },
+      {
+        "level": 2,
+        "text": "配置示例"
+      },
+      {
+        "level": 3,
+        "text": "AnyTLS + TCP + TLS"
+      }
+    ]
+  },
+  {
+    "slug": "protocol-hysteria2",
+    "url": "https://miaomiaowux.com/docs/protocol-hysteria2",
+    "canonical": "https://miaomiaowux.com/docs/protocol-hysteria2",
+    "title": "Hysteria2 | 妙妙屋X 文档",
+    "description": "Hysteria2 协议配置详解",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 49098,
+    "sha256_html": "6caed9755c46c1cfb12b68cf4ffa9e95e654215c7a8a3ffc440cb2c3be3773cd",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Hysteria2"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "前置要求"
+      },
+      {
+        "level": 2,
+        "text": "Xray 配置说明"
+      },
+      {
+        "level": 2,
+        "text": "配置示例"
+      }
+    ]
+  },
+  {
+    "slug": "protocol-matrix",
+    "url": "https://miaomiaowux.com/docs/protocol-matrix",
+    "canonical": "https://miaomiaowux.com/docs/protocol-matrix",
+    "title": "协议矩阵 | 妙妙屋X 文档",
+    "description": "妙妙屋X 支持的所有协议×传输×安全组合",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 45886,
+    "sha256_html": "14da207addf8233d9669262f6fcbc8a633f40f05792ce9ff15b76a77b3eb31f6",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "协议矩阵"
+      },
+      {
+        "level": 2,
+        "text": "完整矩阵"
+      },
+      {
+        "level": 2,
+        "text": "已废弃的组合"
+      },
+      {
+        "level": 2,
+        "text": "mihomo 兼容性说明"
+      }
+    ]
+  },
+  {
+    "slug": "protocol-shadowsocks",
+    "url": "https://miaomiaowux.com/docs/protocol-shadowsocks",
+    "canonical": "https://miaomiaowux.com/docs/protocol-shadowsocks",
+    "title": "Shadowsocks | 妙妙屋X 文档",
+    "description": "Shadowsocks 协议配置详解",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 48482,
+    "sha256_html": "b956d6dbcd260a2bc4cac86dd417c1c0d6c5d42e41d670e673b919d6471bb0ba",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Shadowsocks"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "加密方式"
+      },
+      {
+        "level": 2,
+        "text": "SS2022 密码格式"
+      },
+      {
+        "level": 2,
+        "text": "配置示例"
+      },
+      {
+        "level": 3,
+        "text": "SS2022"
+      }
+    ]
+  },
+  {
+    "slug": "protocol-snell",
+    "url": "https://miaomiaowux.com/docs/protocol-snell",
+    "canonical": "https://miaomiaowux.com/docs/protocol-snell",
+    "title": "Snell | 妙妙屋X 文档",
+    "description": "Snell 协议配置详解",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 61963,
+    "sha256_html": "82a3c7bf91094a0a04dd5502a7ccdf580c1fd4d69ef161710296e669d764191e",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Snell"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "版本对比"
+      },
+      {
+        "level": 2,
+        "text": "添加节点(向导)"
+      },
+      {
+        "level": 3,
+        "text": "简易模式"
+      },
+      {
+        "level": 3,
+        "text": "专家模式"
+      },
+      {
+        "level": 2,
+        "text": "客户端兼容性"
+      },
+      {
+        "level": 2,
+        "text": "注意事项"
+      },
+      {
+        "level": 2,
+        "text": "配置示例"
+      },
+      {
+        "level": 3,
+        "text": "Snell v4 / v5"
+      },
+      {
+        "level": 3,
+        "text": "Snell v6"
+      }
+    ]
+  },
+  {
+    "slug": "protocol-trojan",
+    "url": "https://miaomiaowux.com/docs/protocol-trojan",
+    "canonical": "https://miaomiaowux.com/docs/protocol-trojan",
+    "title": "Trojan | 妙妙屋X 文档",
+    "description": "Trojan 协议配置详解",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 49933,
+    "sha256_html": "d4bd94896e950904bec51482955de42f4c4becaa121195a4d23e403c18941a4c",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Trojan"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "支持的组合"
+      },
+      {
+        "level": 2,
+        "text": "注意事项"
+      },
+      {
+        "level": 2,
+        "text": "配置示例"
+      },
+      {
+        "level": 3,
+        "text": "Trojan + TCP + REALITY"
+      }
+    ]
+  },
+  {
+    "slug": "protocol-vless",
+    "url": "https://miaomiaowux.com/docs/protocol-vless",
+    "canonical": "https://miaomiaowux.com/docs/protocol-vless",
+    "title": "VLESS | 妙妙屋X 文档",
+    "description": "VLESS 协议配置详解",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 50723,
+    "sha256_html": "cb141b22970d72df71801d1459c1573700c8eda207e80ed0cada1066e1014aee",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "VLESS"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "支持的组合"
+      },
+      {
+        "level": 2,
+        "text": "XTLS-Vision"
+      },
+      {
+        "level": 2,
+        "text": "配置示例"
+      },
+      {
+        "level": 3,
+        "text": "VLESS + TCP + REALITY + Vision（推荐）"
+      }
+    ]
+  },
+  {
+    "slug": "protocol-vmess",
+    "url": "https://miaomiaowux.com/docs/protocol-vmess",
+    "canonical": "https://miaomiaowux.com/docs/protocol-vmess",
+    "title": "VMess | 妙妙屋X 文档",
+    "description": "VMess 协议配置详解",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 48449,
+    "sha256_html": "47e351db9b1d6920fb15caf3fe74dfeff00620d1a03afe1d57a5c95a70f50f80",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "VMess"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "支持的组合"
+      },
+      {
+        "level": 2,
+        "text": "配置示例"
+      },
+      {
+        "level": 3,
+        "text": "VMess + WS + TLS"
+      }
+    ]
+  },
+  {
+    "slug": "quick-start",
+    "url": "https://miaomiaowux.com/docs/quick-start",
+    "canonical": "https://miaomiaowux.com/docs/quick-start",
+    "title": "快速开始 | 妙妙屋X 文档",
+    "description": "快速部署妙妙屋X并完成基本配置",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 50196,
+    "sha256_html": "7c3ce192751a6d3d8fce0b17e6079e5ae68405d4b9e87ea3a7b8dad474d39ea6",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "快速开始"
+      },
+      {
+        "level": 2,
+        "text": "1 部署主控"
+      },
+      {
+        "level": 2,
+        "text": "2 添加远程服务器"
+      },
+      {
+        "level": 2,
+        "text": "3 安装 Xray"
+      },
+      {
+        "level": 2,
+        "text": "4 创建入站"
+      },
+      {
+        "level": 2,
+        "text": "5 同步节点"
+      },
+      {
+        "level": 2,
+        "text": "6 生成订阅"
+      }
+    ]
+  },
+  {
+    "slug": "remote-servers",
+    "url": "https://miaomiaowux.com/docs/remote-servers",
+    "canonical": "https://miaomiaowux.com/docs/remote-servers",
+    "title": "远程服务器 | 妙妙屋X 文档",
+    "description": "添加和管理远程服务器，Master-Agent 架构说明",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 64354,
+    "sha256_html": "abb1cabf82e38e40872ab3368cc02336d300755cb3e720297a6c18a20db0bf04",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "远程服务器"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "添加服务器"
+      },
+      {
+        "level": 2,
+        "text": "连接模式"
+      },
+      {
+        "level": 3,
+        "text": "WebSocket（推荐）"
+      },
+      {
+        "level": 3,
+        "text": "HTTP"
+      },
+      {
+        "level": 3,
+        "text": "Pull"
+      },
+      {
+        "level": 3,
+        "text": "Auto"
+      },
+      {
+        "level": 2,
+        "text": "Token 管理"
+      },
+      {
+        "level": 2,
+        "text": "服务器状态"
+      },
+      {
+        "level": 2,
+        "text": "服务器流量统计维度"
+      },
+      {
+        "level": 3,
+        "text": "系统网卡流量"
+      },
+      {
+        "level": 3,
+        "text": "Xray 协议流量"
+      },
+      {
+        "level": 2,
+        "text": "批量升级 Agent"
+      },
+      {
+        "level": 2,
+        "text": "分享服务器给其他妙妙屋X"
+      },
+      {
+        "level": 3,
+        "text": "分享方（拥有者）"
+      },
+      {
+        "level": 3,
+        "text": "接收方"
+      }
+    ]
+  },
+  {
+    "slug": "routed-outbound",
+    "url": "https://miaomiaowux.com/docs/routed-outbound",
+    "canonical": "https://miaomiaowux.com/docs/routed-outbound",
+    "title": "路由出站 | 妙妙屋X 文档",
+    "description": "用户级路由出站：在同一个入站上实现\"不同用户走不同出口\"的精细化分流",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 145139,
+    "sha256_html": "dac26f124234298fc246338ba3fe690929b8bfb77759d888929b855b4078cc0f",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "路由出站"
+      },
+      {
+        "level": 2,
+        "text": "在线演示:节点管理 + 路由出站"
+      },
+      {
+        "level": 2,
+        "text": "出站的两种配置方式"
+      },
+      {
+        "level": 2,
+        "text": "整个节点（节点级）"
+      },
+      {
+        "level": 2,
+        "text": "路由出站解决了什么问题？"
+      },
+      {
+        "level": 2,
+        "text": "路由出站的做法"
+      },
+      {
+        "level": 3,
+        "text": "具体步骤"
+      },
+      {
+        "level": 3,
+        "text": "生成的 routing 规则示例"
+      },
+      {
+        "level": 2,
+        "text": "普通用户视角（按用户私有路由出站）"
+      },
+      {
+        "level": 3,
+        "text": "开关与配额"
+      },
+      {
+        "level": 3,
+        "text": "创建步骤"
+      },
+      {
+        "level": 3,
+        "text": "删除自己的路由出站"
+      },
+      {
+        "level": 3,
+        "text": "暂停 / 恢复"
+      },
+      {
+        "level": 2,
+        "text": "进阶：一中转多落地的流量拼车"
+      },
+      {
+        "level": 3,
+        "text": "场景"
+      },
+      {
+        "level": 3,
+        "text": "效果"
+      },
+      {
+        "level": 2,
+        "text": "底层实现要点"
+      },
+      {
+        "level": 3,
+        "text": "创建路由出站时"
+      },
+      {
+        "level": 3,
+        "text": "套餐分配用户到该子节点时"
+      },
+      {
+        "level": 3,
+        "text": "订阅生成时"
+      },
+      {
+        "level": 3,
+        "text": "流量统计与 email 反查"
+      },
+      {
+        "level": 2,
+        "text": "对比：节点级 vs 用户级"
+      },
+      {
+        "level": 2,
+        "text": "常见问题"
+      },
+      {
+        "level": 3,
+        "text": "路由出站子节点能否删除？"
+      },
+      {
+        "level": 3,
+        "text": "同一个父节点能创建几条路由出站？"
+      },
+      {
+        "level": 3,
+        "text": "用户同时分配到多个路由出站子节点会怎样？"
+      },
+      {
+        "level": 3,
+        "text": "普通用户能不能自己加 routing 规则？"
+      },
+      {
+        "level": 3,
+        "text": "开关关掉后，已有的用户路由出站会怎样？"
+      },
+      {
+        "level": 3,
+        "text": "数量限制为什么没有“不限”选项？"
+      },
+      {
+        "level": 3,
+        "text": "为什么要限制“每日操作次数”？"
+      },
+      {
+        "level": 3,
+        "text": "每日次数是怎么计数的？"
+      },
+      {
+        "level": 3,
+        "text": "admin 创建路径会受这两个限制吗？"
+      }
+    ]
+  },
+  {
+    "slug": "share-server",
+    "url": "https://miaomiaowux.com/docs/share-server",
+    "canonical": "https://miaomiaowux.com/docs/share-server",
+    "title": "分享服务器 | 妙妙屋X 文档",
+    "description": "跨主控共享服务器的联邦功能（PRO）",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 139033,
+    "sha256_html": "991c70d8cbf91fb1106e9e4107bc7b2b7a970f2b65cc4fae95415e663bd49733",
+    "pro_mentions": 3,
+    "headings": [
+      {
+        "level": 1,
+        "text": "分享服务器"
+      },
+      {
+        "level": 2,
+        "text": "在线演示:分享服务器(左:拥有方 / 右:消费方)"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "架构说明"
+      },
+      {
+        "level": 2,
+        "text": "拥有方：分享服务器"
+      },
+      {
+        "level": 3,
+        "text": "操作步骤"
+      },
+      {
+        "level": 3,
+        "text": "令牌管理"
+      },
+      {
+        "level": 2,
+        "text": "消费方：接入分享服务器"
+      },
+      {
+        "level": 3,
+        "text": "接入步骤"
+      },
+      {
+        "level": 3,
+        "text": "接入参数"
+      },
+      {
+        "level": 2,
+        "text": "消费方权限与限制"
+      },
+      {
+        "level": 3,
+        "text": "可以做的"
+      },
+      {
+        "level": 3,
+        "text": "不能做的"
+      },
+      {
+        "level": 2,
+        "text": "安全机制"
+      },
+      {
+        "level": 2,
+        "text": "典型使用场景"
+      },
+      {
+        "level": 4,
+        "text": "多站长合租服务器"
+      },
+      {
+        "level": 4,
+        "text": "服务器资源出租"
+      },
+      {
+        "level": 4,
+        "text": "分布式部署管理"
+      },
+      {
+        "level": 2,
+        "text": "注意事项"
+      }
+    ]
+  },
+  {
+    "slug": "subscribe-files",
+    "url": "https://miaomiaowux.com/docs/subscribe-files",
+    "canonical": "https://miaomiaowux.com/docs/subscribe-files",
+    "title": "订阅文件 | 妙妙屋X 文档",
+    "description": "导入第三方订阅作为外部节点来源:支持 Clash / V2Ray / Shadowsocks / Trojan / Hysteria 等格式,按定时策略自动更新,节点可与自家节点合并到同一个套餐订阅中。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 48786,
+    "sha256_html": "a9318060ec95cf0f3bf4c7db76661057e8aa5ff8244546fae4af58f01471a1d0",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "订阅文件"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "支持的订阅格式"
+      },
+      {
+        "level": 2,
+        "text": "添加订阅"
+      },
+      {
+        "level": 2,
+        "text": "自动更新"
+      },
+      {
+        "level": 2,
+        "text": "流量列"
+      },
+      {
+        "level": 2,
+        "text": "注意事项"
+      }
+    ]
+  },
+  {
+    "slug": "system-requirements",
+    "url": "https://miaomiaowux.com/docs/system-requirements",
+    "canonical": "https://miaomiaowux.com/docs/system-requirements",
+    "title": "系统要求 | 妙妙屋X 文档",
+    "description": "部署妙妙屋X的系统要求和端口说明",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 44303,
+    "sha256_html": "b77728c29eb708f8a2d4f8039b69687e746bbc92cca1a0c61dabe0b51735fc50",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "系统要求"
+      },
+      {
+        "level": 2,
+        "text": "主控端要求"
+      },
+      {
+        "level": 2,
+        "text": "Agent 端要求"
+      },
+      {
+        "level": 2,
+        "text": "防火墙端口"
+      }
+    ]
+  },
+  {
+    "slug": "system-settings",
+    "url": "https://miaomiaowux.com/docs/system-settings",
+    "canonical": "https://miaomiaowux.com/docs/system-settings",
+    "title": "系统设置 | 妙妙屋X 文档",
+    "description": "妙妙屋X 系统设置的每个配置项详解",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 186186,
+    "sha256_html": "95dd1dcd698fddab7459320d345ffee3565eeb394e1c839d9d833e3aa200beae",
+    "pro_mentions": 6,
+    "headings": [
+      {
+        "level": 1,
+        "text": "系统设置"
+      },
+      {
+        "level": 2,
+        "text": "在线演示:系统设置"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "当前设置页功能总览"
+      },
+      {
+        "level": 2,
+        "text": "外部订阅同步设置"
+      },
+      {
+        "level": 3,
+        "text": "同步外部订阅流量信息"
+      },
+      {
+        "level": 3,
+        "text": "节点名称追加订阅信息"
+      },
+      {
+        "level": 3,
+        "text": "节点名称过滤"
+      },
+      {
+        "level": 3,
+        "text": "外部订阅同步"
+      },
+      {
+        "level": 4,
+        "text": "匹配规则"
+      },
+      {
+        "level": 4,
+        "text": "同步范围"
+      },
+      {
+        "level": 4,
+        "text": "保留当前节点名称"
+      },
+      {
+        "level": 4,
+        "text": "缓存过期时间（分钟）"
+      },
+      {
+        "level": 2,
+        "text": "功能开关"
+      },
+      {
+        "level": 3,
+        "text": "静默模式"
+      },
+      {
+        "level": 4,
+        "text": "恢复访问时长（分钟）"
+      },
+      {
+        "level": 3,
+        "text": "启用短链接"
+      },
+      {
+        "level": 3,
+        "text": "客户端兼容模式"
+      },
+      {
+        "level": 3,
+        "text": "覆写脚本"
+      },
+      {
+        "level": 3,
+        "text": "探针服务器绑定"
+      },
+      {
+        "level": 3,
+        "text": "启用代理集合"
+      },
+      {
+        "level": 3,
+        "text": "模板版本"
+      },
+      {
+        "level": 3,
+        "text": "订阅响应头流量信息"
+      },
+      {
+        "level": 3,
+        "text": "订阅序列化格式"
+      },
+      {
+        "level": 3,
+        "text": "订阅信息节点"
+      },
+      {
+        "level": 4,
+        "text": "过期时间前缀"
+      },
+      {
+        "level": 4,
+        "text": "剩余流量前缀"
+      },
+      {
+        "level": 2,
+        "text": "通知推送配置"
+      },
+      {
+        "level": 3,
+        "text": "启用通知推送"
+      },
+      {
+        "level": 3,
+        "text": "Telegram Bot 配置"
+      },
+      {
+        "level": 3,
+        "text": "通知事件"
+      },
+      {
+        "level": 2,
+        "text": "代理组配置同步"
+      },
+      {
+        "level": 2,
+        "text": "Master 端配置文件"
+      },
+      {
+        "level": 2,
+        "text": "Master 端环境变量"
+      },
+      {
+        "level": 2,
+        "text": "Agent 端连接配置"
+      },
+      {
+        "level": 2,
+        "text": "连接模式"
+      },
+      {
+        "level": 4,
+        "text": "auto（推荐）"
+      },
+      {
+        "level": 4,
+        "text": "websocket"
+      },
+      {
+        "level": 4,
+        "text": "http"
+      },
+      {
+        "level": 4,
+        "text": "pull"
+      },
+      {
+        "level": 2,
+        "text": "Agent 端环境变量"
+      }
+    ]
+  },
+  {
+    "slug": "templates",
+    "url": "https://miaomiaowux.com/docs/templates",
+    "canonical": "https://miaomiaowux.com/docs/templates",
+    "title": "模板管理 | 妙妙屋X 文档",
+    "description": "管理订阅输出使用的 Clash/Mihomo YAML 模板:自定义 proxy-groups(分流策略组)、rules(规则集),可绑定到套餐或单个订阅文件;基于 V3 模板系统,支持 include-all / filter 等高级语法,新增节点自动同步到订阅。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 72419,
+    "sha256_html": "9e3e893784e44dff4b52298d4b946cae56d1af9a9f0764e076cf9d1b1ff64955",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "模板管理"
+      },
+      {
+        "level": 2,
+        "text": "templatesV3.coreConcepts.heading"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.coreConcepts.includeTitle"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.coreConcepts.filterTitle"
+      },
+      {
+        "level": 2,
+        "text": "代理组配置属性 — 每条都附实例"
+      },
+      {
+        "level": 2,
+        "text": "templatesV3.nodeTypes.heading"
+      },
+      {
+        "level": 2,
+        "text": "templatesV3.regionGroups.heading"
+      },
+      {
+        "level": 2,
+        "text": "templatesV3.createMethods.heading"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.createMethods.uploadTitle"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.createMethods.pasteTitle"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.createMethods.convertTitle"
+      },
+      {
+        "level": 2,
+        "text": "templatesV3.subBinding.heading"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.subBinding.flowTitle"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.subBinding.autoUpdateTitle"
+      },
+      {
+        "level": 2,
+        "text": "templatesV3.commonScenarios.heading"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.commonScenarios.s1Title"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.commonScenarios.s2Title"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.commonScenarios.s3Title"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.commonScenarios.s4Title"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.commonScenarios.s5Title"
+      },
+      {
+        "level": 4,
+        "text": "templatesV3.commonScenarios.tipsTitle"
+      },
+      {
+        "level": 2,
+        "text": "templatesV3.fullExample.heading"
+      },
+      {
+        "level": 2,
+        "text": "templatesV3.notes.heading"
+      }
+    ]
+  },
+  {
+    "slug": "tool-cloudflare-turnstile",
+    "url": "https://miaomiaowux.com/docs/tool-cloudflare-turnstile",
+    "canonical": "https://miaomiaowux.com/docs/tool-cloudflare-turnstile",
+    "title": "Cloudflare Turnstile 人机验证 | 妙妙屋X 文档",
+    "description": "给妙妙屋X 登录页接入 Cloudflare Turnstile,免费、无干扰的人机验证,防爆破登录。未配置时自动降级跳过,升级用户不强制。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 67754,
+    "sha256_html": "65d24bc4ac25c2199ea78b500901dfa6e98fe6829924ae58f23729d02973f8a9",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Cloudflare Turnstile 人机验证"
+      },
+      {
+        "level": 2,
+        "text": "这是什么"
+      },
+      {
+        "level": 2,
+        "text": "前置准备"
+      },
+      {
+        "level": 2,
+        "text": "第一步:在 CF Dashboard 申请 Site"
+      },
+      {
+        "level": 3,
+        "text": "1. 登录 dash.cloudflare.com"
+      },
+      {
+        "level": 3,
+        "text": "2. 进入 Turnstile 页面"
+      },
+      {
+        "level": 3,
+        "text": "3. 填写 Site 配置"
+      },
+      {
+        "level": 3,
+        "text": "4. 复制两个 Key"
+      },
+      {
+        "level": 2,
+        "text": "第二步:在妙妙屋X 系统设置填入"
+      },
+      {
+        "level": 3,
+        "text": "1. 进入系统设置"
+      },
+      {
+        "level": 3,
+        "text": "2. 找到 Cloudflare 人机验证区"
+      },
+      {
+        "level": 3,
+        "text": "3. 粘贴 Key + 保存"
+      },
+      {
+        "level": 2,
+        "text": "第三步:验证生效"
+      },
+      {
+        "level": 2,
+        "text": "常见问题"
+      },
+      {
+        "level": 3,
+        "text": "登录页没看到 widget?"
+      },
+      {
+        "level": 3,
+        "text": "登录被 captcha verification failed 拦截?"
+      },
+      {
+        "level": 3,
+        "text": "Secret Key 怎么替换?"
+      },
+      {
+        "level": 3,
+        "text": "怎么关闭验证?"
+      },
+      {
+        "level": 2,
+        "text": "延伸阅读"
+      }
+    ]
+  },
+  {
+    "slug": "tool-mmwx-tgbot",
+    "url": "https://miaomiaowux.com/docs/tool-mmwx-tgbot",
+    "canonical": "https://miaomiaowux.com/docs/tool-mmwx-tgbot",
+    "title": "Telegram 机器人(mmwX-tgbot) | 妙妙屋X 文档",
+    "description": "主控内置的 Telegram Bot 与免登录 Mini App 配置和使用说明。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 68934,
+    "sha256_html": "97a7ce4e5e159dc04ab799e97f26d42cf09867345d9c2e6937aeb0f0c5b49a27",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Telegram 机器人(mmwX-tgbot)"
+      },
+      {
+        "level": 2,
+        "text": "TGBot 与 Mini App 已内置"
+      },
+      {
+        "level": 2,
+        "text": "启用与配置"
+      },
+      {
+        "level": 3,
+        "text": "1 . 创建 Telegram Bot"
+      },
+      {
+        "level": 3,
+        "text": "2 . 打开 TGBot 设置"
+      },
+      {
+        "level": 3,
+        "text": "3 . 填写 Bot Token"
+      },
+      {
+        "level": 3,
+        "text": "4 . 填写管理员 Telegram ID"
+      },
+      {
+        "level": 3,
+        "text": "5 . 启用并保存"
+      },
+      {
+        "level": 3,
+        "text": "6 . 验证 Bot 与 Mini App"
+      },
+      {
+        "level": 2,
+        "text": "功能一览"
+      },
+      {
+        "level": 3,
+        "text": "👤 用户命令"
+      },
+      {
+        "level": 3,
+        "text": "🛡️ 管理员命令"
+      },
+      {
+        "level": 3,
+        "text": "🔔 每日通知"
+      },
+      {
+        "level": 2,
+        "text": "Mini App(免登录面板)"
+      },
+      {
+        "level": 3,
+        "text": "管理员视图"
+      },
+      {
+        "level": 3,
+        "text": "用户视图"
+      },
+      {
+        "level": 2,
+        "text": "安全提示"
+      },
+      {
+        "level": 2,
+        "text": "常见问题"
+      },
+      {
+        "level": 3,
+        "text": "Bot 不回复怎么办？"
+      },
+      {
+        "level": 3,
+        "text": "管理员命令提示无权限？"
+      },
+      {
+        "level": 3,
+        "text": "Mini App 无法打开？"
+      }
+    ]
+  },
+  {
+    "slug": "traffic-accounting",
+    "url": "https://miaomiaowux.com/docs/traffic-accounting",
+    "canonical": "https://miaomiaowux.com/docs/traffic-accounting",
+    "title": "流量统计口径 | 妙妙屋X 文档",
+    "description": "逐页说明服务器、节点、用户、套餐、订阅与探针的流量数据源、时间范围和计费公式。",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 54305,
+    "sha256_html": "5465263a60693b902f2f2cd9818e33092084a97f425097bfd07d6aa6270dff41",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "流量统计口径"
+      },
+      {
+        "level": 2,
+        "text": "基础口径"
+      },
+      {
+        "level": 2,
+        "text": "各页面显示规则"
+      },
+      {
+        "level": 2,
+        "text": "公开探针"
+      },
+      {
+        "level": 2,
+        "text": "对账与排查"
+      },
+      {
+        "level": 2,
+        "text": "外部订阅口径"
+      }
+    ]
+  },
+  {
+    "slug": "tutorial",
+    "url": "https://miaomiaowux.com/docs/tutorial",
+    "canonical": "https://miaomiaowux.com/docs/tutorial",
+    "title": "新手教程 | 妙妙屋X 文档",
+    "description": "从零开始部署妙妙屋X完整指南",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 120712,
+    "sha256_html": "250af8c3b1c5225951dc340afbeace037f8525865d450edf22a312f62b05243c",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "新手教程"
+      },
+      {
+        "level": 2,
+        "text": "1 安装前准备"
+      },
+      {
+        "level": 2,
+        "text": "2 添加 DNS 解析"
+      },
+      {
+        "level": 3,
+        "text": "主控域名（必须）"
+      },
+      {
+        "level": 3,
+        "text": "服务器域名（建议）"
+      },
+      {
+        "level": 2,
+        "text": "3 安装妙妙屋X"
+      },
+      {
+        "level": 2,
+        "text": "4 初始化"
+      },
+      {
+        "level": 2,
+        "text": "5 开启 HTTPS"
+      },
+      {
+        "level": 3,
+        "text": "5.1 配置 DNS 服务商"
+      },
+      {
+        "level": 3,
+        "text": "5.2 申请证书"
+      },
+      {
+        "level": 3,
+        "text": "5.3 部署证书"
+      },
+      {
+        "level": 3,
+        "text": "5.4 推荐：使用 Nginx 反向代理主控"
+      },
+      {
+        "level": 4,
+        "text": "安装 Nginx"
+      },
+      {
+        "level": 4,
+        "text": "从主控下载并放置证书"
+      },
+      {
+        "level": 4,
+        "text": "主控域名配置"
+      },
+      {
+        "level": 4,
+        "text": "独立订阅域名配置"
+      },
+      {
+        "level": 3,
+        "text": "5.5 可选：使用 Caddy 反向代理主控"
+      },
+      {
+        "level": 4,
+        "text": "安装 Caddy"
+      },
+      {
+        "level": 4,
+        "text": "配置 /etc/caddy/Caddyfile"
+      },
+      {
+        "level": 3,
+        "text": "5.6 可选：使用 Cloudflare Tunnel 直接提供 HTTPS"
+      },
+      {
+        "level": 2,
+        "text": "6 添加服务器"
+      },
+      {
+        "level": 3,
+        "text": "6.1 Agent 偷自己"
+      },
+      {
+        "level": 2,
+        "text": "7 安装 Agent"
+      },
+      {
+        "level": 2,
+        "text": "8 添加节点"
+      },
+      {
+        "level": 3,
+        "text": "开启偷自己后的首个 Reality 节点"
+      },
+      {
+        "level": 3,
+        "text": "节点检查"
+      },
+      {
+        "level": 2,
+        "text": "9 创建套餐"
+      },
+      {
+        "level": 2,
+        "text": "10 绑定套餐"
+      },
+      {
+        "level": 2,
+        "text": "11 流量信息"
+      },
+      {
+        "level": 3,
+        "text": "用户视图"
+      },
+      {
+        "level": 3,
+        "text": "节点视图"
+      },
+      {
+        "level": 3,
+        "text": "服务器视图"
+      },
+      {
+        "level": 2,
+        "text": "12 小工具（TG Bot & MiniApp）"
+      },
+      {
+        "level": 3,
+        "text": "管理员视图（Mini App）"
+      },
+      {
+        "level": 3,
+        "text": "用户视图（Mini App）"
+      }
+    ]
+  },
+  {
+    "slug": "update",
+    "url": "https://miaomiaowux.com/docs/update",
+    "canonical": "https://miaomiaowux.com/docs/update",
+    "title": "版本更新 | 妙妙屋X 文档",
+    "description": "如何升级妙妙屋X到最新版本",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 51886,
+    "sha256_html": "3019254a7e45d6571e62edd27a50b3f3e68412233894fe63e8adce1e32578e98",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "版本更新"
+      },
+      {
+        "level": 2,
+        "text": "Docker 更新"
+      },
+      {
+        "level": 3,
+        "text": "Docker Compose（推荐）"
+      },
+      {
+        "level": 3,
+        "text": "docker run"
+      },
+      {
+        "level": 2,
+        "text": "二进制更新"
+      },
+      {
+        "level": 2,
+        "text": "Agent 更新"
+      }
+    ]
+  },
+  {
+    "slug": "upgrade-from-mmw",
+    "url": "https://miaomiaowux.com/docs/upgrade-from-mmw",
+    "canonical": "https://miaomiaowux.com/docs/upgrade-from-mmw",
+    "title": "从妙妙屋迁移到妙妙屋X | 妙妙屋X 文档",
+    "description": "把已有妙妙屋(mmw)数据完整迁移到妙妙屋X，客户端订阅 URL / xray 凭据 / nginx / 证书全部保留，只换主控",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 99840,
+    "sha256_html": "258a3e7344960a9032efa7508150633a5cd766873252339148b9bc1bff23f856",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "从妙妙屋迁移到妙妙屋X"
+      },
+      {
+        "level": 2,
+        "text": "完整迁移向导(演示)"
+      },
+      {
+        "level": 3,
+        "text": "迁移流程概览"
+      },
+      {
+        "level": 2,
+        "text": "谁需要看这篇"
+      },
+      {
+        "level": 2,
+        "text": "迁移保证 vs 前置要求"
+      },
+      {
+        "level": 3,
+        "text": "✓ 迁移保证"
+      },
+      {
+        "level": 3,
+        "text": "! 前置要求"
+      },
+      {
+        "level": 2,
+        "text": "入口"
+      },
+      {
+        "level": 2,
+        "text": "Step 1 — 概述与前置"
+      },
+      {
+        "level": 2,
+        "text": "Step 2 — 停止 mmw + 备份"
+      },
+      {
+        "level": 3,
+        "text": "自动模式（推荐）"
+      },
+      {
+        "level": 3,
+        "text": "手动模式"
+      },
+      {
+        "level": 2,
+        "text": "Step 3 — 导入 mmw 数据库"
+      },
+      {
+        "level": 3,
+        "text": "支持两种导入"
+      },
+      {
+        "level": 3,
+        "text": "导入做了什么"
+      },
+      {
+        "level": 2,
+        "text": "Step 4 — 认领节点 / 用户"
+      },
+      {
+        "level": 3,
+        "text": "智能认领，不创建重复节点"
+      },
+      {
+        "level": 2,
+        "text": "Step 5 — 验证并完成"
+      },
+      {
+        "level": 3,
+        "text": "必做的 3 项验证"
+      },
+      {
+        "level": 2,
+        "text": "常见问题"
+      },
+      {
+        "level": 3,
+        "text": "导入提示「INSERT OR IGNORE 跳过 N 行」"
+      },
+      {
+        "level": 3,
+        "text": "家用 mmw 备份接口拉不到"
+      },
+      {
+        "level": 3,
+        "text": "接管外部 xray 后某些 inbound 丢了"
+      },
+      {
+        "level": 3,
+        "text": "同 server:port 的 mmw 外部节点被新建了两次，没自动绑定"
+      },
+      {
+        "level": 3,
+        "text": "普通用户能调迁移接口吗？"
+      },
+      {
+        "level": 2,
+        "text": "回滚预案"
+      }
+    ]
+  },
+  {
+    "slug": "users",
+    "url": "https://miaomiaowux.com/docs/users",
+    "canonical": "https://miaomiaowux.com/docs/users",
+    "title": "用户管理 | 妙妙屋X 文档",
+    "description": "用户账户与权限管理",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 95603,
+    "sha256_html": "9a49412d271799818de568acdb86746101d461c617c9b83dbf5d367f181aec9d",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "用户管理"
+      },
+      {
+        "level": 2,
+        "text": "在线演示:用户管理"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "用户角色"
+      },
+      {
+        "level": 2,
+        "text": "创建用户"
+      },
+      {
+        "level": 2,
+        "text": "订阅令牌"
+      },
+      {
+        "level": 2,
+        "text": "流量与多套餐"
+      },
+      {
+        "level": 2,
+        "text": "认证方式"
+      }
+    ]
+  },
+  {
+    "slug": "website-management",
+    "url": "https://miaomiaowux.com/docs/website-management",
+    "canonical": "https://miaomiaowux.com/docs/website-management",
+    "title": "Nginx 网站管理 | 妙妙屋X 文档",
+    "description": "集中管理 Agent 上由妙妙屋X部署的静态站点与反向代理",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 45736,
+    "sha256_html": "615c40d968c508b2e57f5cf9919a99e2ecbc51167667f22c1a71812d326c1f90",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Nginx 网站管理"
+      },
+      {
+        "level": 2,
+        "text": "进入网站管理"
+      },
+      {
+        "level": 3,
+        "text": "静态网站"
+      },
+      {
+        "level": 3,
+        "text": "反向代理"
+      },
+      {
+        "level": 2,
+        "text": "安装与运行环境"
+      }
+    ]
+  },
+  {
+    "slug": "xray-inbounds",
+    "url": "https://miaomiaowux.com/docs/xray-inbounds",
+    "canonical": "https://miaomiaowux.com/docs/xray-inbounds",
+    "title": "Xray 入站管理 | 妙妙屋X 文档",
+    "description": "使用入站向导创建和管理 Xray 入站配置",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 45940,
+    "sha256_html": "71ba6b8b3486667570bc2a213ef3b47d461b2cc052c8796b5a01811a762641c2",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Xray 入站管理"
+      },
+      {
+        "level": 2,
+        "text": "入站向导"
+      },
+      {
+        "level": 2,
+        "text": "支持的组合"
+      },
+      {
+        "level": 2,
+        "text": "入站操作"
+      },
+      {
+        "level": 2,
+        "text": "自动同步"
+      }
+    ]
+  },
+  {
+    "slug": "xray-outbounds",
+    "url": "https://miaomiaowux.com/docs/xray-outbounds",
+    "canonical": "https://miaomiaowux.com/docs/xray-outbounds",
+    "title": "Xray 出站管理 | 妙妙屋X 文档",
+    "description": "管理 Xray 出站配置和路由规则",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 49349,
+    "sha256_html": "6f8ce190195f83639e1205bb8c5933881944f045e0d5218515686becc985b787",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Xray 出站管理"
+      },
+      {
+        "level": 2,
+        "text": "出站配置"
+      },
+      {
+        "level": 2,
+        "text": "路由规则"
+      },
+      {
+        "level": 2,
+        "text": "操作"
+      },
+      {
+        "level": 2,
+        "text": "Cloudflare WARP 出站"
+      },
+      {
+        "level": 3,
+        "text": "快捷路由 — 防止送中"
+      },
+      {
+        "level": 3,
+        "text": "注意事项"
+      }
+    ]
+  },
+  {
+    "slug": "xray-routing",
+    "url": "https://miaomiaowux.com/docs/xray-routing",
+    "canonical": "https://miaomiaowux.com/docs/xray-routing",
+    "title": "Xray 路由管理 | 妙妙屋X 文档",
+    "description": "管理 Xray 路由规则，控制流量转发策略",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 65292,
+    "sha256_html": "363d17ce09d9f2a7434da3d437a5db97ad7f59e268beb63a91cbed61f476eba1",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Xray 路由管理"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "路由匹配语义"
+      },
+      {
+        "level": 2,
+        "text": "节点路由"
+      },
+      {
+        "level": 3,
+        "text": "专属规则与全局规则"
+      },
+      {
+        "level": 3,
+        "text": "Catch-all 检测"
+      },
+      {
+        "level": 3,
+        "text": "出站名称解析"
+      },
+      {
+        "level": 2,
+        "text": "路由面板"
+      },
+      {
+        "level": 3,
+        "text": "左右分栏布局"
+      },
+      {
+        "level": 3,
+        "text": "拖拽排序"
+      },
+      {
+        "level": 2,
+        "text": "快捷规则"
+      },
+      {
+        "level": 2,
+        "text": "出站负载均衡"
+      },
+      {
+        "level": 3,
+        "text": "创建步骤"
+      },
+      {
+        "level": 2,
+        "text": "自定义规则"
+      },
+      {
+        "level": 2,
+        "text": "自动重启"
+      },
+      {
+        "level": 2,
+        "text": "API 参考"
+      }
+    ]
+  },
+  {
+    "slug": "xray-service",
+    "url": "https://miaomiaowux.com/docs/xray-service",
+    "canonical": "https://miaomiaowux.com/docs/xray-service",
+    "title": "Xray 服务管理 | 妙妙屋X 文档",
+    "description": "远程安装/卸载 Xray 和 Nginx，服务启停控制",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 45548,
+    "sha256_html": "d38efabb62b0beb5361306b9b1e89e397f545e6e1759422c188a6a8b28629ffc",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Xray 服务管理"
+      },
+      {
+        "level": 2,
+        "text": "Xray 安装"
+      },
+      {
+        "level": 2,
+        "text": "Nginx 安装"
+      },
+      {
+        "level": 2,
+        "text": "服务控制"
+      },
+      {
+        "level": 2,
+        "text": "配置文件管理"
+      }
+    ]
+  },
+  {
+    "slug": "xray-system-config",
+    "url": "https://miaomiaowux.com/docs/xray-system-config",
+    "canonical": "https://miaomiaowux.com/docs/xray-system-config",
+    "title": "Xray 系统配置 | 妙妙屋X 文档",
+    "description": "Xray 全局配置项：日志、DNS、策略等",
+    "fetched_at": "2026-08-25T20:17:42+08:00",
+    "html_bytes": 43768,
+    "sha256_html": "a1995be703dd3c6a79b4123f175b1680c91e1620adbb074948cad93b13ab7c77",
+    "pro_mentions": 0,
+    "headings": [
+      {
+        "level": 1,
+        "text": "Xray 系统配置"
+      },
+      {
+        "level": 2,
+        "text": "概述"
+      },
+      {
+        "level": 2,
+        "text": "配置项"
+      },
+      {
+        "level": 2,
+        "text": "注意事项"
+      }
+    ]
+  }
+]

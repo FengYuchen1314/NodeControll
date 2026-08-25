@@ -1,0 +1,691 @@
+{
+  "schemaVersion": 1,
+  "sourceAuditDate": "2026-08-26",
+  "entries": [
+    {
+      "ecosystem": "cargo",
+      "name": "crc-catalog",
+      "version": "2.5.0",
+      "declaredLicense": "MIT OR Apache-2.0",
+      "registryChecksum": "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853",
+      "repository": "https://github.com/akhilles/crc-catalog",
+      "revision": "ed4ad631f22b05055c21a3a4127eb7cf6d75bb62",
+      "versionEvidence": {
+        "upstreamPath": "Cargo.toml",
+        "sha256": "894917971e72d14c247425c9dde0021197d84533d7d66ad6ee0b32f9dfeb2380",
+        "expectedName": "crc-catalog",
+        "expectedVersion": "2.5.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/akhilles/crc-catalog",
+          "upstreamRevision": "ed4ad631f22b05055c21a3a4127eb7cf6d75bb62",
+          "upstreamPath": "LICENSES/MIT.txt",
+          "localPath": "cargo/crc-catalog-2.5.0/LICENSES/MIT.txt",
+          "sha256": "5ef8fcfb6cccec8fcae043c834099a60c8b7406408db576e026d2b7e67dc5cf5",
+          "bytes": 1073
+        },
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/akhilles/crc-catalog",
+          "upstreamRevision": "ed4ad631f22b05055c21a3a4127eb7cf6d75bb62",
+          "upstreamPath": "LICENSES/Apache-2.0.txt",
+          "localPath": "cargo/crc-catalog-2.5.0/LICENSES/Apache-2.0.txt",
+          "sha256": "d3cdb764b98283ee7c3a3cea8d374e2a2957322374378d1f3263f4d512741fc3",
+          "bytes": 11346
+        }
+      ],
+      "resolution": "exact-source-revision"
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "r-efi",
+      "version": "6.0.0",
+      "declaredLicense": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "registryChecksum": "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf",
+      "repository": "https://github.com/r-efi/r-efi",
+      "revision": "7e1b0322d31d625f81a5656096330934f9cd835d",
+      "versionEvidence": {
+        "upstreamPath": "Cargo.toml",
+        "sha256": "b8e89c393831c2161b6d390bd40422910ac34f02903ad39edd85ec38d4513fef",
+        "expectedName": "r-efi",
+        "expectedVersion": "6.0.0"
+      },
+      "files": [
+        {
+          "kind": "license-and-copyright-notice",
+          "upstreamRepository": "https://github.com/r-efi/r-efi",
+          "upstreamRevision": "7e1b0322d31d625f81a5656096330934f9cd835d",
+          "upstreamPath": "AUTHORS",
+          "localPath": "cargo/r-efi-6.0.0/AUTHORS",
+          "sha256": "d027e91dbc9cdbb2f1190068e498bd6b61cff022b6a032b191021ba658d96111",
+          "bytes": 3733
+        },
+        {
+          "kind": "canonical-license-text",
+          "upstreamRepository": "https://github.com/spdx/license-list-data",
+          "upstreamRevision": "c4a7237ec8f4654e867546f9f409749300f1bf4c",
+          "upstreamTag": "v3.28.0",
+          "upstreamPath": "text/Apache-2.0.txt",
+          "localPath": "cargo/r-efi-6.0.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280
+        },
+        {
+          "kind": "canonical-license-text",
+          "upstreamRepository": "https://github.com/spdx/license-list-data",
+          "upstreamRevision": "c4a7237ec8f4654e867546f9f409749300f1bf4c",
+          "upstreamTag": "v3.28.0",
+          "upstreamPath": "text/LGPL-2.1-or-later.txt",
+          "localPath": "cargo/r-efi-6.0.0/LGPL-2.1-or-later.txt",
+          "sha256": "5749785c8bdefafcb5d798270ed0a967036fe2ca63dcedade1627565dfef81d2",
+          "bytes": 26001
+        }
+      ],
+      "resolution": "exact AUTHORS with complete MIT option and project notices, plus pinned canonical texts for the other two declared OR choices"
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "sqlx-core",
+      "version": "0.9.0",
+      "declaredLicense": "MIT OR Apache-2.0",
+      "registryChecksum": "05b44e85bf579a8eeb4ceaa77a3a523baf2bf0e9bac7e40f405d537b5d2d5ccb",
+      "repository": "https://github.com/launchbadge/sqlx",
+      "revision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+      "versionTag": "v0.9.0",
+      "versionEvidence": {
+        "upstreamPath": "sqlx-core/Cargo.toml",
+        "sha256": "4830c40ed9af5bc41b3a316eb4347d15941213966a16f4e5e938a5b6e5d74ee3",
+        "expectedName": "sqlx-core",
+        "expectedVersion": "0.9.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-MIT",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-MIT",
+          "sha256": "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d",
+          "bytes": 1109
+        },
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-APACHE",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-APACHE",
+          "sha256": "c8f5453612253e8ea8bad241617fe74c4a6d5d592ba64ff881668c211b50ac99",
+          "bytes": 10297
+        }
+      ],
+      "resolution": "exact release tag; project-root license texts shared by same-revision SQLx workspace crates"
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "sqlx-macros",
+      "version": "0.9.0",
+      "declaredLicense": "MIT OR Apache-2.0",
+      "registryChecksum": "bd2b84f2bc39a5705ef27ec785a11c934a41bbd4a24941e257927cddc26b60bf",
+      "repository": "https://github.com/launchbadge/sqlx",
+      "revision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+      "versionTag": "v0.9.0",
+      "versionEvidence": {
+        "upstreamPath": "sqlx-macros/Cargo.toml",
+        "sha256": "fef2873c29ffeb98c14e2975dca9546731ec57f637b8b08d8c268156aa66ba31",
+        "expectedName": "sqlx-macros",
+        "expectedVersion": "0.9.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-MIT",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-MIT",
+          "sha256": "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d",
+          "bytes": 1109
+        },
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-APACHE",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-APACHE",
+          "sha256": "c8f5453612253e8ea8bad241617fe74c4a6d5d592ba64ff881668c211b50ac99",
+          "bytes": 10297
+        }
+      ],
+      "resolution": "exact release tag; project-root license texts shared by same-revision SQLx workspace crates"
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "sqlx-macros-core",
+      "version": "0.9.0",
+      "declaredLicense": "MIT OR Apache-2.0",
+      "registryChecksum": "fb8d96de5fdc85a5c4ec813432b523ec637e80ba98f046555f75f7908ddac7c3",
+      "repository": "https://github.com/launchbadge/sqlx",
+      "revision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+      "versionTag": "v0.9.0",
+      "versionEvidence": {
+        "upstreamPath": "sqlx-macros-core/Cargo.toml",
+        "sha256": "202d53b65840a9d460280ff09f7300cd9e2f2cf327b6e18154e462ec7692e281",
+        "expectedName": "sqlx-macros-core",
+        "expectedVersion": "0.9.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-MIT",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-MIT",
+          "sha256": "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d",
+          "bytes": 1109
+        },
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-APACHE",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-APACHE",
+          "sha256": "c8f5453612253e8ea8bad241617fe74c4a6d5d592ba64ff881668c211b50ac99",
+          "bytes": 10297
+        }
+      ],
+      "resolution": "exact release tag; project-root license texts shared by same-revision SQLx workspace crates"
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "sqlx-mysql",
+      "version": "0.9.0",
+      "declaredLicense": "MIT OR Apache-2.0",
+      "registryChecksum": "90b8020fe17c5f2c245bfa2505d7ef59c5604839527c740266ad2214acebea27",
+      "repository": "https://github.com/launchbadge/sqlx",
+      "revision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+      "versionTag": "v0.9.0",
+      "versionEvidence": {
+        "upstreamPath": "sqlx-mysql/Cargo.toml",
+        "sha256": "f68374a926b7a8b9af4526e6c4460438904f9c8fcafd291d54159775a208ad45",
+        "expectedName": "sqlx-mysql",
+        "expectedVersion": "0.9.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-MIT",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-MIT",
+          "sha256": "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d",
+          "bytes": 1109
+        },
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-APACHE",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-APACHE",
+          "sha256": "c8f5453612253e8ea8bad241617fe74c4a6d5d592ba64ff881668c211b50ac99",
+          "bytes": 10297
+        }
+      ],
+      "resolution": "exact release tag; project-root license texts shared by same-revision SQLx workspace crates"
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "sqlx-postgres",
+      "version": "0.9.0",
+      "declaredLicense": "MIT OR Apache-2.0",
+      "registryChecksum": "87a2bdd6e83f6b3ea525ca9fee568030508b58355a43d0b2c1674d5f79dcd65e",
+      "repository": "https://github.com/launchbadge/sqlx",
+      "revision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+      "versionTag": "v0.9.0",
+      "versionEvidence": {
+        "upstreamPath": "sqlx-postgres/Cargo.toml",
+        "sha256": "c509150be3f6718d208bc4bdec97fc815943bb1e9bb4fb9ff56eda4de18d8f1c",
+        "expectedName": "sqlx-postgres",
+        "expectedVersion": "0.9.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-MIT",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-MIT",
+          "sha256": "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d",
+          "bytes": 1109
+        },
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-APACHE",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-APACHE",
+          "sha256": "c8f5453612253e8ea8bad241617fe74c4a6d5d592ba64ff881668c211b50ac99",
+          "bytes": 10297
+        }
+      ],
+      "resolution": "exact release tag; project-root license texts shared by same-revision SQLx workspace crates"
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "sqlx-sqlite",
+      "version": "0.9.0",
+      "declaredLicense": "MIT OR Apache-2.0",
+      "registryChecksum": "488e99c397a62007e4229aec669a179816339afc6d2620ca6fa420dbee2e982c",
+      "repository": "https://github.com/launchbadge/sqlx",
+      "revision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+      "versionTag": "v0.9.0",
+      "versionEvidence": {
+        "upstreamPath": "sqlx-sqlite/Cargo.toml",
+        "sha256": "af4193e1d9d8e9f63c85bf2468cdb24f4e9b7c217bd0745082fecf1a7369b0c6",
+        "expectedName": "sqlx-sqlite",
+        "expectedVersion": "0.9.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-MIT",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-MIT",
+          "sha256": "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d",
+          "bytes": 1109
+        },
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/launchbadge/sqlx",
+          "upstreamRevision": "75bc0487eb661da811bb7a3c5d158f1bd463fef4",
+          "upstreamTag": "v0.9.0",
+          "upstreamPath": "LICENSE-APACHE",
+          "localPath": "cargo/sqlx-0.9.0/LICENSE-APACHE",
+          "sha256": "c8f5453612253e8ea8bad241617fe74c4a6d5d592ba64ff881668c211b50ac99",
+          "bytes": 10297
+        }
+      ],
+      "resolution": "exact release tag; project-root license texts shared by same-revision SQLx workspace crates"
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "valuable",
+      "version": "0.1.1",
+      "declaredLicense": "MIT",
+      "registryChecksum": "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65",
+      "repository": "https://github.com/tokio-rs/valuable",
+      "revision": "9efc29b6e58cef28f6566a47aa7e142a55fead77",
+      "versionEvidence": {
+        "upstreamPath": "valuable/Cargo.toml",
+        "sha256": "15a6fb7f15c0ea638610e791d6c5c3e5db5c84d73944f36c46c25bebd0001b63",
+        "expectedName": "valuable",
+        "expectedVersion": "0.1.1"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/tokio-rs/valuable",
+          "upstreamRevision": "9efc29b6e58cef28f6566a47aa7e142a55fead77",
+          "upstreamPath": "LICENSE",
+          "localPath": "cargo/valuable-0.1.1/LICENSE",
+          "sha256": "ed60d479b8fd1f64e9cbc3de449a16a53ac1b3d1b6aeb9bf9d190a8e93061b44",
+          "bytes": 1065
+        }
+      ],
+      "resolution": "exact-source-revision"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@humanfs/types",
+      "version": "0.15.0",
+      "declaredLicense": "Apache-2.0",
+      "registryIntegrity": "sha512-ZZ1w0aoQkwuUuC7Yf+7sdeaNfqQiiLcSRbfI08oAxqLtpXQr9AIVX7Ay7HLDuiLYAaFPu8oBYNq/QIi9URHJ3Q==",
+      "repository": "https://github.com/humanwhocodes/humanfs",
+      "revision": "85069f193cbacc371c3beb649ce746f8c5a493be",
+      "versionEvidence": {
+        "upstreamPath": "packages/types/package.json",
+        "sha256": "1b849aa49814883fc0e70ca461c9faccb675ed1c801e784f1858e75e3b36eec5",
+        "expectedName": "@humanfs/types",
+        "expectedVersion": "0.15.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/humanwhocodes/humanfs",
+          "upstreamRevision": "85069f193cbacc371c3beb649ce746f8c5a493be",
+          "upstreamPath": "packages/core/LICENSE",
+          "localPath": "npm/humanfs-types-0.15.0/LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "bytes": 11357
+        }
+      ],
+      "resolution": "same-revision monorepo sibling license; packages/types declares Apache-2.0 but has no package-local license file"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-linux-x64-gnu",
+      "version": "1.2.5",
+      "declaredLicense": "MIT",
+      "registryIntegrity": "sha512-Mgj59/HTuYeK9Gz2MA+mBWKnHsAgkBSec15ZMb1st3oIfFbX7gCjOae7GydHhzcyQi9Z/7M1QuN9bR3oFqF0jQ==",
+      "repository": "https://github.com/rolldown/rolldown",
+      "revision": "84c904bc2e3fd126c8c32905a2597a6716a69249",
+      "versionTag": "v1.2.5",
+      "versionEvidence": {
+        "upstreamPath": "packages/rolldown/package.json",
+        "sha256": "2ad9ca9ba48c3087014ddcb79ad2afa13d22ced9c8ecbf8dec60fd1b81048942",
+        "expectedName": "rolldown",
+        "expectedVersion": "1.2.5"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/rolldown/rolldown",
+          "upstreamRevision": "84c904bc2e3fd126c8c32905a2597a6716a69249",
+          "upstreamPath": "LICENSE",
+          "localPath": "npm/rolldown-binding-linux-x64-gnu-1.2.5/LICENSE",
+          "sha256": "23ecfff35a5a2e80d92142f75228912c3b1abc4b5a8337a821ff4397e2f9f734",
+          "bytes": 1302
+        }
+      ],
+      "resolution": "exact release tag; the platform package is generated from the tagged rolldown release"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@vue/devtools-api",
+      "version": "6.6.4",
+      "declaredLicense": "MIT",
+      "registryIntegrity": "sha512-sGhTPMuXqZ1rVOk32RylztWkfXTRhuS7vgAKv0zjqk8gbsHkJ7xfFf+jbySxt7tWObEJwyKaHMikV/WGDiQm8g==",
+      "repository": "https://github.com/vuejs/devtools-v6",
+      "revision": "dd2ab5d4275187cbd81952a2a3d53c335643c1f4",
+      "versionTag": "v6.6.4",
+      "registryGitHead": "df6ab6bb7791a7a525a97990de73b3ea5e9a1941",
+      "versionEvidence": {
+        "upstreamPath": "packages/api/package.json",
+        "sha256": "16103b215db2ade43369020415869db5f7e89158c2c07524ef8fb5c8d71864cf",
+        "expectedName": "@vue/devtools-api",
+        "expectedVersion": "6.6.4"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/vuejs/devtools-v6",
+          "upstreamRevision": "dd2ab5d4275187cbd81952a2a3d53c335643c1f4",
+          "upstreamPath": "LICENSE",
+          "localPath": "npm/vue-devtools-api-6.6.4/LICENSE",
+          "sha256": "050bbca6960784db52ff387271bf2ecc5cbed7cf8581b415d528a6ecb6585015",
+          "bytes": 1083
+        }
+      ],
+      "resolution": "annotated v6.6.4 tag; registry gitHead points to an earlier commit whose package metadata is still 6.6.3"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "boolbase",
+      "version": "1.0.0",
+      "declaredLicense": "ISC",
+      "registryIntegrity": "sha512-JZOSA7Mo9sNGB8+UjSgzdLtokWAky1zbztM3WRLCbZ70/3cTANmQmOdR7y2g+J0e2WXywy1yS468tY+IruqEww==",
+      "repository": "https://github.com/fb55/boolbase",
+      "revision": "9837d5bf4f30390ac6384a6bc605ca2d69ade4bf",
+      "versionEvidence": {
+        "upstreamPath": "package.json",
+        "sha256": "ca09c0dccbfc43be6be0ac89e9ffa19b64b30f9c74c64da27f719a7244a25e30",
+        "expectedName": "boolbase",
+        "expectedVersion": "1.0.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/fb55/boolbase",
+          "upstreamRevision": "be0bcd8a4e917a0a5895e95b523fbbed05a64871",
+          "upstreamPath": "LICENSE",
+          "localPath": "npm/boolbase-1.0.0/LICENSE",
+          "sha256": "cdf4d87ae0a6c160227263bf4e39a0a10e30e89ae7256e0f7ac7bde0836552c6",
+          "bytes": 751
+        }
+      ],
+      "resolution": "no 1.0.0 tag or registry gitHead; initial source commit on the publication date contains version 1.0.0 and ISC declaration, while the project added the matching ISC text in be0bcd8"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "eastasianwidth",
+      "version": "0.2.0",
+      "declaredLicense": "MIT",
+      "registryIntegrity": "sha512-I88TYZWc9XiYHRQ4/3c5rjjfgkjhLyW2luGIheGERbNQ6OY7yTybanSpDXZa8y7VUP9YmDcYa+eyq4ca7iLqWA==",
+      "repository": "https://github.com/komagata/eastasianwidth",
+      "revision": "b89f04d44dc786885615e94cd6e2ba1ef7866fa4",
+      "registryGitHead": "b89f04d44dc786885615e94cd6e2ba1ef7866fa4",
+      "versionEvidence": {
+        "upstreamPath": "package.json",
+        "localPath": "npm/eastasianwidth-0.2.0/UPSTREAM-package.json",
+        "sha256": "51db62f97656d02d4bc9670393cae42930dbd1ed89f5837056851807e602867a",
+        "expectedName": "eastasianwidth",
+        "expectedVersion": "0.2.0"
+      },
+      "files": [
+        {
+          "kind": "canonical-license-text",
+          "upstreamRepository": "https://github.com/spdx/license-list-data",
+          "upstreamRevision": "c4a7237ec8f4654e867546f9f409749300f1bf4c",
+          "upstreamTag": "v3.28.0",
+          "upstreamPath": "text/MIT.txt",
+          "localPath": "npm/eastasianwidth-0.2.0/MIT.txt",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "bytes": 1078
+        },
+        {
+          "kind": "license-declaration-and-version-evidence",
+          "upstreamRepository": "https://github.com/komagata/eastasianwidth",
+          "upstreamRevision": "b89f04d44dc786885615e94cd6e2ba1ef7866fa4",
+          "upstreamPath": "package.json",
+          "localPath": "npm/eastasianwidth-0.2.0/UPSTREAM-package.json",
+          "sha256": "51db62f97656d02d4bc9670393cae42930dbd1ed89f5837056851807e602867a",
+          "bytes": 390
+        }
+      ],
+      "resolution": "the exact source revision declares MIT but contains no license file; preserve that declaration verbatim together with the pinned SPDX MIT text"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "esrecurse",
+      "version": "4.3.0",
+      "declaredLicense": "BSD-2-Clause",
+      "registryIntegrity": "sha512-KmfKL3b6G+RXvP8N1vr3Tq1kL/oCFgn2NYXEtqP8/L3pKapUA4G8cFVaoF3SU323CD4XypR/ffioHmkti6/Tag==",
+      "repository": "https://github.com/estools/esrecurse",
+      "revision": "8ceb63797813d9ac69572a671b95cf58ffdf35b6",
+      "registryGitHead": "8ceb63797813d9ac69572a671b95cf58ffdf35b6",
+      "versionEvidence": {
+        "upstreamPath": "package.json",
+        "sha256": "3bc67cb54672ec6957b53947613c23599371bf9222dbbe97275d20516a561a20",
+        "expectedName": "esrecurse",
+        "expectedVersion": "4.3.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/estools/esrecurse",
+          "upstreamRevision": "776ce43983cc1a1cca8d8eef85e579fc3ba50c1f",
+          "upstreamPath": "LICENSE.md",
+          "localPath": "npm/esrecurse-4.3.0/LICENSE.md",
+          "sha256": "cb1764d4708e870cc694de13d499af2e6ee98d2751026e3a3f79de608f4f4ea0",
+          "bytes": 1403
+        }
+      ],
+      "resolution": "the exact registry gitHead contains the same full license text in README.md; upstream later split it verbatim into LICENSE.md while package version remained 4.3.0"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "imurmurhash",
+      "version": "0.1.4",
+      "declaredLicense": "MIT",
+      "registryIntegrity": "sha512-JmXMZ6wuvDmLiHEml9ykzqO6lwFbof0GG4IkcGaENdCRDDmMVnny7s5HsIgHCbaq0w2MyPhDqkhTUgS2LU2PHA==",
+      "repository": "https://github.com/jensyt/imurmurhash-js",
+      "revision": "9f40361c7e2835a9b7b8eaa1cbab2a9f94ee22a2",
+      "versionTag": "0.1.4",
+      "versionEvidence": {
+        "upstreamPath": "package.json",
+        "sha256": "aa3b07e7fa3d63aa96e401c3842b8cca1dd3247954baf92377094766e903c185",
+        "expectedName": "imurmurhash",
+        "expectedVersion": "0.1.4"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/jensyt/imurmurhash-js",
+          "upstreamRevision": "9f40361c7e2835a9b7b8eaa1cbab2a9f94ee22a2",
+          "upstreamPath": "LICENSE",
+          "localPath": "npm/imurmurhash-0.1.4/LICENSE",
+          "sha256": "fa0943ddcaa857d901a9eb92254d89876297ecdfbc884d294a927df08ebcbbe8",
+          "bytes": 1090
+        }
+      ],
+      "resolution": "exact release tag"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "keyv",
+      "version": "4.5.4",
+      "declaredLicense": "MIT",
+      "registryIntegrity": "sha512-oxVHkHR/EJf2CNXnWxRLW6mg7JyCCUcG0DtEGmL2ctUo1PNTin1PUil+r/+4r5MpVgC/fn1kjsx7mjSujKqIpw==",
+      "repository": "https://github.com/jaredwray/keyv",
+      "revision": "78b247b5b7a8c9b12154fbfae4295d6fb29158cf",
+      "versionTag": "2023-10-07",
+      "versionEvidence": {
+        "upstreamPath": "packages/keyv/package.json",
+        "sha256": "e8afd30f2f2a40ef5023928b50fdaed3a3338aa7e1c4e86205413afb05e8a099",
+        "expectedName": "keyv",
+        "expectedVersion": "4.5.4"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/jaredwray/keyv",
+          "upstreamRevision": "78b247b5b7a8c9b12154fbfae4295d6fb29158cf",
+          "upstreamPath": "LICENSE",
+          "localPath": "npm/keyv-4.5.4/LICENSE",
+          "sha256": "1f7dca26d2d328c3dbb9b6fe3b15ec3cda08ffe2288e47b73d617454b256f959",
+          "bytes": 1108
+        }
+      ],
+      "resolution": "registry has no gitHead; the date tag points to a commit whose packages/keyv/package.json is 4.5.4 and follows the version-bump commit on the publication date"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "natural-compare",
+      "version": "1.4.0",
+      "declaredLicense": "MIT",
+      "registryIntegrity": "sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw==",
+      "repository": "https://github.com/litejs/natural-compare-lite",
+      "revision": "eec83eee67cfac84d6db30cdd65363f155673770",
+      "registryGitHead": "eec83eee67cfac84d6db30cdd65363f155673770",
+      "versionEvidence": {
+        "upstreamPath": "package.json",
+        "sha256": "ab94d809422924d57c838565a9162115ef14d9ae2b56fe7a0f215e2aff807739",
+        "expectedName": "natural-compare-lite",
+        "expectedVersion": "1.4.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/litejs/natural-compare-lite",
+          "upstreamRevision": "6b42bc713dca62f35b927cd06b69a82e297f019b",
+          "upstreamPath": "LICENSE",
+          "localPath": "npm/natural-compare-1.4.0/LICENSE",
+          "sha256": "353fe762ba595bf1ffe786acf0f5984bb164205901d74f258af195fc8228c67d",
+          "bytes": 1087
+        }
+      ],
+      "resolution": "registry gitHead maps natural-compare to the natural-compare-lite source at 1.4.0; that revision links the author's MIT terms, and upstream later added the full LICENSE while retaining 1.4.0"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "saxes",
+      "version": "6.0.0",
+      "declaredLicense": "ISC",
+      "registryIntegrity": "sha512-xAg7SOnEhrm5zI3puOOKyy1OMcMlIJZYNJY7xLBwSze0UjhPLnWfj2GF2EpT0jmzaJKIWKHLsaSSajf35bcYnA==",
+      "repository": "https://github.com/lddubeau/saxes",
+      "revision": "211fa0ebec9b628affc09219199639887174bfc3",
+      "registryGitHead": "211fa0ebec9b628affc09219199639887174bfc3",
+      "versionEvidence": {
+        "upstreamPath": "package.json",
+        "sha256": "b2206ba4678ba63836ddc85c6425ac4207f0d92b23fd96e059814742f97fdf3a",
+        "expectedName": "saxes",
+        "expectedVersion": "6.0.0"
+      },
+      "files": [
+        {
+          "kind": "license-text",
+          "upstreamRepository": "https://github.com/lddubeau/saxes",
+          "upstreamRevision": "211fa0ebec9b628affc09219199639887174bfc3",
+          "upstreamPath": "LICENSE",
+          "localPath": "npm/saxes-6.0.0/LICENSE",
+          "sha256": "0fac2374380621b22e6b50451057721a9c52935b02d16d106a9f04897f061d0e",
+          "bytes": 3011
+        }
+      ],
+      "resolution": "exact registry gitHead"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "stackback",
+      "version": "0.0.2",
+      "declaredLicense": "MIT",
+      "registryIntegrity": "sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==",
+      "repository": "https://github.com/defunctzombie/node-stackback",
+      "revision": "2963095372abf7b75ba55f01cef08ab1e62c2ff4",
+      "versionTag": "v0.0.2",
+      "versionEvidence": {
+        "upstreamPath": "package.json",
+        "localPath": "npm/stackback-0.0.2/UPSTREAM-package.json",
+        "sha256": "de9168ece7ce11c0a933ee447dd907da610f1745e6dd418d7f6b23c91e29bd7c",
+        "expectedName": "stackback",
+        "expectedVersion": "0.0.2"
+      },
+      "files": [
+        {
+          "kind": "canonical-license-text",
+          "upstreamRepository": "https://github.com/spdx/license-list-data",
+          "upstreamRevision": "c4a7237ec8f4654e867546f9f409749300f1bf4c",
+          "upstreamTag": "v3.28.0",
+          "upstreamPath": "text/MIT.txt",
+          "localPath": "npm/stackback-0.0.2/MIT.txt",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "bytes": 1078
+        },
+        {
+          "kind": "license-declaration-and-version-evidence",
+          "upstreamRepository": "https://github.com/defunctzombie/node-stackback",
+          "upstreamRevision": "2963095372abf7b75ba55f01cef08ab1e62c2ff4",
+          "upstreamPath": "package.json",
+          "localPath": "npm/stackback-0.0.2/UPSTREAM-package.json",
+          "sha256": "de9168ece7ce11c0a933ee447dd907da610f1745e6dd418d7f6b23c91e29bd7c",
+          "bytes": 435
+        },
+        {
+          "kind": "embedded-third-party-license-notice",
+          "upstreamRepository": "https://github.com/defunctzombie/node-stackback",
+          "upstreamRevision": "2963095372abf7b75ba55f01cef08ab1e62c2ff4",
+          "upstreamPath": "formatstack.js",
+          "upstreamLineStart": 1,
+          "upstreamLineEnd": 26,
+          "extraction": "verbatim UTF-8 prefix lines 1-26, including the terminating LF",
+          "localPath": "npm/stackback-0.0.2/NOTICE-V8-BSD-3-Clause.txt",
+          "sha256": "b154c4cabeeb587f5cc63a41d0551ae69504460762d189a72ae141558ec5d184",
+          "bytes": 1597
+        }
+      ],
+      "resolution": "the v0.0.2 source declares MIT but contains no MIT file; preserve its declaration with pinned SPDX MIT text, plus the verbatim BSD-3-Clause V8 notice embedded in formatstack.js; GitHub redirects the package's former shtylman repository name to defunctzombie"
+    }
+  ]
+}

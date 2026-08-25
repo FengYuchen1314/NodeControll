@@ -1,0 +1,497 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "NodeControll API",
+    "description": "",
+    "license": {
+      "name": "AGPL-3.0-only",
+      "identifier": "AGPL-3.0-only"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/bootstrap": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "getBootstrapState",
+        "responses": {
+          "200": {
+            "description": "Public initialization and login-method projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The initialization projection is unavailable or stored bootstrap state is inconsistent",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "initializeControlPlane",
+        "parameters": [
+          {
+            "name": "x-nodecontroll-setup-token",
+            "in": "header",
+            "description": "Short-lived setup capability read from the deployment token file",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Control-plane bootstrap completed atomically",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapCreatedEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bootstrap field is invalid or the JSON syntax is malformed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The setup capability is missing, invalid, expired, or consumed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The control plane is already initialized or the requested owner conflicts with stored identity data",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The bootstrap request exceeds the 16 KiB body limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request does not use application/json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON object does not match the bootstrap request schema",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bootstrap attempts are rate limited in this Master process",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Bootstrap dependencies are unavailable or stored bootstrap state is inconsistent",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/version": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "getSystemVersion",
+        "responses": {
+          "200": {
+            "description": "Product and API version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [],
+        "operationId": "getLiveness",
+        "responses": {
+          "200": {
+            "description": "Master process is alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": [],
+        "operationId": "getReadiness",
+        "responses": {
+          "200": {
+            "description": "Required local dependencies are ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A required local dependency is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BootstrapCreated": {
+        "type": "object",
+        "required": [
+          "instance_id",
+          "owner_id"
+        ],
+        "properties": {
+          "instance_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BootstrapCreatedEnvelope": {
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/BootstrapCreated"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ResponseMeta"
+          }
+        }
+      },
+      "BootstrapEnvelope": {
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/BootstrapInfo"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ResponseMeta"
+          }
+        }
+      },
+      "BootstrapInfo": {
+        "type": "object",
+        "required": [
+          "initialized",
+          "product",
+          "login_methods",
+          "setup_capability_required"
+        ],
+        "properties": {
+          "initialized": {
+            "type": "boolean"
+          },
+          "login_methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "product": {
+            "type": "string"
+          },
+          "setup_capability_required": {
+            "type": "boolean"
+          }
+        }
+      },
+      "BootstrapRequest": {
+        "type": "object",
+        "required": [
+          "instance_name",
+          "username",
+          "password"
+        ],
+        "properties": {
+          "instance_name": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "At least 12 Unicode scalar values and at most 1024 UTF-8 bytes.",
+            "writeOnly": true,
+            "maxLength": 1024,
+            "minLength": 12
+          },
+          "username": {
+            "type": "string",
+            "maxLength": 32,
+            "minLength": 3,
+            "pattern": "^[A-Za-z0-9_.-]{3,32}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DependencyCheck": {
+        "type": "object",
+        "required": [
+          "name",
+          "status"
+        ],
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "FieldError": {
+        "type": "object",
+        "required": [
+          "pointer",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "pointer": {
+            "type": "string"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "detail",
+          "request_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "ReadinessResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "checks"
+        ],
+        "properties": {
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DependencyCheck"
+            }
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseMeta": {
+        "type": "object",
+        "required": [
+          "api_version",
+          "request_id"
+        ],
+        "properties": {
+          "api_version": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      },
+      "VersionEnvelope": {
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/VersionInfo"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ResponseMeta"
+          }
+        }
+      },
+      "VersionInfo": {
+        "type": "object",
+        "required": [
+          "product",
+          "version",
+          "started_at"
+        ],
+        "properties": {
+          "product": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "system",
+      "description": "Instance liveness and compatibility"
+    }
+  ]
+}

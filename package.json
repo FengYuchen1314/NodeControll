@@ -1,0 +1,17 @@
+{
+  "name": "nodecontroll-workspace",
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "packageManager": "pnpm@11.24.0",
+  "engines": {
+    "node": ">=24.19.0"
+  },
+  "scripts": {
+    "web:generate": "pnpm --filter @nodecontroll/web generate:api",
+    "web:typecheck": "pnpm --filter @nodecontroll/web typecheck",
+    "web:lint": "pnpm --filter @nodecontroll/web lint",
+    "web:test": "pnpm --filter @nodecontroll/web test",
+    "web:build": "pnpm --filter @nodecontroll/web build"
+  }
+}
