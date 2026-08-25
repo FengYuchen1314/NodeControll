@@ -17,6 +17,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  CARGO_HOME: /cargo-home
   GIT_NO_REPLACE_OBJECTS: "1"
   GIT_CONFIG_COUNT: "1"
   GIT_CONFIG_KEY_0: safe.directory
@@ -106,6 +107,12 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          test ! -e "${CARGO_HOME}"
+          test ! -L "${CARGO_HOME}"
+          install -d -m 0755 "${CARGO_HOME}"
+          test -d "${CARGO_HOME}"
+          test ! -L "${CARGO_HOME}"
+          test -z "$(find "${CARGO_HOME}" -mindepth 1 -print -quit)"
           source_date_epoch="$(git --no-replace-objects -C "${GITHUB_WORKSPACE}" show -s --format=%ct "${GITHUB_SHA}")"
           [[ "${source_date_epoch}" =~ ^[0-9]+$ ]]
           printf 'SOURCE_DATE_EPOCH=%s\n' "${source_date_epoch}" >> "${GITHUB_ENV}"
@@ -270,6 +277,10 @@ jobs:
         run: |
           set -Eeuo pipefail
           umask 022
+          if [[ -e artifacts/package || -L artifacts/package ]]; then
+            echo "package root must not exist before assembly" >&2
+            exit 1
+          fi
           mkdir -p artifacts/package/bin artifacts/package/openapi artifacts/package/web
           install -m 0644 LICENSE artifacts/package/LICENSE
           install -m 0644 THIRD_PARTY_NOTICES.md artifacts/package/THIRD_PARTY_NOTICES.md
@@ -294,6 +305,46 @@ jobs:
               | xargs -0 sha256sum \
               > CONTENTS.sha256
           )
+
+          if [[ ! -d artifacts/package || -L artifacts/package ]]; then
+            echo "package root must be a real directory" >&2
+            exit 1
+          fi
+          if [[ "$(stat -c '%a' artifacts/package)" != 755 ]]; then
+            echo "package root must have mode 0755" >&2
+            exit 1
+          fi
+          if ! find artifacts/package -mindepth 1 -print0 \
+            | while IFS= read -r -d '' package_entry; do
+              if [[ -L "${package_entry}" ]]; then
+                echo "package tree contains a symbolic link: ${package_entry}" >&2
+                exit 1
+              fi
+              if [[ -d "${package_entry}" ]]; then
+                if [[ "$(stat -c '%a' "${package_entry}")" != 755 ]]; then
+                  echo "package directory must have mode 0755: ${package_entry}" >&2
+                  exit 1
+                fi
+                continue
+              fi
+              if [[ ! -f "${package_entry}" ]]; then
+                echo "package tree contains a special file: ${package_entry}" >&2
+                exit 1
+              fi
+              expected_mode=644
+              case "${package_entry}" in
+                artifacts/package/bin/nodecontroll-master|artifacts/package/bin/nodecontroll-agent)
+                  expected_mode=755
+                  ;;
+              esac
+              if [[ "$(stat -c '%a' "${package_entry}")" != "${expected_mode}" ]]; then
+                echo "package file mode differs from ${expected_mode}: ${package_entry}" >&2
+                exit 1
+              fi
+            done; then
+            echo "package tree traversal or mode validation failed" >&2
+            exit 1
+          fi
 
           test "${SOURCE_DATE_EPOCH:-}" = \
             "$(git --no-replace-objects -C "${GITHUB_WORKSPACE}" show -s --format=%ct "${GITHUB_SHA}")"

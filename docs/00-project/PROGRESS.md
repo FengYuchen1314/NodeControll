@@ -27,6 +27,13 @@
 
 ## 已完成内容与代码说明
 
+### 2026-08-26 — Actions 首次全绿；正式 VPS verifier 拒绝不安全 mode
+
+- push SHA `7fd836d9fc73a66fe89ebbd3da131506cbe2f7b8` 的 Actions run `32901899767` attempt 1 在 2 分 49 秒内全部通过：Rust release、OpenAPI 导出/校验、Node/pnpm、公开分析边界、依赖安装、645 组件/844 证据收集、SDK/typecheck/Web production、generated drift、tracked source/工作树闭包、确定性 package 和 artifact 上传。artifact `9583470546` 为 4,165,254 bytes，GitHub API 与下载 payload 的 SHA-256 都是 `405626249d443586fce002d58dfc106455134afaa661de45b37ff10ad5e00039`。
+- 这份 artifact 没有被登记为发布门通过。VPS fresh full clone 上的正式 run `20260825T214246348535211Z-p5` 已先验证公共 `origin/main`、196 个 tracked blob/mode、GitHub run/artifact provenance 和固定 CycloneDX CLI，随后在 `actions-archive-members` fail-closed：Rust sysroot 的 14 个证据文件继承了 `0666`，违反包内普通文件不得 group/world writable 的合同。
+- 收集器现在在所有内容与 checksum 生成后递归拒绝 symlink/特殊文件，并把生成目录统一为 `0755`、普通文件统一为 `0644`；证据 bytes 与 SHA-256 不变。下一份 Actions artifact 会在 VPS formal run 前先检查 archive mode 分布。
+- 同时提前消除尚未走到的 ELF 可复现性阻断：成功 artifact 的 ELF 含 `/usr/local/cargo/registry/...`，而 VPS release 使用 `/cargo-home/registry/...`。Actions 的全新空 `CARGO_HOME` 改为 `/cargo-home`，与 VPS 的 source mount 绝对路径一致；固定 image 中该路径已在 VPS 验证为初始不存在且可以创建为空目录。不使用放宽 `cmp` 或事后改写二进制的办法。
+
 ### 2026-08-26 — 公开根提交已发布；Actions 前置环境修复中
 
 - 公开仓库已建立为 `FengYuchen1314/NodeControll`，`main` 的首个 commit 是无父根提交 `607f54b652ec7b3525852cbc4c65441743b8ddce`。远端只有 `main`，没有 tag；author/committer 均使用 GitHub noreply 地址。旧的 5 个私有工作提交没有推送，因为其中保留过 VPS 地址、本机路径、原始网页归档和全文提取。公开根树只有 196 个审计文件，不含 `docs/03-mmwx-gap/evidence/raw` 或 `extracted`。
@@ -227,6 +234,8 @@
 | 2026-08-26（公开根提交） | public projection | root commit、GitHub branches/tags/commit API、敏感字符串与 tree mode 扫描 | 通过；`607f54b...` 无父、196 files、仅 `main`、无 tag、无私有路径/凭据/原始 X 网页全文 |
 | 2026-08-26（Actions attempt 1） | 正式编译 | run `32901202453` | 失败；container ownership 在首个 source-pinning step 拒绝，未编译、无 artifact；修复待下一 run 验证 |
 | 2026-08-26（第二次 push run） | Actions 前置环境 | run `32901554308` | source pinning 已通过；setup-python 不支持 Debian container 而失败，未编译、无 artifact；改用固定 image 自带 Python 3.11.2 |
+| 2026-08-26（第三次 push run） | GitHub Actions 正式编译 | run `32901899767`、artifact `9583470546` | Actions 全绿；artifact 4,165,254 bytes、SHA-256 `405626...0039`；尚未通过 VPS verifier |
+| 2026-08-26（首次正式 artifact run） | VPS provenance/archive | run `20260825T214246348535211Z-p5` | provenance、source、CycloneDX CLI 通过；`actions-archive-members` 因 14 个 sysroot evidence 为 `0666` 而拒绝，状态 failed |
 
 ## 风险与约束
 
@@ -238,7 +247,7 @@
 
 ## 下一步
 
-1. 推送 Actions container 内置 Python 修复，取得同一新 SHA 的成功 attempt 1 artifact。
-2. 在 VPS 对该 SHA 建立 fresh standalone full checkout，运行完整正式 verifier；只有二进制、OpenAPI、Web、许可证和 provenance 全部形成正式 run manifest 后，才登记发布门通过。
+1. 推送生成文件 mode 与统一 `/cargo-home` 修复，取得新 SHA 的成功 attempt 1 artifact。
+2. 先确认新 archive 不含 group/world writable member，再在 VPS fresh standalone full checkout 运行完整正式 verifier；只有二进制、OpenAPI、Web、许可证和 provenance 全部形成正式 run manifest 后，才登记发布门通过。
 3. 补齐 WP-02 登录/session/MFA/RBAC 与 SetupPage 浏览器 E2E，再完成 P5.2 Agent protocol/enrollment handshake。
 4. 按 WP-02～WP-20 和 358 条追踪矩阵逐项实现、测试并更新状态；不得用 schema/页面壳替代产品行为验收。

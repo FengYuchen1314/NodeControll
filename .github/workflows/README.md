@@ -36,15 +36,15 @@ Action 的标签仅作为行尾审计注释，真正执行的是 40 位不可变
 ## 构建顺序
 
 1. 核对 `HEAD == GITHUB_SHA`、拒绝 replacement refs，并从该 commit 的 blob 只提取一次独立源码校验器。校验器固定为 `0500`，记录 SHA-256；之后每次调用前都复核文件类型、属主、权限和摘要。它按 commit tree 逐个核对 tracked blob bytes/mode，不依赖 index 的“干净”结论。
-2. 在固定 digest 的官方 Rust 1.98.0 Bookworm 容器内验证 glibc 2.36，并执行 `cargo build --locked --workspace --bins --release`。不能直接在 Ubuntu 24.04 host 上链接，否则 glibc 2.39 二进制无法在 Debian 12 测试环境运行。
+2. 在固定 digest 的官方 Rust 1.98.0 Bookworm 容器内验证 glibc 2.36，把全新空 `CARGO_HOME` 固定为 `/cargo-home`，再执行 `cargo build --locked --workspace --bins --release`。VPS release 使用同一绝对 Cargo source 路径，避免 panic/file path 进入 ELF 后破坏逐字节复现。不能直接在 Ubuntu 24.04 host 上链接，否则 glibc 2.39 二进制无法在 Debian 12 测试环境运行。
 3. 直接运行已编译的 `export-openapi`，把 Rust 路由契约写入 `openapi/nodecontroll-v1.json`。
 4. 使用仓库内校验器检查 OpenAPI 3.1、必需端点与唯一 `operationId`。
 5. 先用 `npm install --global --ignore-scripts` 安装固定 pnpm，再以 `pnpm install --frozen-lockfile --ignore-scripts` 安装依赖。`pnpm-workspace.yaml` 中的 strict peer、engine、依赖成熟期及 exotic dependency 限制继续生效；Actions 不执行任何依赖生命周期脚本。
-6. 从 `Cargo.lock`、`pnpm-lock.yaml`、精确 override 目录和 Rust 1.98.0 sysroot 收集许可证正文、来源证据、CycloneDX 与 checksum；缺失、空白/pointer 证据、篡改、stale/unused、锁文件不一致或任何 warning 都会中止。
+6. 从 `Cargo.lock`、`pnpm-lock.yaml`、精确 override 目录和 Rust 1.98.0 sysroot 收集许可证正文、来源证据、CycloneDX 与 checksum；缺失、空白/pointer 证据、篡改、stale/unused、锁文件不一致或任何 warning 都会中止。生成目录全部规范化为 `0755`，普通证据文件规范化为 `0644`，不继承 sysroot/package archive 的可写或可执行位。
 7. 从刚生成的 OpenAPI 生成 Web SDK，执行 Vue TypeScript typecheck，并构建生产版 Vite 静态文件。
 8. `git diff --exit-code` 检查 OpenAPI 和 SDK 是否与仓库提交一致。若 Rust 契约变更却没有提交相应生成物，构建失败。
 9. 打包前后都重跑 tracked-source 校验，拒绝 replacement refs，并用 NUL-safe 文件系统遍历核对真实工作树闭包。只有 `target`、根和 Web 的 `node_modules`、`artifacts`、`apps/web/dist` 五棵明确目录树可以作为未跟踪构建输出；allowlist 根本身必须是真实非 symlink 目录。
-10. 将项目许可证、第三方 notices/SBOM、ABI/build metadata、两个 Rust 可执行文件、OpenAPI 和 Web `dist` 以提交时间戳制作确定性 tar 包，生成 SHA-256 校验和，并保留 14 天。
+10. 在打包树中逐项断言：目录均为 `0755`，只有两个 Rust ELF 为 `0755`，其余普通文件均为 `0644`，且不存在 symlink/特殊文件；随后将项目许可证、第三方 notices/SBOM、ABI/build metadata、两个 Rust 可执行文件、OpenAPI 和 Web `dist` 以提交时间戳制作确定性 tar 包，生成 SHA-256 校验和，并保留 14 天。
 
 工作流故意不启用跨运行依赖缓存，避免来自其他 ref 的可变缓存进入受保护构建。Ubuntu 托管 runner 的系统镜像由 GitHub 维护，无法像容器镜像一样按 digest 固定；因此产物发布前仍须以 VPS 的固定 digest builder 完成完整测试门禁。
 

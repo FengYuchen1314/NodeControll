@@ -23,10 +23,26 @@ const output = path.resolve(outputArgument)
 if (output === workspace || output === path.parse(output).root) {
   throw new Error(`refusing unsafe output directory: ${output}`)
 }
-if (fs.existsSync(output) && fs.readdirSync(output).length !== 0) {
+let outputStat = null
+try {
+  outputStat = fs.lstatSync(output)
+} catch (error) {
+  if (error?.code !== 'ENOENT') throw error
+}
+if (outputStat && (!outputStat.isDirectory() || outputStat.isSymbolicLink())) {
+  throw new Error(`output path must be a real directory: ${output}`)
+}
+if (outputStat && fs.readdirSync(output).length !== 0) {
   throw new Error(`output directory must be empty: ${output}`)
 }
-fs.mkdirSync(output, { recursive: true })
+if (!outputStat) {
+  fs.mkdirSync(output, { recursive: true })
+  outputStat = fs.lstatSync(output)
+  if (!outputStat.isDirectory() || outputStat.isSymbolicLink()) {
+    throw new Error(`created output path is not a real directory: ${output}`)
+  }
+}
+fs.chmodSync(output, 0o755)
 
 const notices = []
 const issues = []
@@ -75,6 +91,7 @@ writeJson(path.join(output, 'DEPENDENCIES.json'), inventory)
 writeJson(path.join(output, 'bom.cdx.json'), cyclonedxDocument(notices, sourceRevision, sourceRepository, applicationVersion))
 writeChecksums()
 writeReadme()
+normalizeGeneratedPermissions(output)
 
 if (issues.length !== 0) {
   throw new Error(`third-party license collection is incomplete:\n- ${[...issues].sort(compareText).join('\n- ')}`)
@@ -1507,6 +1524,28 @@ function walkFiles(directory) {
     else if (entry.isFile()) result.push(target)
   }
   return result.sort(compareText)
+}
+
+function normalizeGeneratedPermissions(directory) {
+  const directoryStat = fs.lstatSync(directory)
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+    throw new Error(`generated notices path is not a real directory: ${slash(path.relative(output, directory)) || '.'}`)
+  }
+  fs.chmodSync(directory, 0o755)
+  for (const entry of sortedDirectoryEntries(directory)) {
+    const target = path.join(directory, entry.name)
+    const stat = fs.lstatSync(target)
+    if (stat.isSymbolicLink()) throw new Error(`generated notices contain a symbolic link: ${slash(path.relative(output, target))}`)
+    if (stat.isDirectory()) {
+      normalizeGeneratedPermissions(target)
+      continue
+    }
+    if (stat.isFile()) {
+      fs.chmodSync(target, 0o644)
+      continue
+    }
+    throw new Error(`generated notices contain an unsupported file type: ${slash(path.relative(output, target))}`)
+  }
 }
 
 function sha256File(file) { return createHash('sha256').update(fs.readFileSync(file)).digest('hex') }
