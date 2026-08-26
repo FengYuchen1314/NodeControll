@@ -150,9 +150,13 @@ pub struct UserSessionsEnvelope {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RecoveryCodeSummaryData {
+    #[schema(minimum = 1, maximum = 9223372036854775807)]
     pub set_version: u64,
+    #[schema(minimum = 8, maximum = 8)]
     pub total_count: u8,
+    #[schema(minimum = 0, maximum = 8)]
     pub remaining_count: u8,
+    #[schema(minimum = 0, maximum = 9223372036854775807)]
     pub created_at_ms: i64,
 }
 
@@ -164,9 +168,11 @@ pub struct RecoveryCodeSummaryEnvelope {
 
 #[derive(Serialize, ToSchema)]
 pub struct RecoveryCodesCreatedData {
+    #[schema(minimum = 1, maximum = 9223372036854775807)]
     pub set_version: u64,
-    #[schema(min_items = 8, max_items = 8)]
+    #[schema(schema_with = crate::one_time_recovery_codes_schema)]
     pub one_time_recovery_codes: Vec<String>,
+    #[schema(minimum = 0, maximum = 9223372036854775807)]
     pub created_at_ms: i64,
 }
 

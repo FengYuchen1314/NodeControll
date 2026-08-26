@@ -24,6 +24,23 @@ pub mod web_security;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const SETUP_TOKEN_HEADER: HeaderName = HeaderName::from_static("x-nodecontroll-setup-token");
+const RECOVERY_CODE_PRESENTATION_PATTERN: &str = "^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$";
+
+fn one_time_recovery_codes_schema() -> utoipa::openapi::schema::Array {
+    use utoipa::openapi::schema::{ArrayBuilder, ObjectBuilder, Type};
+
+    ArrayBuilder::new()
+        .items(
+            ObjectBuilder::new()
+                .schema_type(Type::String)
+                .min_length(Some(39))
+                .max_length(Some(39))
+                .pattern(Some(RECOVERY_CODE_PRESENTATION_PATTERN)),
+        )
+        .min_items(Some(8))
+        .max_items(Some(8))
+        .build()
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -127,7 +144,7 @@ where
 pub struct BootstrapCreated {
     pub instance_id: String,
     pub owner_id: String,
-    #[schema(min_items = 8, max_items = 8)]
+    #[schema(schema_with = one_time_recovery_codes_schema)]
     pub one_time_recovery_codes: Vec<String>,
 }
 
@@ -962,6 +979,92 @@ mod tests {
                     .and_then(serde_json::Value::as_str)
                     == Some("revokeCurrentUserSession")
         ));
+    }
+
+    #[test]
+    fn openapi_constrains_recovery_code_wire_values_and_metadata() {
+        const CANONICAL_PATTERN: &str = "^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$";
+        const MAX_SIGNED_64: u64 = 9_223_372_036_854_775_807;
+
+        let document = serde_json::to_value(openapi());
+        assert!(document.is_ok());
+        if let Ok(document) = document {
+            for schema in ["BootstrapCreated", "RecoveryCodesCreatedData"] {
+                let base = format!(
+                    "/components/schemas/{schema}/properties/one_time_recovery_codes"
+                );
+                assert_eq!(
+                    document
+                        .pointer(&format!("{base}/minItems"))
+                        .and_then(serde_json::Value::as_u64),
+                    Some(8)
+                );
+                assert_eq!(
+                    document
+                        .pointer(&format!("{base}/maxItems"))
+                        .and_then(serde_json::Value::as_u64),
+                    Some(8)
+                );
+                assert_eq!(
+                    document
+                        .pointer(&format!("{base}/items/minLength"))
+                        .and_then(serde_json::Value::as_u64),
+                    Some(39)
+                );
+                assert_eq!(
+                    document
+                        .pointer(&format!("{base}/items/maxLength"))
+                        .and_then(serde_json::Value::as_u64),
+                    Some(39)
+                );
+                assert_eq!(
+                    document
+                        .pointer(&format!("{base}/items/pattern"))
+                        .and_then(serde_json::Value::as_str),
+                    Some(CANONICAL_PATTERN)
+                );
+            }
+
+            for (property, minimum, maximum) in [
+                ("set_version", 1, MAX_SIGNED_64),
+                ("total_count", 8, 8),
+                ("remaining_count", 0, 8),
+                ("created_at_ms", 0, MAX_SIGNED_64),
+            ] {
+                let base =
+                    format!("/components/schemas/RecoveryCodeSummaryData/properties/{property}");
+                assert_eq!(
+                    document
+                        .pointer(&format!("{base}/minimum"))
+                        .and_then(serde_json::Value::as_u64),
+                    Some(minimum)
+                );
+                assert_eq!(
+                    document
+                        .pointer(&format!("{base}/maximum"))
+                        .and_then(serde_json::Value::as_u64),
+                    Some(maximum)
+                );
+            }
+
+            for property in ["set_version", "created_at_ms"] {
+                let base =
+                    format!("/components/schemas/RecoveryCodesCreatedData/properties/{property}");
+                let expected_minimum = u64::from(property == "set_version");
+                assert_eq!(
+                    document
+                        .pointer(&format!("{base}/minimum"))
+                        .and_then(serde_json::Value::as_u64),
+                    Some(expected_minimum)
+                );
+                assert_eq!(
+                    document
+                        .pointer(&format!("{base}/maximum"))
+                        .and_then(serde_json::Value::as_u64),
+                    Some(MAX_SIGNED_64)
+                );
+            }
+        }
     }
 
     #[test]
