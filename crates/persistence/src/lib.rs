@@ -27,6 +27,7 @@ static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("./migrations/sqlite");
 static POSTGRES_MIGRATOR: Migrator = sqlx::migrate!("./migrations/postgres");
 const SUBSCRIPTION_SETTINGS_KEY: &str = "subscription.behavior";
 const SUBSCRIPTION_SETTINGS_SCHEMA: i32 = 1;
+const JSON_SAFE_INTEGER_MAX_I64: i64 = 9_007_199_254_740_991;
 pub const AUTH_HMAC_LENGTH: usize = 32;
 
 pub type AuthHmac = [u8; AUTH_HMAC_LENGTH];
@@ -4253,7 +4254,7 @@ fn validate_secret_record(record: &NewSecretRecord) -> Result<(), PersistenceErr
 
 fn validate_recovery_code_set(set: &NewRecoveryCodeSet) -> Result<(), PersistenceError> {
     validate_non_negative_timestamp(set.created_at_ms)?;
-    if set.codes.len() != 8 {
+    if set.created_at_ms > JSON_SAFE_INTEGER_MAX_I64 || set.codes.len() != 8 {
         return Err(PersistenceError::InvalidRecoveryCodeSet);
     }
     let mut ids = std::collections::HashSet::new();
@@ -4274,7 +4275,12 @@ fn decode_recovery_code_summary(
     let total_count = u8::try_from(row.1).map_err(|_| PersistenceError::InvalidRecoveryCodeSet)?;
     let remaining_count =
         u8::try_from(row.2).map_err(|_| PersistenceError::InvalidRecoveryCodeSet)?;
-    if total_count != 8 || remaining_count > total_count || row.3 < 0 {
+    if set_version == 0
+        || set_version > JSON_SAFE_INTEGER_MAX_I64 as u64
+        || total_count != 8
+        || remaining_count > total_count
+        || !(0..=JSON_SAFE_INTEGER_MAX_I64).contains(&row.3)
+    {
         return Err(PersistenceError::InvalidRecoveryCodeSet);
     }
     Ok(RecoveryCodeSetSummary {
@@ -5219,11 +5225,13 @@ mod tests {
 
     use super::{
         AuthLevel, AuthSessionStatus, BootstrapState, ConnectionSettings, Database, DatabaseEngine,
+        JSON_SAFE_INTEGER_MAX_I64,
         LoginAttemptReservation, LoginRateDecision, LoginSecurityReason, NewAuthSession,
         NewLoginSecurityEvent, NewRecoveryCode, NewRecoveryCodeSet, NewSecretRecord,
         PasswordChangeRotation, PersistenceError, RecoveryCodeConsumption, RecoveryCodeReplacement,
         SessionAuthentication, SessionAuthenticationOutcome, SessionRevocationReason,
-        UserCredentials, UserSessionRevocation,
+        UserCredentials, UserSessionRevocation, decode_recovery_code_summary,
+        validate_recovery_code_set,
     };
 
     fn settings() -> ConnectionSettings {
@@ -5232,6 +5240,54 @@ mod tests {
             acquire_timeout: Duration::from_secs(5),
             statement_timeout: Duration::from_secs(30),
             lock_timeout: Duration::from_secs(5),
+        }
+    }
+
+    #[test]
+    fn recovery_summary_is_bounded_to_the_json_integer_contract() {
+        assert!(validate_recovery_code_set(&recovery_set_fixture(
+            JSON_SAFE_INTEGER_MAX_I64,
+            1,
+        ))
+        .is_ok());
+        assert!(matches!(
+            validate_recovery_code_set(&recovery_set_fixture(
+                JSON_SAFE_INTEGER_MAX_I64 + 1,
+                2,
+            )),
+            Err(PersistenceError::InvalidRecoveryCodeSet)
+        ));
+        assert!(matches!(
+            decode_recovery_code_summary((1, 8, 8, 0)),
+            Ok(summary)
+                if summary.set_version == 1
+                    && summary.total_count == 8
+                    && summary.remaining_count == 8
+                    && summary.created_at_ms == 0
+        ));
+        assert!(matches!(
+            decode_recovery_code_summary((
+                JSON_SAFE_INTEGER_MAX_I64,
+                8,
+                0,
+                JSON_SAFE_INTEGER_MAX_I64,
+            )),
+            Ok(summary)
+                if summary.set_version == JSON_SAFE_INTEGER_MAX_I64 as u64
+                    && summary.created_at_ms == JSON_SAFE_INTEGER_MAX_I64
+        ));
+        for row in [
+            (0, 8, 8, 0),
+            (JSON_SAFE_INTEGER_MAX_I64 + 1, 8, 8, 0),
+            (1, 8, 8, -1),
+            (1, 8, 8, JSON_SAFE_INTEGER_MAX_I64 + 1),
+            (1, 7, 7, 0),
+            (1, 8, 9, 0),
+        ] {
+            assert!(matches!(
+                decode_recovery_code_summary(row),
+                Err(PersistenceError::InvalidRecoveryCodeSet)
+            ));
         }
     }
 
