@@ -192,7 +192,7 @@ clone-suspected transaction 原子执行：credential status/revision 改为 `cl
 
 `crates/persistence/src/webauthn_contract.rs` 对 SQLite memory DB 与独立 PostgreSQL schema 运行同一个 repository contract，覆盖：
 
-- registration 并发单 winner、wrong origin、重复 credential 的零 credential 写 + ceremony burn + 立即重新 begin、replay、晚于 TTL 的惰性 expiry，以及 finish 与 revoke 的 canonical-lock one-winner race；另以 stale C3 challenge replacement 并发 revoke/clone，固定 PostgreSQL FK `KEY SHARE` 不得形成交叉死锁；
+- registration 并发单 winner、wrong origin、重复 credential 的零 credential 写 + ceremony burn + 立即重新 begin、replay、晚于 TTL 的惰性 expiry，以及 finish 与 revoke 的 canonical-lock one-winner race；共享双库合同保留 stale C3 challenge replacement 并发 revoke/clone smoke race，PostgreSQL 专用合同再由 C3 transaction 先持 stale challenge，使用 `pg_stat_activity` + `pg_blocking_pids` 确认真实 C5 mutation 已持 principal 且等待该 challenge，随后请求 INSERT FK 等价的 user/session `KEY SHARE`。observer 最多轮询 2 秒，专用连接设 3 秒 lock timeout / 5 秒 statement timeout；旧 `FOR UPDATE` 会形成可复现环并失败，`FOR NO KEY UPDATE` 必须让两条 revoke/clone 路径完成；
 - exact challenge/claim/user/session/auth revision/client context/RP-origin 错配；
 - authentication ceremony/credential counter revision CAS、concurrent single winner 与 replay；
 - success/failure commit-point 后跨 verifier lease及 terminal 后 wall-clock rollback 的 exact bearer/context durable handoff retry，wrong claim 不可见，C3 transition 单 winner；

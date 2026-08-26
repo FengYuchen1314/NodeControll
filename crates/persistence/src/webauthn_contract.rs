@@ -1721,6 +1721,289 @@ struct PostgresFixture {
     admin: PgPool,
 }
 
+fn postgres_lock_contract_options(url: &str) -> Result<PgConnectOptions, sqlx::Error> {
+    Ok(PgConnectOptions::from_str(url)?.options([
+        ("search_path", "nodecontroll_test_webauthn_c5"),
+        ("statement_timeout", "5s"),
+        ("lock_timeout", "3s"),
+    ]))
+}
+
+async fn postgres_lock_contract_pool(url: &str) -> Result<PgPool, sqlx::Error> {
+    PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(2))
+        .connect_with(postgres_lock_contract_options(url)?)
+        .await
+}
+
+/// Waits at most two wall-clock seconds for one known backend to be lock-blocked by another. The
+/// tested operation itself is additionally bounded by the dedicated pool's three-second lock
+/// timeout and five-second statement timeout, so a regressed lock cycle cannot hang the gate.
+async fn postgres_backend_blocked_by(
+    observer: &PgPool,
+    blocked_pid: i32,
+    blocker_pid: i32,
+) -> Result<bool, sqlx::Error> {
+    let observed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity activity WHERE activity.pid=$1 AND activity.wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(activity.pid)))",
+            )
+            .bind(blocked_pid)
+            .bind(blocker_pid)
+            .fetch_one(observer)
+            .await?;
+            if blocked {
+                return Ok(true);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    match observed {
+        Ok(result) => result,
+        Err(_) => Ok(false),
+    }
+}
+
+/// Forces the historical PostgreSQL cross-lock cycle instead of relying on scheduler luck.
+///
+/// The C3-side transaction first holds the stale challenge row. A real C5 mutation is then
+/// observed, through `pg_stat_activity`/`pg_blocking_pids`, holding its principal prefix while
+/// waiting for that exact challenge. Finally the C3 transaction requests the same `KEY SHARE`
+/// locks that its challenge INSERT foreign keys require. `FOR NO KEY UPDATE` must admit that lock;
+/// the former `FOR UPDATE` implementation instead deadlocks or reaches the bounded lock timeout.
+async fn postgres_foreign_key_lock_order_contract(
+    url: &str,
+    database: &Database,
+    observer: &PgPool,
+) {
+    let public_origin = origin();
+
+    let revoke_user = EntityId::new();
+    let revoke_session = EntityId::new();
+    let revoke_other = EntityId::new();
+    insert_principal(
+        database,
+        revoke_user,
+        revoke_session,
+        revoke_other,
+        180,
+        1_000,
+    )
+    .await;
+    let revoke_credential = register_one(
+        database,
+        revoke_user,
+        revoke_session,
+        181,
+        9_000,
+        0,
+        false,
+    )
+    .await;
+    let revoke_stale = new_bound_challenge(
+        revoke_user,
+        revoke_session,
+        1,
+        AuthChallengePurpose::SensitiveAction,
+        201,
+        9_100,
+        9_150,
+    );
+    assert!(matches!(
+        database.create_auth_challenge(&revoke_stale).await,
+        Ok(CreateAuthChallengeOutcome::Created(_))
+    ));
+
+    let revoke_c3_pool = postgres_lock_contract_pool(url).await;
+    let revoke_c5_pool = postgres_lock_contract_pool(url).await;
+    let (Ok(revoke_c3_pool), Ok(revoke_c5_pool)) = (revoke_c3_pool, revoke_c5_pool) else {
+        panic!("dedicated PostgreSQL lock-contract pools must connect");
+    };
+    let revoke_c5_pid: Result<i32, sqlx::Error> =
+        sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&revoke_c5_pool)
+            .await;
+    let Ok(revoke_c5_pid) = revoke_c5_pid else {
+        panic!("C5 lock-contract backend pid must be available");
+    };
+    let revoke_c3_transaction = revoke_c3_pool.begin().await;
+    let Ok(mut revoke_c3_transaction) = revoke_c3_transaction else {
+        panic!("C3 lock-contract transaction must begin");
+    };
+    let revoke_c3_pid: Result<i32, sqlx::Error> =
+        sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *revoke_c3_transaction)
+            .await;
+    let Ok(revoke_c3_pid) = revoke_c3_pid else {
+        panic!("C3 lock-contract backend pid must be available");
+    };
+    let revoke_locked: Result<Vec<uuid::Uuid>, sqlx::Error> = sqlx::query_scalar(
+        "SELECT id FROM auth_challenges WHERE user_id=$1 AND purpose=$2 AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=$3 ORDER BY id FOR UPDATE",
+    )
+    .bind(revoke_user.into_uuid())
+    .bind(AuthChallengePurpose::SensitiveAction.as_str())
+    .bind(9_200_i64)
+    .fetch_all(&mut *revoke_c3_transaction)
+    .await;
+    assert!(matches!(
+        revoke_locked,
+        Ok(ref ids)
+            if ids.len() == 1 && ids.first() == Some(&revoke_stale.id.into_uuid())
+    ));
+
+    let revoke_database = Database::Postgres(revoke_c5_pool.clone());
+    let revoke_command = RevokeWebAuthnCredential {
+        credential_id: revoke_credential.credential.id,
+        expected_credential_revision: Revision::initial(),
+        guard: guard(revoke_user, revoke_session, 1, 9_100, 9_200),
+    };
+    let revoke_task = tokio::spawn(async move {
+        revoke_database
+            .revoke_webauthn_credential(&revoke_command)
+            .await
+    });
+    let revoke_blocked =
+        postgres_backend_blocked_by(observer, revoke_c5_pid, revoke_c3_pid).await;
+    assert!(matches!(revoke_blocked, Ok(true)));
+    let revoke_fk_lock: Result<Option<i64>, sqlx::Error> = sqlx::query_scalar(
+        "SELECT 1::BIGINT FROM users u JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 FOR KEY SHARE OF u,s",
+    )
+    .bind(revoke_user.into_uuid())
+    .bind(revoke_session.into_uuid())
+    .fetch_optional(&mut *revoke_c3_transaction)
+    .await;
+    assert!(matches!(revoke_fk_lock, Ok(Some(1))));
+    assert!(revoke_c3_transaction.commit().await.is_ok());
+    let revoke_outcome = tokio::time::timeout(Duration::from_secs(6), revoke_task).await;
+    assert!(matches!(
+        revoke_outcome,
+        Ok(Ok(Ok(RevokeWebAuthnCredentialOutcome::Revoked {
+            auth_revision,
+            ..
+        }))) if auth_revision == Revision::from_value(2)
+    ));
+    revoke_c3_pool.close().await;
+    revoke_c5_pool.close().await;
+
+    let clone_user = EntityId::new();
+    let clone_session = EntityId::new();
+    let clone_other = EntityId::new();
+    insert_principal(
+        database,
+        clone_user,
+        clone_session,
+        clone_other,
+        182,
+        1_000,
+    )
+    .await;
+    let clone_credential = register_one(
+        database,
+        clone_user,
+        clone_session,
+        183,
+        10_000,
+        5,
+        false,
+    )
+    .await;
+    let clone_stale = new_bound_challenge(
+        clone_user,
+        clone_session,
+        1,
+        AuthChallengePurpose::SensitiveAction,
+        202,
+        10_100,
+        10_150,
+    );
+    assert!(matches!(
+        database.create_auth_challenge(&clone_stale).await,
+        Ok(CreateAuthChallengeOutcome::Created(_))
+    ));
+    let (clone_binding, clone_ceremony_id) =
+        begin_bound_authentication(database, clone_user, clone_session, 1, 90, 10_200).await;
+
+    let clone_c3_pool = postgres_lock_contract_pool(url).await;
+    let clone_c5_pool = postgres_lock_contract_pool(url).await;
+    let (Ok(clone_c3_pool), Ok(clone_c5_pool)) = (clone_c3_pool, clone_c5_pool) else {
+        panic!("dedicated PostgreSQL lock-contract pools must connect");
+    };
+    let clone_c5_pid: Result<i32, sqlx::Error> =
+        sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&clone_c5_pool)
+            .await;
+    let Ok(clone_c5_pid) = clone_c5_pid else {
+        panic!("C5 lock-contract backend pid must be available");
+    };
+    let clone_c3_transaction = clone_c3_pool.begin().await;
+    let Ok(mut clone_c3_transaction) = clone_c3_transaction else {
+        panic!("C3 lock-contract transaction must begin");
+    };
+    let clone_c3_pid: Result<i32, sqlx::Error> =
+        sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *clone_c3_transaction)
+            .await;
+    let Ok(clone_c3_pid) = clone_c3_pid else {
+        panic!("C3 lock-contract backend pid must be available");
+    };
+    let clone_locked: Result<Vec<uuid::Uuid>, sqlx::Error> = sqlx::query_scalar(
+        "SELECT id FROM auth_challenges WHERE user_id=$1 AND purpose=$2 AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=$3 ORDER BY id FOR UPDATE",
+    )
+    .bind(clone_user.into_uuid())
+    .bind(AuthChallengePurpose::SensitiveAction.as_str())
+    .bind(10_201_i64)
+    .fetch_all(&mut *clone_c3_transaction)
+    .await;
+    assert!(matches!(
+        clone_locked,
+        Ok(ref ids)
+            if ids.len() == 1 && ids.first() == Some(&clone_stale.id.into_uuid())
+    ));
+
+    let clone_database = Database::Postgres(clone_c5_pool.clone());
+    let clone_binding_for_task = clone_binding.clone();
+    let clone_origin_for_task = public_origin.clone();
+    let clone_task = tokio::spawn(async move {
+        let clone_command = WebAuthnCloneSuspected {
+            ceremony_id: clone_ceremony_id,
+            expected_ceremony_revision: Revision::initial(),
+            binding: &clone_binding_for_task,
+            origin: &clone_origin_for_task,
+            credential_id: clone_credential.credential.id,
+            expected_credential_revision: Revision::initial(),
+            expected_sign_counter: 5,
+            now_ms: 10_201,
+        };
+        clone_database
+            .record_webauthn_clone_suspected(&clone_command)
+            .await
+    });
+    let clone_blocked = postgres_backend_blocked_by(observer, clone_c5_pid, clone_c3_pid).await;
+    assert!(matches!(clone_blocked, Ok(true)));
+    let clone_fk_lock: Result<Option<i64>, sqlx::Error> = sqlx::query_scalar(
+        "SELECT 1::BIGINT FROM users u JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 FOR KEY SHARE OF u,s",
+    )
+    .bind(clone_user.into_uuid())
+    .bind(clone_session.into_uuid())
+    .fetch_optional(&mut *clone_c3_transaction)
+    .await;
+    assert!(matches!(clone_fk_lock, Ok(Some(1))));
+    assert!(clone_c3_transaction.commit().await.is_ok());
+    let clone_outcome = tokio::time::timeout(Duration::from_secs(6), clone_task).await;
+    assert!(matches!(
+        clone_outcome,
+        Ok(Ok(Ok(WebAuthnCloneSuspectedOutcome::Recorded {
+            auth_revision,
+            revoked_sessions: 1,
+        }))) if auth_revision == Revision::from_value(2)
+    ));
+    clone_c3_pool.close().await;
+    clone_c5_pool.close().await;
+}
+
 async fn postgres_fixture(url: &str) -> Result<PostgresFixture, sqlx::Error> {
     let admin = PgPoolOptions::new().max_connections(1).connect(url).await?;
     sqlx::query("DROP SCHEMA IF EXISTS nodecontroll_test_webauthn_c5 CASCADE")
@@ -1754,6 +2037,7 @@ async fn postgres_webauthn_repository_contract() {
     assert!(fixture.is_ok());
     if let Ok(fixture) = fixture {
         repository_contract(fixture.database.clone()).await;
+        postgres_foreign_key_lock_order_contract(&url, &fixture.database, &fixture.admin).await;
         if let Database::Postgres(pool) = &fixture.database {
             pool.close().await;
         }
