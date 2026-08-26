@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 当前阶段：P5，WP02-C1 密码近期认证、改密与会话管理正在收口；P0～P4 已完成。
+- 当前阶段：P5，WP02-C1 密码近期认证、改密与会话管理已完成公开提交级验收；C2 恢复码/keyring 与 C3 统一认证 challenge 正在并行开发；P0～P4 已完成。
 - 总体状态：进行中。
 - 当前上游基线：`iluobei/miaomiaowu@0b47f10c52aee10b9f759a593ca5f61a823cbb72`（`main`，2026-08-25 获取）。
 - 妙妙屋 X 文档基线：`https://miaomiaowux.com/docs/tutorial` 及同站文档页，2026-08-25 开始抓取。
@@ -27,7 +27,19 @@
 
 ## 已完成内容与代码说明
 
-### 2026-08-26 — WP-02-C1 应用与门工具候选全绿，最终公开 Actions/VPS 门待执行
+### 2026-08-26 22:01 — WP-02-C1 公开 Actions 制品与 fresh-checkout VPS 正式门通过
+
+- C1 的公开实现提交为 `d200c033b81ebabfe0c99c50572cc46186ba5329`，随后用 `3f1bcb49da5743a0a4585a9635a27437000c8011` 修复 VPS 验证器里一处未定义的 Python `phase` 局部变量。两个提交都只接在公开 `main` 上，旧的私有 `master` 历史没有进入公开分支；当前正式证据绑定后一个 SHA。
+- GitHub Actions `Build` run `32976849583`、attempt `1` 在 3 分 13 秒内完成唯一的正式生产编译。Rust 二进制、运行时 OpenAPI、Vue production Web、许可证正文、依赖清单和 CycloneDX 1.6 SBOM 被打成 artifact `9609917545`。原始 gzip 共 4,776,366 bytes，SHA-256 为 `81a272e006bb7016f5837ca065c5dc26ac612c44bc5c2bbb5745c2279933d657`；Actions 同时验证了生成 SDK 和 tracked source 在打包前后零漂移。
+- VPS 从公开仓库新建 `/opt/nodecontroll/checkouts/3f1bcb49da5743a0a4585a9635a27437000c8011`，本地 `main`、`origin/main` 和远端 `main` 均精确指向该 SHA，共 226 个 tracked files。正式 run `20260826T135902729109375Z-p5` 于 `2026-08-26T14:01:31Z` 完成，未在 VPS 重建 release/Web/notices；它只校验 Actions 产物并执行测试。
+- 制品门核对了 1,575 个规范 archive members、893 个 packaged files、650 个锁定组件、858 份许可证证据和 20/20 个精确 override；CycloneDX schema、两个 ELF 的 glibc 解释器、七行 `BUILD-METADATA`、包内 `CONTENTS.sha256`、OpenAPI 与 Web 静态资源均通过。fresh pnpm virtual store 的 428 个实际 npm identity 与 artifact inventory 双向相等。
+- Rust 1.98.0 在 SQLite 与真实 PostgreSQL 18 合同下通过 78/78 workspace all-targets tests、`cargo fmt` 和 Clippy `-D warnings`。Web 重新生成 4 个顶层 SDK 输出，typecheck、零 warning lint 和 9 files/81 tests 全绿。runtime smoke 覆盖 bootstrap、并行 session、失败/成功 reauth、sibling 保留、逐会话撤销、改密 replacement、旧密码拒绝、keep-current rotation、logout-all、CSRF 与普通 logout，打包运行时 OpenAPI 与 12-path 源合同逐字节相同。
+- 双页 HTTPS Playwright 门再次证明旧 Cookie 在 rotation 后返回 401 且零 `Set-Cookie`，logout 503 会关闭两页受保护 DOM 并将 quarantine 保持到 reload，显式登录可恢复，新 epoch 不接受旧 cursor 的迟到 invalidation，最终权威 logout 204 才清 Cookie。冻结证据为 33 files、10,087,550 bytes；gate SHA-256 `459eabe176e90e20ac9bda5845cb943c176a505ecc2aace96b62f1f38c96577c`，browser closure SHA-256 `ff9fb087c90d4553358a8df82a6e6f00c8f9385807e1f8d47502ce8cc5d1958b`。
+- 正式 run 的 `manifest.json`、`checksums.txt`、`commands.tsv` SHA-256 分别为 `91beb06087fc5876c9ffde3062c2c9bebbf06b65aa5a90325f2cde8ef2a5b8fc`、`4e874fcbf71f64ad67c930f8947a4e019b77325f93f630d9cc02596a8acdd112`、`7f7854df23adde5f9082978f2913c43ac98284bcdf49e5a66a87346d8c78b0be`。完成后无残留测试容器、网络、临时秘密、占用端口或 verifier lock。
+- PostgreSQL 官方镜像声明的数据卷没有被旧 cleanup 命令带走，宿主审计发现本 run 留下一枚 66,318,301-byte 匿名卷。确认创建时间属于该 run、无容器引用且处于 dangling 状态后，已按精确 volume ID 删除；独立 host audit 的 JSON/checksum SHA-256 为 `393f911fdda1c54491d9a59e79f28ee452ec8f11c0b81776dd547dd4fd037200`、`4333d38e64556a233ed63906803a3f34924013f3528263a5f2f380752d688e6d`。后续提交会把 PostgreSQL cleanup 改为同时移除匿名卷，免去宿主补扫。
+- WP02-C1 至此收口。C2 的持久化 root-key canary/keyring、恢复码组与一次性回显，C3 的统一 challenge，C4 TOTP、C5 WebAuthn、C6 高危 use case 接入和 C7 完整对抗矩阵仍在推进；358 项产品需求保持 `planned`，不会用一个认证纵切冒充妙妙屋 X 全功能完成。
+
+### 2026-08-26 — WP-02-C1 历史应用与门工具候选记录
 
 - 在已正式验收的密码登录/session 基线上实现 C1：登录成功可透明升级旧 Argon2 PHC；`POST /api/v1/auth/reauth` 成功只轮换当前 session，失败 proof 不 touch；`POST /api/v1/me/password` 在一个事务中写新 PHC、清 `force_password_change`、推进 `auth_revision`、撤销全部旧 session 并签发唯一 replacement；活动 session 可以列出、逐个撤销、退出其他或全部退出。rotation 全部继承原 absolute expiry，session/CSRF token 同时更换且无 grace period。
 - application 增加显式 `AuthenticatedAction` allowlist。强制改密时，现有受保护用例只允许自身身份读取、近期认证、改密、管理自身 session 和退出；声明为 `ProductAccess` 的调用会返回 `PASSWORD_CHANGE_REQUIRED`。普通产品 API 尚未进入后续工作包，C6 接入时还要逐个声明动作并修正正常 `ProductAccess` 的 touch 策略。Vue router 另有 `allowDuringPasswordChange`/`requiresRecentAuth` guard，`App.vue` 再做 fail-closed DOM gate；这两层只负责界面收口，不替代后端授权。

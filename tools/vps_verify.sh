@@ -489,7 +489,7 @@ cleanup() {
     fi
   fi
   docker rm --force "${SMOKE_CONTAINER}" >/dev/null 2>&1 || true
-  docker rm --force "${POSTGRES_CONTAINER}" >/dev/null 2>&1 || true
+  docker rm --force --volumes "${POSTGRES_CONTAINER}" >/dev/null 2>&1 || true
   docker network rm "${TEST_NETWORK}" >/dev/null 2>&1 || true
   rm -f "${TEST_SECRET_FILE}" "${TEST_SETUP_TOKEN_FILE}"
   rm -f -- "${CYCLONEDX_CLI_FILE}"
