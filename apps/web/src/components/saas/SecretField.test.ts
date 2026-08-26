@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/vue'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { vuetify } from '../../plugins/vuetify'
@@ -31,7 +31,7 @@ describe('SecretField', () => {
     await fireEvent.click(screen.getByRole('button', { name: '显示 API 密钥' }))
     expect(input.type).toBe('text')
     globalThis.dispatchEvent(new Event('pagehide'))
-    expect(input.type).toBe('password')
+    await waitFor(() => expect(input.type).toBe('password'))
 
     await fireEvent.update(input, 'replacement-secret')
     expect(result.emitted()['update:modelValue']).toContainEqual(['replacement-secret'])
