@@ -317,7 +317,10 @@ pub fn verify_totp_at_utc_ms(
     Ok(accepted)
 }
 
-fn totp_digits(seed: &TotpSeed, time_step: u64) -> Result<[u8; TOTP_CODE_DIGITS], SecretError> {
+fn totp_digits(
+    seed: &TotpSeed,
+    time_step: u64,
+) -> Result<Zeroizing<[u8; TOTP_CODE_DIGITS]>, SecretError> {
     let mut mac = <Hmac<Sha1> as hmac::KeyInit>::new_from_slice(seed.as_bytes())
         .map_err(|_| SecretError::TotpCalculationFailed)?;
     mac.update(&time_step.to_be_bytes());
@@ -328,7 +331,7 @@ fn totp_digits(seed: &TotpSeed, time_step: u64) -> Result<[u8; TOTP_CODE_DIGITS]
         | (u32::from(digest[offset + 2]) << 8)
         | u32::from(digest[offset + 3]);
     let mut value = binary % 1_000_000;
-    let mut digits = [b'0'; TOTP_CODE_DIGITS];
+    let mut digits = Zeroizing::new([b'0'; TOTP_CODE_DIGITS]);
     for digit in digits.iter_mut().rev() {
         *digit = b'0' + u8::try_from(value % 10).unwrap_or_default();
         value /= 10;
@@ -1067,7 +1070,7 @@ mod tests {
                 let digits = totp_digits(&seed, candidate);
                 assert!(digits.is_ok());
                 if let Ok(digits) = digits {
-                    let text = std::str::from_utf8(&digits).unwrap_or_default();
+                    let text = std::str::from_utf8(digits.as_slice()).unwrap_or_default();
                     let code = TotpCode::parse(text);
                     assert!(matches!(
                         code.and_then(|code| verify_totp_at_utc_ms(
@@ -1086,7 +1089,7 @@ mod tests {
                 let digits = totp_digits(&seed, candidate);
                 assert!(digits.is_ok());
                 if let Ok(digits) = digits {
-                    let text = std::str::from_utf8(&digits).unwrap_or_default();
+                    let text = std::str::from_utf8(digits.as_slice()).unwrap_or_default();
                     let code = TotpCode::parse(text);
                     assert!(matches!(
                         code.and_then(|code| verify_totp_at_utc_ms(
@@ -1102,7 +1105,8 @@ mod tests {
             let rollback_digits = totp_digits(&seed, 90);
             assert!(rollback_digits.is_ok());
             if let Ok(rollback_digits) = rollback_digits {
-                let text = std::str::from_utf8(&rollback_digits).unwrap_or_default();
+                let text =
+                    std::str::from_utf8(rollback_digits.as_slice()).unwrap_or_default();
                 let code = TotpCode::parse(text);
                 assert!(matches!(
                     code.and_then(|code| verify_totp_at_utc_ms(

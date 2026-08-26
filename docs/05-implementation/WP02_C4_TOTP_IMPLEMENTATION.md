@@ -45,7 +45,9 @@ C4 将服务端 TOTP profile 收敛为一个不可由 Handler 改写的集合：
 
 ### 4.1 `TotpSeed` 与 `TotpCode`
 
-`TotpSeed` 固定持有 20 bytes `Zeroizing` 数组；生成使用操作系统 CSPRNG。`TotpCode` 解析时要求精确 6 bytes 且全部为 ASCII digit，并以 `Zeroizing` 保存。二者都不实现 `Clone` 或 `Debug`，因此不会自然进入可克隆 DTO、结构化日志或调试输出。
+`TotpSeed` 固定持有 20 bytes `Zeroizing` 数组；生成使用操作系统 CSPRNG。`TotpCode` 解析时要求精确 6 bytes 且全部为 ASCII digit，并以 `Zeroizing` 保存。每个候选 step 派生出的 expected code 也直接写入 `Zeroizing<[u8; 6]>`，所以三窗口循环的每一份比较缓冲区都会在离开迭代时清零。二者都不实现 `Clone` 或 `Debug`，因此不会自然进入可克隆 DTO、结构化日志或调试输出。
+
+当前 application 方法接收借用的 `&str`，只能保证解析进入 `TotpCode` 后的副本清零，不能擦除调用方拥有的原始字符串。这一限制在尚无 HTTP route 的核心阶段保留。未来 transport 必须取得 request body 中 owned `String` 的所有权后立即转入 `Zeroizing<String>`（或直接转成不实现 `Debug`/`Clone` 的 opaque proof），只在同步调用 `TotpCode::parse`/service 的最短作用域内借用；不得 clone、缓存或记录原始 proof，响应与错误日志也不得包含它。
 
 `verify_totp_at_utc_ms`：
 
@@ -108,7 +110,7 @@ application 先读取当前 pending credential，精确匹配 credential ID/revi
 
 C4 不自己签发 bearer，也不接受 HTTP 层拼出的 challenge。它只接收 C3 已持久预留的 `AuthChallengeVerificationClaim`，并执行：
 
-1. claim method 必须是 `totp`；
+1. claim method 必须是 `totp`；transport 传入的 borrowed proof 只在本次调用内解析，未来 HTTP 层必须按上一节持有并清零 owned 原缓冲区；
 2. commit 时钟不能早于 claim 的持久 `reserved_at_ms`，也不能越过 challenge expiry；
 3. code 窗口锚定 `reserved_at_ms`，而不是可能跨入下一 period 的 commit 时间；
 4. active credential、secret envelope 与上次 step 从 repository 取得；
@@ -203,7 +205,7 @@ Domain/secrets/application 测试另覆盖固定 profile、TTL 边界、RFC vect
 
 ## 9. 明确尚未实现的边界
 
-- **HTTP/API**：没有 enrollment begin/activate/status/disable 或 C3 TOTP proof route，也没有 CSRF/recent-auth Handler 映射。
+- **HTTP/API**：没有 enrollment begin/activate/status/disable 或 C3 TOTP proof route，也没有 CSRF/recent-auth Handler 映射。接线时 request DTO 的 owned proof 必须立即进入 `Zeroizing<String>`/opaque `TotpCode`，不得让当前 `&str` service seam 变成长期保留或可日志化的原始字符串。
 - **OpenAPI/SDK**：没有 TOTP request/response schema 或生成 SDK 方法；现有 OpenAPI 不应因 C4 core 产生漂移。
 - **Vue**：没有账户安全页 enrollment/confirm/disable UI，也没有 seed 和恢复码的一次性交付状态机。
 - **base32 与 otpauth**：核心只持有 20-byte seed；尚未实现 canonical base32、issuer/account label 规范化、`otpauth://` URI 或二维码。
