@@ -16,7 +16,7 @@
 
 完成 C1 不等于完成 WP02-C，更不等于完成 WP02。
 
-C1 的历史 v4 应用代码、v6 门工具候选和真实双页 HTTPS candidate 已通过各自 VPS 测试；v6 之后形成的“正式编译只在公开 Actions、VPS 只测试和运行验收同 SHA 制品”边界尚待最终 freeze。公开单父提交、Actions 同 SHA 制品与 fresh-clone formal provenance 同样尚未完成，因此这里仍不把 C1 标成正式完成。
+C1 已绑定公开单父提交 `3f1bcb49…`、GitHub Actions attempt 1 的同 SHA artifact `9609917545` 和 fresh-checkout VPS run `20260826T135902729109375Z-p5`。正式 release/Web/notices 只由公开 Actions 生成，VPS 只校验该制品并运行双库、Web、runtime 和双页 HTTPS 测试。C1 已完成；C2～C7 仍按本合同继续，不能据此把整个 WP02-C 标成完成。
 
 ## 2. 不再留给实现临时决定的事项
 

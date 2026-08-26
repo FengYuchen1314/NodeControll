@@ -2,7 +2,7 @@
 
 ## 1. 状态与范围
 
-本文记录 WP02-C1 当前代码的真实边界。历史 v4 226-file 应用代码候选已在指定 VPS 通过 78/78 Rust 双库门、9 文件 81/81 Vitest、362-module production build、OpenAPI/生成 SDK 零漂移和 SQLite/PostgreSQL 同合同 smoke；双页 HTTPS candidate v4 也已通过并由 validator 重算。后续 v6 226-file 门工具候选 archive SHA-256 为 `e2a055daf353da1f6500ba643b7ae75516e900976e02bae3536e44a818a8cb58`：fresh pnpm 明确关闭 global virtual store，静态/OpenAPI/生成目录 16 个物理文件/Web 门、650 组件许可证闭包和两库 smoke 均通过。v6 之后又按最新目标把正式 release/Web 编译唯一收敛到公开 GitHub Actions、VPS 只保留测试和同 SHA 制品验收，因此两批证据都不绑定最终提交树。公开提交、Actions attempt 1 制品和 fresh-clone 正式验收仍未完成，本页不能作为正式发布门通过证明。
+本文记录 WP02-C1 当前代码的真实边界。历史 v4 226-file 应用代码候选已在指定 VPS 通过 78/78 Rust 双库门、9 文件 81/81 Vitest、362-module production build、OpenAPI/生成 SDK 零漂移和 SQLite/PostgreSQL 同合同 smoke；双页 HTTPS candidate v4 也已通过并由 validator 重算。后续 v6 226-file 门工具候选 archive SHA-256 为 `e2a055daf353da1f6500ba643b7ae75516e900976e02bae3536e44a818a8cb58`：fresh pnpm 明确关闭 global virtual store，静态/OpenAPI/生成目录 16 个物理文件/Web 门、650 组件许可证闭包和两库 smoke 均通过。两批候选都不绑定最终提交树；正式证据现已由公开 `3f1bcb49…`、Actions run `32976849583`/artifact `9609917545` 和 fresh-checkout VPS run `20260826T135902729109375Z-p5` 补齐。
 
 C1 只覆盖：
 
@@ -13,7 +13,7 @@ C1 只覆盖：
 - 强制改密期间的后端 use-case allowlist、router guard 和 DOM fail-closed gate；
 - 对应的 OpenAPI、生成 SDK、Vue 页面、SQLite/PostgreSQL 共用合同和 runtime smoke。
 
-恢复码、持久化 key canary/keyring、统一 challenge、TOTP、WebAuthn 和所有后续高危业务 use case 接入属于 C2～C6，仍未实现。C1 的真实 HTTPS 门已扩展为双页协调合同：旧凭据 401 零 `Set-Cookie`、logout 503/204、quarantine 跨 reload、显式登录恢复、迟到旧 cursor 失效不覆盖新状态，以及七类冻结目标的 secret scan；candidate v4 已通过，提交级 formal 仍须用公开同 SHA 制品重跑。C7 会在此基础上扩展完整浏览器、并发与故障注入矩阵。完整语义由 [WP02-C 认证安全合同](./WP02_C_AUTHENTICATION_SECURITY_CONTRACT.md) 约束。
+恢复码、持久化 key canary/keyring、统一 challenge、TOTP、WebAuthn 和所有后续高危业务 use case 接入属于 C2～C6，仍未实现。C1 的正式双页 HTTPS 门已经覆盖旧凭据 401 零 `Set-Cookie`、logout 503/204、quarantine 跨 reload、显式登录恢复、迟到旧 cursor 失效不覆盖新状态，以及七类冻结目标的 secret scan。C7 会在此基础上扩展完整浏览器、并发与故障注入矩阵。完整语义由 [WP02-C 认证安全合同](./WP02_C_AUTHENTICATION_SECURITY_CONTRACT.md) 约束。
 
 ## 2. 请求到数据库的调用链
 
@@ -385,4 +385,4 @@ rotation mutation 的任何 5xx 都按 `outcome-unknown` 处理，包括带稳�
 5. 在这份 fresh clone 上运行 `tools/vps_verify.sh`，使用 Actions 二进制重复双库测试、Master/Agent smoke、双页 HTTPS rotation、旧 Cookie 零 `Set-Cookie`、logout 503/204、quarantine/recovery/stale-invalidation、许可证/SBOM校验和 secret scan；VPS 不重建正式 release/Web；
 6. 把 commit、run、artifact、hash 与正式 VPS manifest 回填本页和总进度。
 
-仍存在但不属于 C1 的债务：session/bucket/security-event retention、持久化 root-key canary 与旧 key ring、完整 Secure Cookie/HTTPS/可信代理浏览器矩阵、可控时钟与更多并发故障注入、MFA/WebAuthn/recovery。C1 的最小 HTTPS rotation 已在增量候选通过，但提交级 formal 复跑仍是本轮必过门，不能推迟到这些完整矩阵。需求矩阵仍保持 358 项 `planned`，不能用本纵切的工程测试数替代产品需求验收。
+仍存在但不属于 C1 的债务：session/bucket/security-event retention、持久化 root-key canary 与旧 key ring、完整 Secure Cookie/HTTPS/可信代理浏览器矩阵、可控时钟与更多并发故障注入、MFA/WebAuthn/recovery。C1 的提交级 formal 已通过；这些债务分别进入 C2～C7，不能用 C1 的工程测试数替代 358 项产品需求验收。

@@ -10,6 +10,6 @@
 - [WP-02/P5.2 身份初始化纵切](./WP02_IDENTITY_BOOTSTRAP_SLICE.md)：Owner/instance 原子 bootstrap、Argon2id 密码、一次性 setup secret、SQLite/PostgreSQL 一致状态判定、OpenAPI/SDK 与 Setup UI；该纵切已经作为公开基线的一部分通过 Actions 制品驱动的 VPS 正式门，后续状态以密码登录纵切为准。
 - [WP-02/P5.3 密码登录与服务端会话纵切](./WP02_AUTH_SESSION_SLICE.md)：共享登录限流、全路径并发闸门、HMAC 会话、idle/absolute 期限、Origin/Host/CSRF、可信代理、登录/恢复/退出前端状态机；公开 SHA 已通过 Actions + fresh-checkout VPS 正式门。MFA、token、完整 RBAC 与用户生命周期尚未进入本纵切。
 - [WP-02-C 认证安全合同](./WP02_C_AUTHENTICATION_SECURITY_CONTRACT.md)：冻结近期认证、透明 rehash、自助改密码、两类 session rotation、恢复码、TOTP 和 WebAuthn 的状态机与双数据库验收门。该文档是后续纵切的约束，不是完成声明。
-- [WP-02-C1 密码近期认证、改密与会话管理实现](./WP02_C1_PASSWORD_RECENT_AUTH_SESSION_IMPLEMENTATION.md)：逐模块记录 recent-auth、透明 Argon2 rehash、改密、session rotation/管理、API、Vue 状态机、双库事务与测试证据。较早 VPS 开发候选曾全绿；安全审阅后的精确工作树仍待重跑，公开 Actions 与 fresh-clone 正式门尚未回填。
+- [WP-02-C1 密码近期认证、改密与会话管理实现](./WP02_C1_PASSWORD_RECENT_AUTH_SESSION_IMPLEMENTATION.md)：逐模块记录 recent-auth、透明 Argon2 rehash、改密、session rotation/管理、API、Vue 状态机、双库事务与测试证据。公开 `3f1bcb49…`、Actions run `32976849583`/artifact `9609917545` 与 fresh-checkout VPS run `20260826T135902729109375Z-p5` 已完成正式验收。
 
 功能只有在 [需求追踪矩阵](../04-rebuild/REQUIREMENTS_TRACEABILITY.md) 填入实现路径、VPS run 并标记 `verified` 后才算完成。当前工程纵切用于建立质量门，不代表 358 项产品能力已经实现。

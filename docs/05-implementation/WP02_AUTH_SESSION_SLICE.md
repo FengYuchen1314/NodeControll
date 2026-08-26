@@ -6,7 +6,7 @@
 
 登录不是无界的 Argon2 工作队列。初始化状态确认后，请求必须先取得进程内登录/Argon2 并发许可；许可耗尽立即返回 429，而且不会读取或写入 limiter bucket。许可从 limiter 之前一直持有到密码验证结束，因此并发请求触发的额度预检、bucket 写入、凭据读取与 Argon2 都受同一个 1～64 上限约束；验证结束后释放，不占用后续安全事件或 session 提交时间。取得许可后，repository 先只读检查 account、IP prefix、global 三个精确 bucket：已有封禁时不更新 blocked hit、不创建其他 scope 的 row；未命中才进入 account→IP→global 的权威事务。不存在的用户也验证固定 dummy PHC，HTTP 响应不区分不存在、密码错误和停用账号。
 
-这不是完整 WP-02。公开 `ecd8dea` 基线在本文正式验收时尚未实现 TOTP、WebAuthn、恢复码、recent-auth 动作门、密码修改与透明 rehash、个人/API token、session 管理页、完整对象级 RBAC、用户 CRUD/删除生命周期、Turnstile 和浏览器 Playwright 安全套件；其中 recent-auth、改密、登录透明 rehash 与 session 管理后来已进入 [C1 开发候选](./WP02_C1_PASSWORD_RECENT_AUTH_SESSION_IMPLEMENTATION.md)。历史 v4 应用代码与 v6 门工具候选已通过各自 VPS 测试，但最新 Actions/VPS 编译边界修正尚待最终 freeze，也还没有公开同 SHA commit、Actions 制品和 fresh-clone formal provenance。其余能力仍未实现。`owner/admin/operator/support/auditor/member` 与 capability 基线只是后续授权骨架，不能据此宣称用户管理或 IDOR 矩阵已经完成。需求矩阵继续保持诚实的 `planned`，直到对应完整验收合同通过。
+这不是完整 WP-02。公开 `ecd8dea` 基线在本文首次验收时尚未实现 TOTP、WebAuthn、恢复码、recent-auth 动作门、密码修改与透明 rehash、个人/API token、session 管理页、完整对象级 RBAC、用户 CRUD/删除生命周期、Turnstile 和浏览器 Playwright 安全套件。recent-auth、改密、登录透明 rehash 与 session 管理后来由 [C1](./WP02_C1_PASSWORD_RECENT_AUTH_SESSION_IMPLEMENTATION.md) 实现，并已绑定公开 `3f1bcb49…`、Actions artifact `9609917545` 和 fresh-checkout VPS run `20260826T135902729109375Z-p5`。其余能力仍未实现。`owner/admin/operator/support/auditor/member` 与 capability 基线只是后续授权骨架，不能据此宣称用户管理或 IDOR 矩阵已经完成。需求矩阵继续保持诚实的 `planned`，直到对应完整验收合同通过。
 
 ## 2. 数据与密码边界
 
