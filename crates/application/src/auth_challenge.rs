@@ -79,7 +79,10 @@ pub struct VerifiedAuthChallengeEvidence {
 }
 
 impl VerifiedAuthChallengeEvidence {
-    #[expect(dead_code, reason = "reserved for the C4 method verifier boundary")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "reserved for the C4 method verifier boundary")
+    )]
     pub(crate) fn from_method_verifier(
         claim: AuthChallengeVerificationClaim,
         achieved_assurance: AuthenticationAssurance,
