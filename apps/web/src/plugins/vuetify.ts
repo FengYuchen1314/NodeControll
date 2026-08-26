@@ -18,7 +18,19 @@ export const vuetify = createVuetify({
           info: '#175CD3',
         },
       },
+      nodecontrollDark: {
+        dark: true,
+        colors: {
+          primary: '#A4B5FF',
+          secondary: '#B8C0CC',
+          background: '#0C111D',
+          surface: '#182230',
+          error: '#FDA29B',
+          warning: '#FEC84B',
+          success: '#6CE9A6',
+          info: '#84ADFF',
+        },
+      },
     },
   },
 })
-
