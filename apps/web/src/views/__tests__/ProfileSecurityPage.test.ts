@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/vue'
 import { createPinia } from 'pinia'
-import { createMemoryHistory, createRouter } from 'vue-router'
+import { RouterView, createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { vuetify } from '../../plugins/vuetify'
@@ -146,7 +146,7 @@ const renderPage = async (recent = true) => {
       {
         path: '/profile/security',
         name: 'profile-security',
-        component: { render: () => null },
+        component: ProfileSecurityPage,
       },
       {
         path: '/profile/security/password',
@@ -159,7 +159,7 @@ const renderPage = async (recent = true) => {
   const session = useSessionStore(pinia)
   session.acceptAuthenticated(projection(recent))
   return {
-    ...render(ProfileSecurityPage, { global: { plugins: [pinia, router, vuetify] } }),
+    ...render(RouterView, { global: { plugins: [pinia, router, vuetify] } }),
     pinia,
     router,
     session,
