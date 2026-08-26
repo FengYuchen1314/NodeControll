@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 
 const baseUrl = process.argv[2] ?? "http://127.0.0.1:18080";
 const publicOrigin = new URL(baseUrl).origin;
@@ -278,6 +279,57 @@ function expectOnlyCurrentSession(label, result, expectedSessionId) {
   }
 }
 
+function expectNoStore(label, result) {
+  const directives = result.response.headers
+    .get("cache-control")
+    ?.split(",")
+    .map((directive) => directive.trim().toLowerCase());
+  if (!directives?.includes("no-store")) {
+    throw new Error(`${label}: response was not marked Cache-Control: no-store`);
+  }
+}
+
+function takeRecoveryCodeDigests(label, result) {
+  const codes = result.body?.data?.one_time_recovery_codes;
+  if (
+    !Array.isArray(codes) ||
+    codes.length !== 8 ||
+    !codes.every(
+      (code) =>
+        typeof code === "string" &&
+        /^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$/u.test(code),
+    ) ||
+    new Set(codes.map((code) => code.replaceAll("-", ""))).size !== 8
+  ) {
+    if (Array.isArray(codes)) codes.fill("");
+    throw new Error(`${label}: one-time recovery-code shape was invalid`);
+  }
+  const digests = new Set(
+    codes.map((code) => createHash("sha256").update(code).digest("hex")),
+  );
+  codes.fill("");
+  return digests;
+}
+
+function recoveryCodeSummary(label, result) {
+  const summary = result.body?.data;
+  if (
+    result.response.status !== 200 ||
+    !Number.isSafeInteger(summary?.set_version) ||
+    summary.set_version <= 0 ||
+    summary.total_count !== 8 ||
+    !Number.isSafeInteger(summary.remaining_count) ||
+    summary.remaining_count < 0 ||
+    summary.remaining_count > summary.total_count ||
+    !Number.isSafeInteger(summary.created_at_ms) ||
+    summary.created_at_ms < 0
+  ) {
+    throw new Error(`${label}: recovery-code summary was invalid`);
+  }
+  expectNoStore(label, result);
+  return summary;
+}
+
 const firstBootstrap = {
   instance_name: "VPS smoke instance",
   username: "smoke_owner",
@@ -341,6 +393,11 @@ const invalidCapability = await record(
 const bootstrapCreate = await record(
   "bootstrap-create",
   post("/api/v1/bootstrap", firstBootstrap, setupToken),
+);
+expectNoStore("bootstrap-create", bootstrapCreate);
+const bootstrapRecoveryCodeDigests = takeRecoveryCodeDigests(
+  "bootstrap-create",
+  bootstrapCreate,
 );
 const bootstrapAfter = await record(
   "bootstrap-after",
@@ -456,6 +513,41 @@ const meBAfterReauthentication = await record(
 const sessionsBeforeSingleRevoke = await record(
   "sessions-before-single-revoke",
   browserGet("/api/v1/me/sessions", browserAReauthenticated),
+);
+
+const recoverySummaryBefore = await record(
+  "recovery-summary-before",
+  browserGet("/api/v1/me/recovery-codes", browserAReauthenticated),
+);
+const rejectedRecoveryRegeneration = await record(
+  "recovery-regeneration-without-csrf",
+  browserPost(
+    "/api/v1/me/recovery-codes",
+    undefined,
+    browserAReauthenticated,
+    { includeCsrf: false },
+  ),
+);
+const recoverySummaryAfterRejected = await record(
+  "recovery-summary-after-rejected",
+  browserGet("/api/v1/me/recovery-codes", browserAReauthenticated),
+);
+const recoveryRegeneration = await record(
+  "recovery-regeneration",
+  browserPost(
+    "/api/v1/me/recovery-codes",
+    undefined,
+    browserAReauthenticated,
+  ),
+);
+expectNoStore("recovery-regeneration", recoveryRegeneration);
+const regeneratedRecoveryCodeDigests = takeRecoveryCodeDigests(
+  "recovery-regeneration",
+  recoveryRegeneration,
+);
+const recoverySummaryAfter = await record(
+  "recovery-summary-after",
+  browserGet("/api/v1/me/recovery-codes", browserAReauthenticated),
 );
 
 const revokeSibling = await record(
@@ -818,6 +910,9 @@ expectProblem(
 if (bootstrapCreate.response.status !== 201) {
   throw new Error("bootstrap create did not return 201");
 }
+if (bootstrapRecoveryCodeDigests.size !== 8) {
+  throw new Error("bootstrap did not return eight unique recovery codes");
+}
 if (
   !bootstrapCreate.body.data?.instance_id ||
   !bootstrapCreate.body.data?.owner_id
@@ -904,6 +999,60 @@ expectUsableSession(
   meBAfterReauthentication,
   sessionBId,
 );
+const recoveryBefore = recoveryCodeSummary(
+  "recovery summary before regeneration",
+  recoverySummaryBefore,
+);
+expectProblem(
+  "recovery regeneration without CSRF",
+  rejectedRecoveryRegeneration,
+  403,
+  "CSRF_INVALID",
+);
+if (responseCookies(rejectedRecoveryRegeneration.response).length !== 0) {
+  throw new Error(
+    "CSRF-rejected recovery regeneration changed browser credentials",
+  );
+}
+const recoveryAfterRejected = recoveryCodeSummary(
+  "recovery summary after rejected regeneration",
+  recoverySummaryAfterRejected,
+);
+if (
+  recoveryAfterRejected.set_version !== recoveryBefore.set_version ||
+  recoveryAfterRejected.total_count !== recoveryBefore.total_count ||
+  recoveryAfterRejected.remaining_count !== recoveryBefore.remaining_count ||
+  recoveryAfterRejected.created_at_ms !== recoveryBefore.created_at_ms
+) {
+  throw new Error("rejected recovery regeneration changed the active set");
+}
+if (
+  recoveryRegeneration.response.status !== 200 ||
+  !Number.isSafeInteger(recoveryRegeneration.body?.data?.set_version) ||
+  recoveryRegeneration.body.data.set_version !== recoveryBefore.set_version + 1 ||
+  !Number.isSafeInteger(recoveryRegeneration.body.data.created_at_ms) ||
+  recoveryRegeneration.body.data.created_at_ms < recoveryBefore.created_at_ms ||
+  regeneratedRecoveryCodeDigests.size !== 8 ||
+  [...regeneratedRecoveryCodeDigests].some((digest) =>
+    bootstrapRecoveryCodeDigests.has(digest),
+  )
+) {
+  throw new Error("recovery regeneration did not atomically replace the set");
+}
+const recoveryAfter = recoveryCodeSummary(
+  "recovery summary after regeneration",
+  recoverySummaryAfter,
+);
+if (
+  recoveryAfter.set_version !== recoveryRegeneration.body.data.set_version ||
+  recoveryAfter.total_count !== 8 ||
+  recoveryAfter.remaining_count !== 8 ||
+  recoveryAfter.created_at_ms !== recoveryRegeneration.body.data.created_at_ms
+) {
+  throw new Error("regenerated recovery-code summary did not persist");
+}
+bootstrapRecoveryCodeDigests.clear();
+regeneratedRecoveryCodeDigests.clear();
 const sessionsBeforeRevoke = sessionsBeforeSingleRevoke.body?.data?.sessions;
 if (
   !Array.isArray(sessionsBeforeRevoke) ||
@@ -1101,6 +1250,7 @@ for (const path of [
   "/api/v1/auth/login",
   "/api/v1/me",
   "/api/v1/auth/logout",
+  "/api/v1/me/recovery-codes",
 ]) {
   if (!openapi.body.paths?.[path])
     throw new Error(`runtime OpenAPI path missing: ${path}`);
@@ -1111,6 +1261,12 @@ for (const [path, method, operationId] of [
   ["/api/v1/me/sessions", "get", "listCurrentSessions"],
   ["/api/v1/auth/logout-all", "post", "logoutAll"],
   ["/api/v1/me/sessions/{session_id}", "delete", "revokeCurrentUserSession"],
+  ["/api/v1/me/recovery-codes", "get", "getCurrentRecoveryCodes"],
+  [
+    "/api/v1/me/recovery-codes",
+    "post",
+    "regenerateCurrentRecoveryCodes",
+  ],
 ]) {
   const operation = openapi.body.paths?.[path]?.[method];
   if (!operation || operation.operationId !== operationId) {
@@ -1153,6 +1309,9 @@ console.log(
       rejected_reauthentication_preserved_session: true,
       reauthentication_rotated_session: true,
       reauthentication_preserved_sibling: true,
+      recovery_codes_bootstrapped_once: true,
+      recovery_regeneration_csrf_rejected_without_change: true,
+      recovery_codes_regenerated_atomically: true,
       single_session_revoke: true,
       password_change_replacement_only: true,
       old_password_rejected: oldPasswordAfterChange.body.code,
