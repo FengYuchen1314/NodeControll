@@ -15,6 +15,9 @@ use thiserror::Error;
 
 mod auth_challenge;
 mod totp;
+mod webauthn;
+#[cfg(test)]
+mod webauthn_contract;
 
 pub use auth_challenge::{
     AuthChallengeAccess, AuthChallengeAttemptFailure, AuthChallengeAttemptOutcome,
@@ -30,6 +33,17 @@ pub use totp::{
     TotpActivationResult, TotpChallengeBinding, TotpSessionGuard, TotpStepAdvance,
     TotpStepAdvanceOutcome, TotpVerifiedHandoff,
 };
+pub use webauthn::{
+    BeginWebAuthnAuthenticationOutcome, BeginWebAuthnRegistrationOutcome,
+    CompleteWebAuthnRegistration, CompleteWebAuthnRegistrationOutcome,
+    NewWebAuthnAuthenticationCeremony, NewWebAuthnCredential, NewWebAuthnRegistrationCeremony,
+    RenameWebAuthnCredential, RevokeWebAuthnCredential, RevokeWebAuthnCredentialOutcome,
+    StoredWebAuthnAuthenticationCeremony, StoredWebAuthnCredential,
+    StoredWebAuthnRegistrationCeremony, WebAuthnAuthenticationCommit,
+    WebAuthnAuthenticationCommitOutcome, WebAuthnAuthenticationHandoff,
+    WebAuthnChallengeBinding, WebAuthnCloneSuspected, WebAuthnCloneSuspectedOutcome,
+    WebAuthnRegistrationResult, WebAuthnSessionGuard,
+};
 
 static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("./migrations/sqlite");
 static POSTGRES_MIGRATOR: Migrator = sqlx::migrate!("./migrations/postgres");
@@ -39,6 +53,16 @@ const JSON_SAFE_INTEGER_MAX_I64: i64 = 9_007_199_254_740_991;
 pub const AUTH_HMAC_LENGTH: usize = 32;
 
 pub type AuthHmac = [u8; AUTH_HMAC_LENGTH];
+
+const fn is_transaction_owned_secret(purpose: SecretPurpose) -> bool {
+    matches!(
+        purpose,
+        SecretPurpose::TotpSeed
+            | SecretPurpose::WebAuthnRegistrationState
+            | SecretPurpose::WebAuthnAuthenticationState
+            | SecretPurpose::WebAuthnCredentialMaterial
+    )
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewSecretRecord {
@@ -617,9 +641,9 @@ impl Database {
         record: &NewSecretRecord,
     ) -> Result<StoredSecretRecord, PersistenceError> {
         validate_secret_record(record)?;
-        // TOTP permits one active and one pending encrypted seed during replacement. Its records
-        // must therefore go through the credential transaction instead of this single-binding API.
-        if record.binding.purpose == SecretPurpose::TotpSeed {
+        // Credential-owned and ceremony-owned material has lifecycle/CAS rules that this
+        // singleton escape hatch cannot enforce.
+        if is_transaction_owned_secret(record.binding.purpose) {
             return Err(PersistenceError::InvalidSecretRecord);
         }
         match self {
@@ -634,7 +658,7 @@ impl Database {
         &self,
         binding: SecretBinding,
     ) -> Result<Option<StoredSecretRecord>, PersistenceError> {
-        if binding.purpose == SecretPurpose::TotpSeed {
+        if is_transaction_owned_secret(binding.purpose) {
             return Err(PersistenceError::InvalidSecretRecord);
         }
         match self {
@@ -673,8 +697,8 @@ impl Database {
     ) -> Result<StoredSecretRecord, PersistenceError> {
         validate_non_negative_timestamp(now_ms)?;
         validate_secret_record(replacement)?;
-        if expected.binding.purpose == SecretPurpose::TotpSeed
-            || replacement.binding.purpose == SecretPurpose::TotpSeed
+        if is_transaction_owned_secret(expected.binding.purpose)
+            || is_transaction_owned_secret(replacement.binding.purpose)
         {
             return Err(PersistenceError::InvalidSecretRecord);
         }
@@ -5213,6 +5237,14 @@ pub enum PersistenceError {
     InvalidTotpCredential,
     #[error("the stored TOTP credential violates its schema contract")]
     InvalidStoredTotpCredential,
+    #[error("the WebAuthn ceremony command violates a durable state invariant")]
+    InvalidWebAuthnCeremony,
+    #[error("the stored WebAuthn ceremony violates its encrypted typed-state contract")]
+    InvalidStoredWebAuthnCeremony,
+    #[error("the WebAuthn credential command violates a durable state invariant")]
+    InvalidWebAuthnCredential,
+    #[error("the stored WebAuthn credential violates its schema contract")]
+    InvalidStoredWebAuthnCredential,
     #[error("the stored session revocation reason is invalid")]
     InvalidStoredRevocationReason,
     #[error("stored instance name is invalid: {0}")]
@@ -11072,7 +11104,7 @@ mod tests {
                 .is_ok()
         );
         assert!(database.migrate().await.is_ok());
-        assert!(matches!(migration_version(&database).await, Ok(Some(8))));
+        assert!(matches!(migration_version(&database).await, Ok(Some(9))));
         let typed_owner_column: Result<i64, _> = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('secret_records') WHERE name='owner_type'",
         )

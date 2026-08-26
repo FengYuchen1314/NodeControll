@@ -83,6 +83,11 @@ impl AuthChallengeVerificationClaim {
     }
 
     #[must_use]
+    pub(crate) const fn client_context(&self) -> &AuthChallengeClientContext {
+        &self.access.client_context
+    }
+
+    #[must_use]
     pub(crate) fn access_at(&self, now_ms: i64) -> AuthChallengeAccess {
         let mut access = self.access.clone();
         access.now_ms = now_ms;
