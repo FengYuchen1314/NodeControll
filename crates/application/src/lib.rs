@@ -35,6 +35,16 @@ use time::OffsetDateTime;
 use tokio::sync::{Mutex, Semaphore};
 use zeroize::Zeroizing;
 
+mod auth_challenge;
+
+pub use auth_challenge::{
+    AuthChallengePort, AuthChallengePortError, AuthChallengeReservationOutcome,
+    AuthChallengeRotationResumeOutcome, AuthChallengeRotationTransactionClaim,
+    AuthChallengeRotationTransactionPort, AuthChallengeService, AuthChallengeServiceError,
+    AuthChallengeVerificationClaim, IssueAuthChallengeCommand, IssuedAuthChallenge,
+    PresentAuthChallengeCommand, VerifiedAuthChallengeEvidence, VerifiedAuthChallengeOutcome,
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AuthPolicy {
     pub session_idle: Duration,

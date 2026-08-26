@@ -13,6 +13,16 @@ use sqlx::{
 };
 use thiserror::Error;
 
+mod auth_challenge;
+
+pub use auth_challenge::{
+    AuthChallengeAccess, AuthChallengeAttemptFailure, AuthChallengeAttemptOutcome,
+    AuthChallengeAttemptReservation, AuthChallengeAttemptReservationOutcome,
+    AuthChallengeClientContext, AuthChallengeConsumption, AuthChallengeConsumptionOutcome,
+    AuthChallengeRotationReservation, AuthChallengeRotationReservationOutcome,
+    AuthChallengeTokenLookup, CreateAuthChallengeOutcome, NewAuthChallenge,
+};
+
 static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("./migrations/sqlite");
 static POSTGRES_MIGRATOR: Migrator = sqlx::migrate!("./migrations/postgres");
 const SUBSCRIPTION_SETTINGS_KEY: &str = "subscription.behavior";
@@ -5162,6 +5172,10 @@ pub enum PersistenceError {
     InvalidStoredSessionStatus,
     #[error("the stored authentication level is invalid")]
     InvalidStoredAuthLevel,
+    #[error("the authentication challenge input violates a durable state invariant")]
+    InvalidAuthChallenge,
+    #[error("the stored authentication challenge violates its schema contract")]
+    InvalidStoredAuthChallenge,
     #[error("the stored session revocation reason is invalid")]
     InvalidStoredRevocationReason,
     #[error("stored instance name is invalid: {0}")]
@@ -11254,6 +11268,13 @@ mod tests {
             Ok(Some(found)) if found == owner.id.to_string()
         ));
         recovery_code_contract(&database, &owner).await;
+        super::auth_challenge::auth_challenge_contract(
+            &database,
+            owner.id,
+            Revision::initial(),
+            owner.created_at_ms + 50,
+        )
+        .await;
         auth_core_contract(&database, &owner).await;
         actor_aware_session_revocation_contract(&database).await;
         let restart_session = auth_session_fixture(

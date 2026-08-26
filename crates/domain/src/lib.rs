@@ -9,6 +9,16 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod auth_challenge;
+
+pub use auth_challenge::{
+    AuthChallenge, AuthChallengePolicy, AuthChallengePolicyError, AuthChallengePurpose,
+    AuthChallengePurposeParseError, AuthChallengeRotationState,
+    AuthChallengeRotationStateParseError, AuthChallengeStatus, AuthChallengeStatusParseError,
+    AuthenticationAssurance, AuthenticationAssuranceParseError, AuthenticationMethod,
+    AuthenticationMethodParseError,
+};
+
 /// Stable internal identity. New values are UUIDv7 so indexed writes remain time ordered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
