@@ -35,7 +35,7 @@ fn target_is_owned(target: &str) -> bool {
     OWNED_TARGETS.iter().any(|owned| {
         target == *owned
             || target
-                .strip_prefix(owned)
+                .strip_prefix(*owned)
                 .is_some_and(|suffix| suffix.starts_with("::"))
     })
 }
