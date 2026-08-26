@@ -577,10 +577,8 @@ impl Keyring {
     /// the dedicated authentication-challenge purpose.
     pub fn generate_auth_challenge(&self) -> Result<GeneratedAuthChallenge, SecretError> {
         let token = AuthChallengeToken::generate()?;
-        let digest = self.keyed_digest(
-            KeyedDigestPurpose::AuthChallenge,
-            token.normalized_bytes(),
-        )?;
+        let digest =
+            self.keyed_digest(KeyedDigestPurpose::AuthChallenge, token.normalized_bytes())?;
         Ok(GeneratedAuthChallenge { token, digest })
     }
 
@@ -949,20 +947,21 @@ mod tests {
                 if let Ok(generated) = generated {
                     assert_eq!(generated.digest.key_version, 2);
                     assert!(matches!(
-                        keyring.verify_auth_challenge(
-                            generated.token.presented(),
-                            &generated.digest
-                        ),
+                        keyring
+                            .verify_auth_challenge(generated.token.presented(), &generated.digest),
                         Ok(true)
                     ));
                     let other = keyring.generate_auth_challenge();
                     assert!(matches!(
                         other,
                         Ok(other)
-                            if keyring.verify_auth_challenge(
-                                other.token.presented(),
-                                &generated.digest
-                            ) == Ok(false)
+                            if matches!(
+                                keyring.verify_auth_challenge(
+                                    other.token.presented(),
+                                    &generated.digest
+                                ),
+                                Ok(false)
+                            )
                     ));
                 }
 
