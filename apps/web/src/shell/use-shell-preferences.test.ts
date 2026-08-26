@@ -11,7 +11,7 @@ import { useShellPreferences } from './use-shell-preferences'
 afterEach(() => {
   cleanup()
   i18n.global.locale.value = 'zh-CN'
-  vuetify.theme.global.name.value = 'nodecontrollLight'
+  vuetify.theme.change('nodecontrollLight')
 })
 
 describe('useShellPreferences', () => {

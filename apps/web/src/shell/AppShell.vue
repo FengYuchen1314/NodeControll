@@ -104,6 +104,11 @@ onBeforeUnmount(() => globalThis.removeEventListener('keydown', handleGlobalKeyd
 const navigate = async (routeName: ShellRouteName) => {
   if (commandNavigationPending.value) return
   commandNavigationError.value = ''
+  if (route.name === routeName) {
+    commandOpen.value = false
+    if (mobile.value) drawer.value = false
+    return
+  }
   commandNavigationPending.value = true
   try {
     const result = await router.push({ name: routeName })

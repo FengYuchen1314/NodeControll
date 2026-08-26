@@ -141,6 +141,20 @@ describe('AppShell', () => {
     }
   })
 
+  it('treats selecting the current route as a successful close', async () => {
+    const shell = await renderShell(['credentials:manage', 'sessions:read'])
+    try {
+      await fireEvent.keyDown(window, { ctrlKey: true, key: 'k' })
+      const dialog = await screen.findByRole('dialog')
+      await fireEvent.click(within(dialog).getByText('总览'))
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(shell.router.currentRoute.value.name).toBe(appRouteNames.dashboard)
+    } finally {
+      shell.restoreWidth()
+    }
+  })
+
   it('announces a route change and moves focus to main content', async () => {
     const shell = await renderShell(['credentials:manage', 'sessions:read'])
     try {

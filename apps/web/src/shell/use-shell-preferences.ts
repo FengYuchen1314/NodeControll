@@ -32,7 +32,7 @@ export function useShellPreferences() {
   watch(
     resolvedTheme,
     (nextTheme) => {
-      theme.global.name.value = nextTheme
+      theme.change(nextTheme)
       if (globalThis.document) {
         globalThis.document.documentElement.style.colorScheme =
           nextTheme === 'nodecontrollDark' ? 'dark' : 'light'

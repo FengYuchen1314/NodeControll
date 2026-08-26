@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useId, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, useId, watch } from 'vue'
 
 import type { ShellRouteName } from '../router/route-names'
 import type { ShellNavigationItem } from './types'
@@ -25,6 +25,7 @@ const query = ref('')
 const activeIndex = ref(0)
 const paletteId = `command-palette-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
 const listboxId = `${paletteId}-results`
+const searchId = `${paletteId}-search`
 
 const filteredItems = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
@@ -57,6 +58,10 @@ watch(
 
 watch(query, () => {
   activeIndex.value = 0
+})
+
+onMounted(() => {
+  if (props.modelValue) void focusSearch()
 })
 
 const close = () => emit('update:modelValue', false)
@@ -105,19 +110,24 @@ const handleKeydown = (event: globalThis.KeyboardEvent) => {
         <v-btn :aria-label="closeLabel" icon="mdi-close" size="small" variant="text" @click="close" />
       </v-card-title>
       <v-card-text class="pa-4 pt-2">
-        <v-text-field
-          v-model="query"
-          :aria-activedescendant="activeDescendant"
-          :aria-controls="listboxId"
-          :aria-expanded="modelValue"
-          :label="placeholder"
-          autocomplete="off"
-          hide-details
-          prepend-inner-icon="mdi-magnify"
-          role="combobox"
-          :disabled="navigationPending"
-          @keydown="handleKeydown"
-        />
+        <label :for="searchId" class="sr-only">{{ placeholder }}</label>
+        <div class="command-palette__search">
+          <v-icon aria-hidden="true" icon="mdi-magnify" />
+          <input
+            :id="searchId"
+            v-model="query"
+            :aria-activedescendant="activeDescendant"
+            aria-autocomplete="list"
+            :aria-controls="listboxId"
+            :aria-expanded="modelValue"
+            autocomplete="off"
+            :disabled="navigationPending"
+            :placeholder="placeholder"
+            role="combobox"
+            type="search"
+            @keydown="handleKeydown"
+          />
+        </div>
 
         <v-alert
           v-if="navigationError"
@@ -168,6 +178,35 @@ const handleKeydown = (event: globalThis.KeyboardEvent) => {
 .command-palette__results {
   max-height: min(420px, 55vh);
   overflow-y: auto;
+}
+
+.command-palette__search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.24);
+  border-radius: 8px;
+  background: rgb(var(--v-theme-surface));
+}
+
+.command-palette__search:focus-within {
+  border-color: rgb(var(--v-theme-primary));
+  box-shadow: 0 0 0 2px rgba(var(--v-theme-primary), 0.2);
+}
+
+.command-palette__search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: rgb(var(--v-theme-on-surface));
+  font: inherit;
+}
+
+.command-palette__search input::placeholder {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
 
 @media (max-width: 599px) {

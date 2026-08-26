@@ -20,6 +20,7 @@ const sdk = vi.hoisted(() => ({
 vi.mock('../api/generated/sdk.gen', () => sdk)
 
 import { accessRedirect, createAppRouter, safeRedirectPath } from './index'
+import { appRouteNames } from './route-names'
 
 const response = (status: number) => ({ headers: new Headers(), status })
 const bootstrapResult = (initialized: boolean) => ({
@@ -188,9 +189,18 @@ describe('authentication router guard', () => {
   it('keeps the dashboard capability-free and validates protected metadata invariants', () => {
     const router = createAppRouter(createMemoryHistory(), createPinia())
     const dashboard = router.resolve({ name: 'dashboard' }).matched.at(-1)
+    const reauthenticate = router.resolve({ name: appRouteNames.reauthenticate }).matched.at(-1)
+    const profileSecurity = router.resolve({ name: appRouteNames.profileSecurity }).matched.at(-1)
+    const passwordChange = router.resolve({ name: appRouteNames.passwordChange }).matched.at(-1)
 
     expect(dashboard?.meta.requiresAuth).toBe(true)
     expect(dashboard?.meta.requiredCapabilities).toBeUndefined()
+    expect(reauthenticate?.meta.requiredCapabilities).toBeUndefined()
+    expect(profileSecurity?.meta.requiredCapabilities).toEqual([
+      'sessions:read',
+      'credentials:manage',
+    ])
+    expect(passwordChange?.meta.requiredCapabilities).toEqual(['credentials:manage'])
     for (const record of router.getRoutes()) {
       if (record.meta.requiredCapabilities || record.meta.requiresRecentAuth) {
         expect(record.meta.requiresAuth).toBe(true)

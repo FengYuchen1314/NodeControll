@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 
 import type { AppDataTableColumn, AppDataTableLabels, AppDataTableRow } from './types'
 
@@ -51,9 +51,6 @@ const keyedRows = computed(() =>
   props.rows.map((row, index) => ({ key: props.rowKey(row, index), row })),
 )
 const validRowKeys = computed(() => new Set(keyedRows.value.map((candidate) => candidate.key)))
-const selected = computed(
-  () => new Set(props.selectedKeys.filter((key) => validRowKeys.value.has(key))),
-)
 const configurationValid = computed(() => {
   const columnKeys = props.columns.map((column) => column.key)
   const rowKeys = keyedRows.value.map((candidate) => candidate.key)
@@ -64,6 +61,25 @@ const configurationValid = computed(() => {
     new Set(rowKeys).size === rowKeys.length
   )
 })
+const sanitizedSelectedKeys = computed(() =>
+  configurationValid.value
+    ? [...new Set(props.selectedKeys.filter((key) => validRowKeys.value.has(key)))]
+    : [],
+)
+const selected = computed(() => new Set(sanitizedSelectedKeys.value))
+
+watch(
+  [() => props.selectedKeys, sanitizedSelectedKeys],
+  ([input, sanitized]) => {
+    if (
+      input.length !== sanitized.length ||
+      input.some((key, index) => key !== sanitized[index])
+    ) {
+      emit('update:selectedKeys', sanitized)
+    }
+  },
+  { immediate: true },
+)
 const allSelected = computed(
   () =>
     keyedRows.value.length > 0 && keyedRows.value.every((candidate) => selected.value.has(candidate.key)),

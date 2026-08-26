@@ -60,7 +60,7 @@ describe('AppDataTable', () => {
     expect(screen.getByRole('alert').textContent).toContain('Table configuration is invalid')
   })
 
-  it('drops stale selected keys and keeps both 360px representations in the semantic DOM', async () => {
+  it('proactively drops stale selected keys and keeps both 360px representations in the semantic DOM', async () => {
     const originalWidth = globalThis.innerWidth
     Object.defineProperty(globalThis, 'innerWidth', { configurable: true, value: 360 })
     try {
@@ -70,18 +70,20 @@ describe('AppDataTable', () => {
           columns: [{ key: 'name', label: 'Name' }],
           labels,
           rowKey: (row) => String(row.id),
-          rows: [{ id: 'a', name: 'Alpha' }],
+          rows: [{ id: 'a', name: 'Alpha' }, { id: 'b', name: 'Beta' }],
           selectable: true,
-          selectedKeys: ['deleted-row'],
+          selectedKeys: ['b'],
           tableLabel: 'Servers',
         },
       })
 
       expect(screen.getByTestId('app-data-table-desktop')).not.toBeNull()
       expect(screen.getByTestId('app-data-table-mobile')).not.toBeNull()
+      await result.rerender({ rows: [{ id: 'a', name: 'Alpha' }] })
+      expect(result.emitted()['update:selectedKeys']).toEqual([[[]]])
       const selectors = screen.getAllByLabelText('Select a')
       await fireEvent.click(selectors[0]!)
-      expect(result.emitted()['update:selectedKeys']).toEqual([[['a']]])
+      expect(result.emitted()['update:selectedKeys']).toEqual([[[]], [['a']]])
     } finally {
       Object.defineProperty(globalThis, 'innerWidth', { configurable: true, value: originalWidth })
     }

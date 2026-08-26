@@ -162,7 +162,6 @@ export function createAppRouter(
         component: () => import('../views/ReauthenticatePage.vue'),
         meta: {
           allowDuringPasswordChange: true,
-          requiredCapabilities: ['sessions:read', 'credentials:manage'],
           requiresAuth: true,
           title: '确认身份',
           titleKey: 'routes.reauthenticate',
@@ -174,7 +173,7 @@ export function createAppRouter(
         component: () => import('../views/ProfileSecurityPage.vue'),
         meta: {
           allowDuringPasswordChange: true,
-          requiredCapabilities: ['credentials:manage'],
+          requiredCapabilities: ['sessions:read', 'credentials:manage'],
           requiresAuth: true,
           title: '账户安全',
           titleKey: 'routes.profileSecurity',
@@ -186,6 +185,7 @@ export function createAppRouter(
         component: () => import('../views/ChangePasswordPage.vue'),
         meta: {
           allowDuringPasswordChange: true,
+          requiredCapabilities: ['credentials:manage'],
           requiresAuth: true,
           requiresRecentAuth: true,
           title: '修改密码',
