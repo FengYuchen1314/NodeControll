@@ -374,7 +374,7 @@ export const useSessionStore = defineStore('session', () => {
     disposition: CredentialDisposition,
   ) => {
     if (!lease) return false
-    let settled = false
+    let settled: boolean
     try {
       settled = lease.settle(disposition)
     } catch {

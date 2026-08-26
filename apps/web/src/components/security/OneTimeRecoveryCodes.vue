@@ -28,12 +28,13 @@ const explanation = computed(() =>
 const download = () => {
   downloadStarted.value = false
   let objectUrl: string | undefined
-  let anchor: HTMLAnchorElement | undefined
+  let removeAnchor: (() => void) | undefined
   try {
     const contents = ['NodeControll recovery codes', '', ...props.codes, ''].join('\n')
-    const blob = new Blob([contents], { type: 'text/plain;charset=utf-8' })
+    const blob = new globalThis.Blob([contents], { type: 'text/plain;charset=utf-8' })
     objectUrl = globalThis.URL.createObjectURL(blob)
-    anchor = globalThis.document.createElement('a')
+    const anchor = globalThis.document.createElement('a')
+    removeAnchor = () => anchor.remove()
     anchor.href = objectUrl
     anchor.download = 'nodecontroll-recovery-codes.txt'
     anchor.rel = 'noopener'
@@ -44,7 +45,7 @@ const download = () => {
   } catch {
     emit('downloadFailed')
   } finally {
-    anchor?.remove()
+    removeAnchor?.()
     if (objectUrl) {
       const urlToRevoke = objectUrl
       globalThis.queueMicrotask(() => globalThis.URL.revokeObjectURL(urlToRevoke))

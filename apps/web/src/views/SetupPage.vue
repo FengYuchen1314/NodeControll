@@ -384,7 +384,7 @@ const initialize = useMutation({
           username: form.username,
           password: form.password,
         },
-        signal: AbortSignal.timeout(15_000),
+        signal: globalThis.AbortSignal.timeout(15_000),
       })
     } catch {
       throw unknownInitializationFailure()
