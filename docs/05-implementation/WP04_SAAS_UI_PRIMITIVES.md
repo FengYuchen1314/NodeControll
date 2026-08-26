@@ -46,6 +46,8 @@ props 承载标题、描述、面包屑、revision 和主动作状态；`eyebrow
 
 提交函数先设置本地 `submissionLocked`，再发出一次 `confirm`。因此父组件尚未来得及把 `pending` 设为 `true` 时，第二次点击、回车或关闭也会被拒绝。`pending` 或本地锁定期间 dialog 为 persistent，取消按钮不可用。对象名、原因和本地锁在关闭、重新打开和卸载时清空。
 
+父层以 `retryRevision` 明确授权一次失败后的重试。若请求在 transport preflight 或同步校验阶段失败，从未经历 `pending=true`，仅更新 `errorMessage` 不会解锁；父层必须在错误状态稳定后推进 revision。组件只在本次提交已经锁定、revision 与提交时不同且当前不是 pending 时允许重试。已有错误、无关重渲染、`pending` 从 true 回到 false 或重复 revision 均不能开放第二次提交。成功后父层应关闭 dialog；只有已经确认失败的请求才能推进 `retryRevision`。
+
 组件不执行近期认证，不创建 job，也不把错误当成功。接入危险业务动作时，页面仍须按 `impact → reason/re-auth/confirm → job → terminal` 完成状态机，并通过 `errorMessage` 显示持久错误。
 
 ### 2.5 `SecretField`
@@ -66,7 +68,7 @@ props 承载标题、描述、面包屑、revision 和主动作状态；`eyebrow
 
 ### 2.7 `PolicyExplainer`
 
-组件显示一个 effective 值和按数字优先级从高到低排列的贡献列表。相同优先级保持输入顺序。每项包含来源名称、scope、priority、候选值、时间范围，以及 applied/excluded/overridden 状态。`effective` 和 `contributor` slots 允许调用方替换布局，slot props 仍只包含 UI 展示合同。
+组件显示一个 effective 值和按数字优先级从高到低排列的贡献列表。相同优先级保持输入顺序。每项包含来源名称、scope、priority、候选值、适用时间范围，以及 applied/excluded/overridden 状态。适用范围直接显示，并作为状态解释的一部分；它不会传给 `observedAt`，不会被标成观测时间。`effective` 和 `contributor` slots 允许调用方替换布局，slot props 仍只包含 UI 展示合同。
 
 贡献列表使用有名称的 `ol/li`。599px 以下由四列压成两列，来源和值各自占满一行。敏感候选值复用 `SafeDisplayValueView`，不会从 redacted 分支读取附加原文。
 
@@ -80,14 +82,14 @@ props 承载标题、描述、面包屑、revision 和主动作状态；`eyebrow
 
 ## 4. 测试源码
 
-当前有 10 个组件行为测试：
+当前有 11 个组件行为测试：
 
 - `ResourceHeader.test.ts`：标题/面包屑/slot/动作，以及 360px 下动作可达；
 - `StatusChip.test.ts`：图标、文字、证据 tooltip、键盘焦点和双主题注册；
-- `DangerDialog.test.ts`：区分大小写的对象名、必填原因、form submit、本地单次锁和 pending 关闭拒绝；
+- `DangerDialog.test.ts`：区分大小写的对象名、必填原因、form submit、本地单次锁、pending 关闭拒绝，以及同步失败必须由新终态 revision 才能解锁；
 - `SecretField.test.ts`：默认遮蔽、显式显示、pagehide 再遮蔽、替换/清除事件，以及无 Web Storage/console 写入；
 - `DesiredReportedDiff.test.ts`：语义状态、证据、空态、脱敏原始差异入口和夹带字段不泄露；
-- `PolicyExplainer.test.ts`：优先级顺序、effective 值、来源证据和夹带字段不泄露。
+- `PolicyExplainer.test.ts`：优先级顺序、effective 值、适用时间证据不冒充观测时间，以及夹带字段不泄露。
 
 这些是待 VPS 执行的测试源码数量，不是本机运行声明。最终 typecheck、零 warning lint 和 Vitest 结果只接受从同一提交 `git archive` 上传到固定 Node/pnpm builder 的 fresh install；禁止在本地执行，也不运行 production build。
 

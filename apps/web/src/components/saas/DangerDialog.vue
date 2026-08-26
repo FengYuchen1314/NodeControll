@@ -13,6 +13,7 @@ const props = withDefaults(
     pending?: boolean
     reasonLabel?: string
     reasonRequired?: boolean
+    retryRevision?: number | string
     title: string
   }>(),
   {
@@ -23,6 +24,7 @@ const props = withDefaults(
     pending: false,
     reasonLabel: '操作原因',
     reasonRequired: false,
+    retryRevision: undefined,
   },
 )
 
@@ -40,6 +42,7 @@ defineSlots<{
 const typedObjectName = ref('')
 const reason = ref('')
 const submissionLocked = ref(false)
+const lockedAtRetryRevision = ref<number | string | undefined>()
 
 const confirmationMatches = computed(
   () => props.objectName.length > 0 && typedObjectName.value === props.objectName,
@@ -55,6 +58,7 @@ const wipeLocalInputs = () => {
   typedObjectName.value = ''
   reason.value = ''
   submissionLocked.value = false
+  lockedAtRetryRevision.value = props.retryRevision
 }
 
 watch(
@@ -63,9 +67,17 @@ watch(
 )
 
 watch(
-  () => props.pending,
-  (pending, wasPending) => {
-    if (wasPending && !pending) submissionLocked.value = false
+  () => props.retryRevision,
+  (retryRevision) => {
+    if (
+      props.pending ||
+      !submissionLocked.value ||
+      Object.is(retryRevision, lockedAtRetryRevision.value)
+    ) {
+      return
+    }
+    submissionLocked.value = false
+    lockedAtRetryRevision.value = retryRevision
   },
 )
 
@@ -82,6 +94,7 @@ const updateDialogModel = (nextValue: boolean) => {
 const confirm = () => {
   if (!canConfirm.value) return
   submissionLocked.value = true
+  lockedAtRetryRevision.value = props.retryRevision
   const trimmedReason = reason.value.trim()
   emit('confirm', trimmedReason ? { reason: trimmedReason } : {})
 }

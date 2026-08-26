@@ -71,6 +71,9 @@ const titleId = useId()
             <span v-if="contributor.scope" class="text-caption text-medium-emphasis">
               范围：{{ contributor.scope }}
             </span>
+            <span v-if="contributor.timeRange" class="text-caption text-medium-emphasis">
+              适用时间：{{ contributor.timeRange }}
+            </span>
           </div>
 
           <div class="policy-explainer__priority">
@@ -84,9 +87,8 @@ const titleId = useId()
           </div>
 
           <status-chip
-            :description="contributor.timeRange ? `时间范围：${contributor.timeRange}` : undefined"
+            :description="contributor.timeRange ? `适用时间：${contributor.timeRange}` : undefined"
             :label="stateContract[contributor.state].label"
-            :observed-at="contributor.timeRange"
             :source="contributor.scope ?? contributor.label"
             :tone="stateContract[contributor.state].tone"
           />

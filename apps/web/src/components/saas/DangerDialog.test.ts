@@ -55,4 +55,37 @@ describe('DangerDialog', () => {
     await fireEvent.click(screen.getByRole('button', { name: '取消' }))
     await waitFor(() => expect(result.emitted()['update:modelValue']).toBeUndefined())
   })
+
+  it('unlocks a retry only after a new explicit terminal failure revision', async () => {
+    const result = render(DangerDialog, {
+      global: { plugins: [vuetify] },
+      props: {
+        errorMessage: undefined,
+        impactSummary: '删除后无法恢复。',
+        modelValue: true,
+        objectName: 'edge-01',
+        retryRevision: 7,
+        title: '删除服务器',
+      },
+    })
+
+    await fireEvent.update(screen.getByLabelText('资源名称：edge-01'), 'edge-01')
+    const confirm = await screen.findByRole('button', { name: '确认执行' })
+    await fireEvent.click(confirm)
+    expect(result.emitted().confirm).toHaveLength(1)
+    expect((confirm as HTMLButtonElement).disabled).toBe(true)
+
+    await result.rerender({ errorMessage: '请求未发送，请检查连接。' })
+    expect(screen.getByTestId('danger-dialog-error').textContent).toContain('请求未发送')
+    expect((confirm as HTMLButtonElement).disabled).toBe(true)
+
+    await result.rerender({ pending: true })
+    await result.rerender({ pending: false })
+    expect((confirm as HTMLButtonElement).disabled).toBe(true)
+
+    await result.rerender({ retryRevision: 8 })
+    expect((confirm as HTMLButtonElement).disabled).toBe(false)
+    await fireEvent.click(confirm)
+    expect(result.emitted().confirm).toHaveLength(2)
+  })
 })
