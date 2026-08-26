@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2 Web 已通过独立 VPS 门，C2 后端第三候选仍在重跑，C3 源码已进入本地主线但尚未编译，整片合并态验收尚未开始；P0～P4 已完成。
+- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2 Web 与后端各自通过独立 VPS 门，C3 源码已进入本地主线，当前正对 `334c8ea…` 执行 C2+C3 合并态 VPS 门；P0～P4 已完成。
 - 总体状态：进行中。
 - 当前上游基线：`iluobei/miaomiaowu@0b47f10c52aee10b9f759a593ca5f61a823cbb72`（`main`，2026-08-25 获取）。
 - 妙妙屋 X 文档基线：`https://miaomiaowux.com/docs/tutorial` 及同站文档页，2026-08-25 开始抓取。
@@ -26,6 +26,14 @@
 | P7 | 系统验收和交付 | 未开始 | E2E、性能、安全、升级/回滚、备份恢复全部验收 |
 
 ## 已完成内容与代码说明
+
+### 2026-08-26 23:28 — C2 后端独立门通过；`334c8ea…` 合并态门已启动
+
+- C2 后端第三个全新候选绑定源码提交 `2ddb143e0af9514b943c324b2718a820c620a28a`，archive SHA-256 为 `8a3be5d6b45802d3517d04ad4bee62d30348f8f745255681051b6ba750e953af`；候选目录是 `/opt/nodecontroll/dev/2ddb143-c2-20260826T151845Z-2718dab6`。上传前后 source manifest 同为 `22f4171924e31b3d356061e9f851b620e3364120afc80bccd588fff6fbdb565e`，证明门禁没有在候选内原地改源码。
+- 固定 Rust、Node 和 PostgreSQL 18.6 镜像下，Rust fmt/check/workspace all-targets tests/Clippy `-D warnings`、SQLite 与真实 PostgreSQL repository contracts、OpenAPI、358/358 需求文档、链接及 sanitizer 全部以 `rc=0` 结束。test log、logs manifest 和 evidence SHA-256 分别为 `025dd2084e036d26af8e6046cbd8317f366e608e6600e9eb5c532230e06f26ba`、`14d389a528430df90f95ec0b67036f40a3b39b3ba7018620deff186e4b88db50`、`1440321274302712b7a0ce6175f242a8dd79c7a01f1b1a946d4252d7beab1b5f`。
+- 通过项明确覆盖 0006 迁移防护、错误/旧 key canary、首次 bootstrap 恰好八枚恢复码、整组原子替换和并发单次消费。VPS 没有执行 release 或 Web production build；本轮具名容器、网络、PostgreSQL 匿名卷及约 4.5 GB build scratch 已精确删除，源码、日志与校验文件保留。OpenAPI 对恢复码字符串长度/正则及部分计数上界的静态约束仍偏宽，已登记为后续合同硬化项；Web 运行时目前执行更严格的规范校验。
+- C3 在随后互审中补出一个只读、crate-private 的 `AuthChallengeVerificationClaim::reserved_at_ms()`，使 TOTP/WebAuthn verifier 能以服务端持久 reservation 时间判定挑战窗口，而不允许 HTTP 层伪造时间。该修补已作为本地主线 `334c8ea…` 的最后一笔提交。
+- 现已从精确、干净的本地主线 `334c8ea2af42068fd69d215c2df868c3f1d4225f` 启动新的不可变 VPS 集成候选。门禁将同时覆盖 C3 双库迁移/合同、完整 Rust 与 Web 开发门、运行时 OpenAPI/SDK 零漂移、文档闭包，并在 SQLite 与 PostgreSQL 两个真实 Master 上执行扩展恢复码 smoke；任何秘密都不得进入日志。本轮同样禁止在 VPS 编译 release/Vite production，结果返回前不登记 C3 或合并态通过，也不推送公开 `main`。
 
 ### 2026-08-26 23:24 — C2 Web 独立门通过；C2 后端第三候选与 C3 合并态待验
 
