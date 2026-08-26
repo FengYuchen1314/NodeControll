@@ -455,6 +455,33 @@ fn authentication_access(
     }
 }
 
+fn new_bound_challenge(
+    user_id: EntityId,
+    session_id: EntityId,
+    auth_revision: u64,
+    purpose: AuthChallengePurpose,
+    marker: u8,
+    created_at_ms: i64,
+    expires_at_ms: i64,
+) -> NewAuthChallenge {
+    NewAuthChallenge {
+        id: EntityId::new(),
+        token_key_version: 1,
+        token_hmac: [marker; 32],
+        purpose,
+        user_id,
+        session_id: Some(session_id),
+        auth_revision: Revision::from_value(auth_revision),
+        allowed_methods: vec![AuthenticationMethod::WebAuthn],
+        max_attempts: 5,
+        created_at_ms,
+        expires_at_ms,
+        rotation_required: false,
+        client_context: AuthChallengeClientContext::unbound(),
+        revision: Revision::initial(),
+    }
+}
+
 async fn schema_contract(database: &Database) {
     let forbidden = [
         "attestation_object",
@@ -1291,6 +1318,82 @@ async fn repository_contract(database: Database) {
     ));
     assert_eq!(auth_revision(&database, management_race_user).await, 2);
 
+    // C3 creates a replacement challenge by locking stale challenge rows before its INSERT takes
+    // principal FK KEY SHARE locks. Credential revocation takes the opposite logical prefix. Both
+    // must complete without a PostgreSQL deadlock; revoke either invalidates the newly committed
+    // challenge in its fresh statement snapshot or makes the create observe a stale auth revision.
+    let create_revoke_user = EntityId::new();
+    let create_revoke_session = EntityId::new();
+    let create_revoke_other = EntityId::new();
+    insert_principal(
+        &database,
+        create_revoke_user,
+        create_revoke_session,
+        create_revoke_other,
+        72,
+        1_000,
+    )
+    .await;
+    let create_revoke_credential = register_one(
+        &database,
+        create_revoke_user,
+        create_revoke_session,
+        73,
+        7_000,
+        0,
+        false,
+    )
+    .await;
+    let stale_before_revoke = new_bound_challenge(
+        create_revoke_user,
+        create_revoke_session,
+        1,
+        AuthChallengePurpose::SensitiveAction,
+        74,
+        7_200,
+        7_250,
+    );
+    assert!(matches!(
+        database.create_auth_challenge(&stale_before_revoke).await,
+        Ok(CreateAuthChallengeOutcome::Created(_))
+    ));
+    let replacement_during_revoke = new_bound_challenge(
+        create_revoke_user,
+        create_revoke_session,
+        1,
+        AuthChallengePurpose::SensitiveAction,
+        75,
+        7_300,
+        7_400,
+    );
+    let revoke_during_create_command = RevokeWebAuthnCredential {
+        credential_id: create_revoke_credential.credential.id,
+        expected_credential_revision: Revision::initial(),
+        guard: guard(
+            create_revoke_user,
+            create_revoke_session,
+            1,
+            7_100,
+            7_300,
+        ),
+    };
+    let (create_during_revoke, revoke_during_create) = tokio::join!(
+        database.create_auth_challenge(&replacement_during_revoke),
+        database.revoke_webauthn_credential(&revoke_during_create_command),
+    );
+    assert!(matches!(
+        create_during_revoke,
+        Ok(CreateAuthChallengeOutcome::Created(_))
+            | Ok(CreateAuthChallengeOutcome::PrincipalUnavailable)
+    ));
+    assert!(matches!(
+        revoke_during_create,
+        Ok(RevokeWebAuthnCredentialOutcome::Revoked {
+            auth_revision,
+            ..
+        }) if auth_revision == Revision::from_value(2)
+    ));
+
     // Revocation must also tolerate a lazily stale pending ceremony. Expired rows are marked at
     // their stored expiry, while still-live rows are rejected at the management commit time.
     let stale_registration = NewWebAuthnRegistrationCeremony {
@@ -1325,9 +1428,9 @@ async fn repository_contract(database: Database) {
     assert!(matches!(
         revoked,
         Ok(RevokeWebAuthnCredentialOutcome::Revoked {
-            auth_revision: Revision::from_value(2),
+            auth_revision,
             ..
-        })
+        }) if auth_revision == Revision::from_value(2)
     ));
     assert_eq!(auth_revision(&database, user_id).await, 2);
     assert_eq!(
@@ -1361,6 +1464,19 @@ async fn repository_contract(database: Database) {
         false,
     )
     .await;
+    let stale_before_clone = new_bound_challenge(
+        clone_user,
+        clone_session,
+        1,
+        AuthChallengePurpose::SensitiveAction,
+        44,
+        3_101,
+        3_150,
+    );
+    assert!(matches!(
+        database.create_auth_challenge(&stale_before_clone).await,
+        Ok(CreateAuthChallengeOutcome::Created(_))
+    ));
     let (clone_binding, clone_ceremony_id) = begin_bound_authentication(
         &database,
         clone_user,
@@ -1394,24 +1510,40 @@ async fn repository_contract(database: Database) {
             .await,
         Err(PersistenceError::InvalidWebAuthnCredential)
     ));
-    let clone_outcome = database
-        .record_webauthn_clone_suspected(&WebAuthnCloneSuspected {
-            ceremony_id: clone_ceremony_id,
-            expected_ceremony_revision: Revision::initial(),
-            binding: &clone_binding,
-            origin: &public_origin,
-            credential_id: clone_credential.credential.id,
-            expected_credential_revision: Revision::initial(),
-            expected_sign_counter: 5,
-            now_ms: 3_201,
-        })
-        .await;
+    let replacement_during_clone = new_bound_challenge(
+        clone_user,
+        clone_session,
+        1,
+        AuthChallengePurpose::SensitiveAction,
+        45,
+        3_201,
+        3_301,
+    );
+    let clone_command = WebAuthnCloneSuspected {
+        ceremony_id: clone_ceremony_id,
+        expected_ceremony_revision: Revision::initial(),
+        binding: &clone_binding,
+        origin: &public_origin,
+        credential_id: clone_credential.credential.id,
+        expected_credential_revision: Revision::initial(),
+        expected_sign_counter: 5,
+        now_ms: 3_201,
+    };
+    let (create_during_clone, clone_outcome) = tokio::join!(
+        database.create_auth_challenge(&replacement_during_clone),
+        database.record_webauthn_clone_suspected(&clone_command),
+    );
+    assert!(matches!(
+        create_during_clone,
+        Ok(CreateAuthChallengeOutcome::Created(_))
+            | Ok(CreateAuthChallengeOutcome::PrincipalUnavailable)
+    ));
     assert!(matches!(
         clone_outcome,
         Ok(WebAuthnCloneSuspectedOutcome::Recorded {
-            auth_revision: Revision::from_value(2),
+            auth_revision,
             revoked_sessions: 1,
-        })
+        }) if auth_revision == Revision::from_value(2)
     ));
     assert_eq!(session_status(&database, clone_session).await, "revoked");
 

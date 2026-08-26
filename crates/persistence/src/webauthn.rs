@@ -556,7 +556,7 @@ async fn lock_guard_postgres(
         return Err(PersistenceError::SessionPrincipalUnavailable);
     }
     let snapshot = sqlx::query_as(
-        "SELECT u.revision AS user_revision,uas.auth_revision AS auth_revision,s.auth_revision AS session_auth_revision,u.force_password_change,s.status AS session_status,s.revoked_at_ms,s.recent_auth_at_ms,s.last_seen_at_ms,s.idle_expires_at_ms,s.absolute_expires_at_ms FROM users u JOIN user_auth_state uas ON uas.user_id=u.id JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=$3 FOR UPDATE OF u,s",
+        "SELECT u.revision AS user_revision,uas.auth_revision AS auth_revision,s.auth_revision AS session_auth_revision,u.force_password_change,s.status AS session_status,s.revoked_at_ms,s.recent_auth_at_ms,s.last_seen_at_ms,s.idle_expires_at_ms,s.absolute_expires_at_ms FROM users u JOIN user_auth_state uas ON uas.user_id=u.id JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=$3 FOR NO KEY UPDATE OF u,s",
     )
     .bind(guard.user_id.into_uuid())
     .bind(guard.actor_session_id.into_uuid())
@@ -567,8 +567,9 @@ async fn lock_guard_postgres(
 }
 
 /// Serializes every PostgreSQL WebAuthn mutation for one user on `user_auth_state` before it can
-/// lock a C3 challenge. The user and optional bound session are then locked before the claim so a
-/// ceremony INSERT's foreign-key checks cannot invert revoke's principal -> challenge order.
+/// lock a C3 challenge. The user and optional bound session are then locked `FOR NO KEY UPDATE`:
+/// this blocks status/deletion races but remains compatible with C3 challenge INSERT's foreign-key
+/// `KEY SHARE`, preventing its challenge -> principal order from forming a deadlock cycle.
 async fn lock_authentication_principal_postgres(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     binding: &WebAuthnChallengeBinding,
@@ -586,7 +587,7 @@ async fn lock_authentication_principal_postgres(
     }
     let principal_is_active: Option<i64> = if let Some(session_id) = binding.session_id {
         sqlx::query_scalar(
-            "SELECT 1::BIGINT FROM users u JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 AND u.status='active' AND u.deleted_at_ms IS NULL AND s.status='active' AND s.auth_revision=$3 AND s.last_seen_at_ms<=$4 AND s.idle_expires_at_ms>$4 AND s.absolute_expires_at_ms>$4 FOR UPDATE OF u,s",
+            "SELECT 1::BIGINT FROM users u JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 AND u.status='active' AND u.deleted_at_ms IS NULL AND s.status='active' AND s.auth_revision=$3 AND s.last_seen_at_ms<=$4 AND s.idle_expires_at_ms>$4 AND s.absolute_expires_at_ms>$4 FOR NO KEY UPDATE OF u,s",
         )
         .bind(binding.user_id.into_uuid())
         .bind(session_id.into_uuid())
@@ -596,7 +597,7 @@ async fn lock_authentication_principal_postgres(
         .await?
     } else {
         sqlx::query_scalar(
-            "SELECT 1::BIGINT FROM users u WHERE u.id=$1 AND u.status='active' AND u.deleted_at_ms IS NULL FOR UPDATE OF u",
+            "SELECT 1::BIGINT FROM users u WHERE u.id=$1 AND u.status='active' AND u.deleted_at_ms IS NULL FOR NO KEY UPDATE OF u",
         )
         .bind(binding.user_id.into_uuid())
         .fetch_optional(&mut **transaction)

@@ -162,7 +162,7 @@ counter 归零只发生在交给 `start_passkey_authentication` 的一次性验�
 WebAuthn credential/counter CAS 与 C3 的 `accept_verified_method` / `reject_attempt` 是两个 repository commit point，不能假装一次函数返回消除了中间崩溃窗口。authentication ceremony 的 terminal row 因而同时是 durable handoff：
 
 - counter/material commit 成功后为 `consumed`，proof failure commit 后为 `rejected`；两者都清除 encrypted library state并把 revision 精确推进一次；
-- authentication begin/commit/reject/clone 在修改 ceremony 或 credential 前，PostgreSQL 先以 user auth-state 行作为单用户事务 gate，再锁 user/optional session，最后按 claim/reserved time/user/session/auth revision/context 锁定并重新验证 exact C3 row；SQLite 通过同事务 writer lock。这样 ceremony INSERT 的 FK row lock 也不会形成 claim → principal 的反序。lease-expiry refresh 要么先赢而整个 WebAuthn transaction 返回 stale，要么等待 terminal row 提交后看到 durable pin，不会出现 counter/ceremony 已变而 claim 被并发清除的半状态；
+- authentication begin/commit/reject/clone 在修改 ceremony 或 credential 前，PostgreSQL 先以 user auth-state 行作为单用户事务 gate，再以 `FOR NO KEY UPDATE` 锁 user/optional session，最后按 claim/reserved time/user/session/auth revision/context 锁定并重新验证 exact C3 row；SQLite 通过同事务 writer lock。`NO KEY UPDATE` 仍阻断 status/delete，却与 C3 challenge INSERT 的 FK `KEY SHARE` 相容，因此 C3 的 stale-challenge → principal 顺序不会和 C5 的 principal → challenge 形成死锁。lease-expiry refresh 要么先赢而整个 WebAuthn transaction 返回 stale，要么等待 terminal row 提交后看到 durable pin，不会出现 counter/ceremony 已变而 claim 被并发清除的半状态；
 - PostgreSQL `READ COMMITTED` 下，单条等待中的 `UPDATE` 可能看到 concurrent target-row version，却仍不能看到该语句 snapshot 之后写入的其他 terminal row。因此 refresh 先以独立 statement 锁 exact challenge（user/purpose 批量路径按 UUID 排序锁定），terminal 检查与 UPDATE 再由后续 statement 的新 snapshot 执行；revoke/clone 对将批量 invalidated 的 challenge 也先按同一 UUID 顺序锁定，统一为 auth-state → user/session → challenges → credential → ceremony 的顺序；
 - retry 必须再次提交原 C3 opaque bearer。authorize 先重新验证 token HMAC 与 exact client context；terminal handoff lookup 再精确匹配 caller-observed ceremony revision + 1、claim/reserved time/user/session/auth revision/context/RP/origin 和仍处于同一 `verification_pending` claim 的 C3 row；
 - 当 verifier lease 已过但 enclosing challenge 尚未过期时，C3 refresh 只对数据库中 exact terminal WebAuthn row 保留原 claim；resume 与 C3 success/failure transition 也分别只接受 `consumed`/`rejected` 对应 handoff。普通 verifier、pending ceremony、错误 terminal status 或已失效 user/session/auth revision 都不能利用这条放宽；
@@ -192,7 +192,7 @@ clone-suspected transaction 原子执行：credential status/revision 改为 `cl
 
 `crates/persistence/src/webauthn_contract.rs` 对 SQLite memory DB 与独立 PostgreSQL schema 运行同一个 repository contract，覆盖：
 
-- registration 并发单 winner、wrong origin、重复 credential 的零 credential 写 + ceremony burn + 立即重新 begin、replay、晚于 TTL 的惰性 expiry，以及 finish 与 revoke 的 canonical-lock one-winner race；
+- registration 并发单 winner、wrong origin、重复 credential 的零 credential 写 + ceremony burn + 立即重新 begin、replay、晚于 TTL 的惰性 expiry，以及 finish 与 revoke 的 canonical-lock one-winner race；另以 stale C3 challenge replacement 并发 revoke/clone，固定 PostgreSQL FK `KEY SHARE` 不得形成交叉死锁；
 - exact challenge/claim/user/session/auth revision/client context/RP-origin 错配；
 - authentication ceremony/credential counter revision CAS、concurrent single winner 与 replay；
 - success/failure commit-point 后跨 verifier lease及 terminal 后 wall-clock rollback 的 exact bearer/context durable handoff retry，wrong claim 不可见，C3 transition 单 winner；
