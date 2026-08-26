@@ -79,6 +79,7 @@ pub struct VerifiedAuthChallengeEvidence {
 }
 
 impl VerifiedAuthChallengeEvidence {
+    #[expect(dead_code, reason = "reserved for the C4 method verifier boundary")]
     pub(crate) fn from_method_verifier(
         claim: AuthChallengeVerificationClaim,
         achieved_assurance: AuthenticationAssurance,
@@ -94,7 +95,7 @@ impl VerifiedAuthChallengeEvidence {
 }
 
 pub enum AuthChallengeReservationOutcome {
-    Reserved(AuthChallengeVerificationClaim),
+    Reserved(Box<AuthChallengeVerificationClaim>),
     NotFound,
     Stale,
 }
@@ -129,7 +130,7 @@ impl AuthChallengeRotationTransactionClaim {
 }
 
 pub enum AuthChallengeRotationResumeOutcome {
-    Ready(AuthChallengeRotationTransactionClaim),
+    Ready(Box<AuthChallengeRotationTransactionClaim>),
     NotFound,
     Stale,
 }
@@ -378,14 +379,16 @@ where
             })
             .await?
         {
-            AuthChallengeAttemptReservationOutcome::Reserved(challenge) => Ok(
-                AuthChallengeReservationOutcome::Reserved(AuthChallengeVerificationClaim {
-                    access,
-                    claim_id,
-                    method,
-                    challenge,
-                }),
-            ),
+            AuthChallengeAttemptReservationOutcome::Reserved(challenge) => {
+                Ok(AuthChallengeReservationOutcome::Reserved(Box::new(
+                    AuthChallengeVerificationClaim {
+                        access,
+                        claim_id,
+                        method,
+                        challenge,
+                    },
+                )))
+            }
             AuthChallengeAttemptReservationOutcome::Stale => {
                 Ok(AuthChallengeReservationOutcome::Stale)
             }
@@ -397,7 +400,7 @@ where
         mut claim: AuthChallengeVerificationClaim,
         completed_at_ms: i64,
     ) -> Result<AuthChallengeAttemptOutcome, AuthChallengeServiceError> {
-        validate_completion_time(claim.access.now_ms, completed_at_ms)?;
+        validate_completion_time(claim.reserved_at_ms(), completed_at_ms)?;
         claim.access.now_ms = completed_at_ms;
         self.port
             .record_failure(AuthChallengeAttemptFailure {
@@ -415,7 +418,7 @@ where
         mut evidence: VerifiedAuthChallengeEvidence,
         completed_at_ms: i64,
     ) -> Result<VerifiedAuthChallengeOutcome, AuthChallengeServiceError> {
-        validate_completion_time(evidence.claim.access.now_ms, completed_at_ms)?;
+        validate_completion_time(evidence.claim.reserved_at_ms(), completed_at_ms)?;
         if !evidence
             .claim
             .method
@@ -467,7 +470,7 @@ where
             .reserve_rotation_claim(access, expected_revision)
             .await?
         {
-            Some(claim) => Ok(AuthChallengeRotationResumeOutcome::Ready(claim)),
+            Some(claim) => Ok(AuthChallengeRotationResumeOutcome::Ready(Box::new(claim))),
             None => Ok(AuthChallengeRotationResumeOutcome::Stale),
         }
     }
@@ -782,17 +785,17 @@ mod tests {
                         && challenge.token_hmac != [0; 32]
                         && challenge.revision == Revision::initial())
         ));
-        if let Ok(guard) = stored {
-            if let Some(challenge) = guard.as_ref() {
-                let expected = KeyedDigest {
-                    key_version: challenge.token_key_version,
-                    digest: challenge.token_hmac,
-                };
-                assert!(matches!(
-                    verifier.verify_auth_challenge(issued.token.presented(), &expected),
-                    Ok(true)
-                ));
-            }
+        if let Ok(guard) = stored
+            && let Some(challenge) = guard.as_ref()
+        {
+            let expected = KeyedDigest {
+                key_version: challenge.token_key_version,
+                digest: challenge.token_hmac,
+            };
+            assert!(matches!(
+                verifier.verify_auth_challenge(issued.token.presented(), &expected),
+                Ok(true)
+            ));
         }
     }
 
@@ -829,7 +832,7 @@ mod tests {
         assert_eq!(claim.method(), AuthenticationMethod::WebAuthn);
         assert_eq!(claim.challenge().attempts_used, 1);
         let evidence = VerifiedAuthChallengeEvidence::from_method_verifier(
-            claim,
+            *claim,
             AuthenticationAssurance::PhishingResistant,
         );
         let Ok(evidence) = evidence else {

@@ -10992,7 +10992,7 @@ mod tests {
                 .is_ok()
         );
         assert!(database.migrate().await.is_ok());
-        assert!(matches!(migration_version(&database).await, Ok(Some(6))));
+        assert!(matches!(migration_version(&database).await, Ok(Some(7))));
         let typed_owner_column: Result<i64, _> = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('secret_records') WHERE name='owner_type'",
         )
