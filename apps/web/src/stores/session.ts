@@ -1017,14 +1017,12 @@ export const useSessionStore = defineStore('session', () => {
         throw new RecoveryCodeFailure('unavailable')
       }
       const regenerationGeneration = snapshotGeneration
-      const restoreProjection = () => {
-        const restored = acceptAuthenticatedIfCurrent(regenerationGeneration, startingProjection)
-        disposition = restored ? 'reconcile' : 'quarantine'
-        return restored
-      }
+      const restoreProjection = () =>
+        acceptAuthenticatedIfCurrent(regenerationGeneration, startingProjection)
       const csrfToken = readCsrfCookie(document.cookie)
       if (!csrfToken) {
         if (!restoreProjection()) throw new RecoveryCodeFailure('outcome-unknown')
+        disposition = 'reconcile'
         throw new RecoveryCodeFailure('csrf-unavailable')
       }
       const response = await requestRecoveryCodeRegeneration({
@@ -1043,6 +1041,7 @@ export const useSessionStore = defineStore('session', () => {
           for (let index = 0; index < callerCodes.length; index += 1) callerCodes[index] = ''
           throw new RecoveryCodeFailure('outcome-unknown')
         }
+        disposition = 'reconcile'
         stagedCodes = callerCodes
       } else {
         if (response.data !== undefined) {
@@ -1063,6 +1062,7 @@ export const useSessionStore = defineStore('session', () => {
         }
         if (httpStatus === 403 && code === 'RECENT_AUTH_REQUIRED') {
           if (!restoreProjection()) throw new RecoveryCodeFailure('outcome-unknown')
+          disposition = 'reconcile'
           throw new RecoveryCodeFailure('recent-auth-required')
         }
         if (
@@ -1075,10 +1075,12 @@ export const useSessionStore = defineStore('session', () => {
           httpStatus === 429
         ) {
           if (!restoreProjection()) throw new RecoveryCodeFailure('outcome-unknown')
+          disposition = 'reconcile'
           throw new RecoveryCodeFailure('request-rejected')
         }
         if (httpStatus >= 400 && httpStatus < 500) {
           if (!restoreProjection()) throw new RecoveryCodeFailure('outcome-unknown')
+          disposition = 'reconcile'
           throw new RecoveryCodeFailure('unavailable')
         }
         throw new RecoveryCodeFailure('outcome-unknown')
