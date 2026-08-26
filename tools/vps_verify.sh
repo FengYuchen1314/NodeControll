@@ -1438,8 +1438,8 @@ while stack:
 if extras:
     preview = "\n".join(extras[:100])
     suffix = "" if len(extras) <= 100 else f"\n... and {len(extras) - 100} more"
-    raise SystemExit(f"isolated Node workspace has forbidden extra paths during {phase}:\n{preview}{suffix}")
-print(f"verified isolated Node extra-path closure for {phase}")
+    raise SystemExit(f"isolated Node workspace has forbidden extra paths:\n{preview}{suffix}")
+print("verified isolated Node extra-path closure")
 PY
 }
 
