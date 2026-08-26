@@ -545,8 +545,18 @@ async fn lock_guard_postgres(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     guard: &WebAuthnSessionGuard,
 ) -> Result<(), PersistenceError> {
+    let locked_auth_revision: Option<i64> = sqlx::query_scalar(
+        "SELECT auth_revision FROM user_auth_state WHERE user_id=$1 AND auth_revision=$2 FOR UPDATE",
+    )
+    .bind(guard.user_id.into_uuid())
+    .bind(database_revision(guard.expected_auth_revision)?)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    if locked_auth_revision.is_none() {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
     let snapshot = sqlx::query_as(
-        "SELECT u.revision AS user_revision,uas.auth_revision AS auth_revision,s.auth_revision AS session_auth_revision,u.force_password_change,s.status AS session_status,s.revoked_at_ms,s.recent_auth_at_ms,s.last_seen_at_ms,s.idle_expires_at_ms,s.absolute_expires_at_ms FROM users u JOIN user_auth_state uas ON uas.user_id=u.id JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=$3 FOR UPDATE OF u,uas,s",
+        "SELECT u.revision AS user_revision,uas.auth_revision AS auth_revision,s.auth_revision AS session_auth_revision,u.force_password_change,s.status AS session_status,s.revoked_at_ms,s.recent_auth_at_ms,s.last_seen_at_ms,s.idle_expires_at_ms,s.absolute_expires_at_ms FROM users u JOIN user_auth_state uas ON uas.user_id=u.id JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=$3 FOR UPDATE OF u,s",
     )
     .bind(guard.user_id.into_uuid())
     .bind(guard.actor_session_id.into_uuid())
@@ -554,6 +564,45 @@ async fn lock_guard_postgres(
     .fetch_optional(&mut **transaction)
     .await?;
     validate_guard_snapshot(snapshot, guard)
+}
+
+/// Serializes every PostgreSQL WebAuthn mutation for one user on `user_auth_state` before it can
+/// lock a C3 challenge. The user and optional bound session are then locked before the claim so a
+/// ceremony INSERT's foreign-key checks cannot invert revoke's principal -> challenge order.
+async fn lock_authentication_principal_postgres(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    binding: &WebAuthnChallengeBinding,
+    now_ms: i64,
+) -> Result<bool, PersistenceError> {
+    let locked_auth_revision: Option<i64> = sqlx::query_scalar(
+        "SELECT auth_revision FROM user_auth_state WHERE user_id=$1 AND auth_revision=$2 FOR UPDATE",
+    )
+    .bind(binding.user_id.into_uuid())
+    .bind(database_revision(binding.auth_revision)?)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    if locked_auth_revision.is_none() {
+        return Ok(false);
+    }
+    let principal_is_active: Option<i64> = if let Some(session_id) = binding.session_id {
+        sqlx::query_scalar(
+            "SELECT 1::BIGINT FROM users u JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 AND u.status='active' AND u.deleted_at_ms IS NULL AND s.status='active' AND s.auth_revision=$3 AND s.last_seen_at_ms<=$4 AND s.idle_expires_at_ms>$4 AND s.absolute_expires_at_ms>$4 FOR UPDATE OF u,s",
+        )
+        .bind(binding.user_id.into_uuid())
+        .bind(session_id.into_uuid())
+        .bind(database_revision(binding.auth_revision)?)
+        .bind(now_ms)
+        .fetch_optional(&mut **transaction)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            "SELECT 1::BIGINT FROM users u WHERE u.id=$1 AND u.status='active' AND u.deleted_at_ms IS NULL FOR UPDATE OF u",
+        )
+        .bind(binding.user_id.into_uuid())
+        .fetch_optional(&mut **transaction)
+        .await?
+    };
+    Ok(principal_is_active.is_some())
 }
 
 /// Locks every open C3 challenge for one auth revision in canonical UUID order.
@@ -1191,10 +1240,13 @@ async fn begin_registration_postgres(
     ceremony: &NewWebAuthnRegistrationCeremony,
 ) -> Result<BeginWebAuthnRegistrationOutcome, PersistenceError> {
     let mut transaction = pool.begin().await?;
-    sqlx::query("SELECT auth_revision FROM user_auth_state WHERE user_id=$1 FOR UPDATE")
-        .bind(ceremony.guard.user_id.into_uuid())
-        .fetch_optional(&mut *transaction)
-        .await?;
+    match lock_guard_postgres(&mut transaction, &ceremony.guard).await {
+        Ok(()) => {}
+        Err(PersistenceError::SessionPrincipalUnavailable) => {
+            return Ok(BeginWebAuthnRegistrationOutcome::Stale);
+        }
+        Err(error) => return Err(error),
+    }
     expire_registration_postgres(
         &mut transaction,
         ceremony.guard.user_id,
@@ -2005,6 +2057,15 @@ async fn begin_authentication_postgres(
     let (context_version, network_hmac, agent_hash) =
         postgres_context_values(&binding.client_context)?;
     let mut transaction = pool.begin().await?;
+    if !lock_authentication_principal_postgres(
+        &mut transaction,
+        binding,
+        ceremony.created_at_ms,
+    )
+    .await?
+    {
+        return Ok(BeginWebAuthnAuthenticationOutcome::Stale);
+    }
     if !lock_authentication_claim_postgres(
         &mut transaction,
         binding,
@@ -2444,6 +2505,15 @@ async fn commit_authentication_postgres(
     let (context_version, network_hmac, agent_hash) =
         postgres_context_values(&command.binding.client_context)?;
     let mut transaction = pool.begin().await?;
+    if !lock_authentication_principal_postgres(
+        &mut transaction,
+        command.binding,
+        command.now_ms,
+    )
+    .await?
+    {
+        return Ok(WebAuthnAuthenticationCommitOutcome::Stale);
+    }
     if !lock_authentication_claim_postgres(&mut transaction, command.binding, command.now_ms)
         .await?
     {
@@ -2579,6 +2649,9 @@ async fn reject_authentication_postgres(
     let (context_version, network_hmac, agent_hash) =
         postgres_context_values(&binding.client_context)?;
     let mut transaction = pool.begin().await?;
+    if !lock_authentication_principal_postgres(&mut transaction, binding, now_ms).await? {
+        return Ok(false);
+    }
     if !lock_authentication_claim_postgres(&mut transaction, binding, now_ms).await? {
         return Ok(false);
     }
@@ -2739,16 +2812,13 @@ async fn clone_suspected_postgres(
     let (context_version, network_hmac, agent_hash) =
         postgres_context_values(&command.binding.client_context)?;
     let mut transaction = pool.begin().await?;
-    // Management flows lock user auth state before credential rows. Clone handling mutates both,
-    // so it takes the same prefix before locking the exact C3 claim and credential.
-    let locked_auth_revision: Option<i64> = sqlx::query_scalar(
-        "SELECT auth_revision FROM user_auth_state WHERE user_id=$1 AND auth_revision=$2 FOR UPDATE",
+    if !lock_authentication_principal_postgres(
+        &mut transaction,
+        command.binding,
+        command.now_ms,
     )
-    .bind(command.binding.user_id.into_uuid())
-    .bind(database_revision(command.binding.auth_revision)?)
-    .fetch_optional(&mut *transaction)
-    .await?;
-    if locked_auth_revision.is_none() {
+    .await?
+    {
         return Ok(WebAuthnCloneSuspectedOutcome::Stale);
     }
     lock_open_user_challenges_postgres(
