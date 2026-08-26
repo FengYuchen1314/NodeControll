@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2+C3 已通过合并态 VPS 开发门并进入本地主线，尚待含 WP04 的主线组合门与公开 Actions 正式制品门；WP04-A 共享 SaaS 组件已通过独立 VPS 门，WP04-B 应用壳层正在实现；P0～P4 已完成。
+- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2+C3、恢复码 OpenAPI 合同硬化、WP04-A 与 WP04-B 已分别通过 VPS 开发门并进入本地主线，正等待精确主线组合门与公开 Actions 正式制品门；C4 TOTP 候选正在独立验收；P0～P4 已完成。
 - 总体状态：进行中。
 - 当前上游基线：`iluobei/miaomiaowu@0b47f10c52aee10b9f759a593ca5f61a823cbb72`（`main`，2026-08-25 获取）。
 - 妙妙屋 X 文档基线：`https://miaomiaowux.com/docs/tutorial` 及同站文档页，2026-08-25 开始抓取。
@@ -26,6 +26,15 @@
 | P7 | 系统验收和交付 | 未开始 | E2E、性能、安全、升级/回滚、备份恢复全部验收 |
 
 ## 已完成内容与代码说明
+
+### 2026-08-27 01:16 — WP04-B 应用壳层与恢复码合同硬化合入本地主线
+
+- WP04-B 完成基于 capability 的 SaaS 应用壳层：路由元数据、侧栏与移动导航、命令面板、深浅主题、中英文偏好都从同一份类型化能力表投影。`App.vue` 先完成身份和权限判定，再挂载受保护页面；`CapabilityGuard` 在禁用模式下同时使用 disabled fieldset、`inert` 和捕获阶段事件拦截，避免只隐藏按钮却仍能触发动作。命令面板关闭时从 DOM 卸载，重新打开会恢复焦点；当前路由、异常请求、Escape 和导航完成路径均有测试。
+- 新增 `AppDataTable`、`JobChip` 与 `JobDrawer`。表格拒绝空键和重复键，父数据变化后主动剔除失效选择；任务状态使用固定判别联合，只显示经过安全展示层处理的消息。`/reauth` 不伪造业务 capability，账户安全页要求 `sessions:read` 与 `credentials:manage`，改密动作要求 `credentials:manage`；导航、路由和页面守卫使用同一合同，不以角色名代替授权。
+- 经验证实现绑定 `5bfa15b3ee18b61503aa3c30ed194d9c204315a0`，证据文档提交为 `1fee4fb61e5603c6e75be03658a40f7009949e47`；VPS run `20260826T170138Z-wp04-app-shell-v5` 在固定 Node/pnpm 环境下通过生成器零漂移、typecheck、零 warning ESLint、27/27 个测试文件共 148/148 项测试、13 paths/15 operations OpenAPI、358/358 追踪矩阵、80 篇文档零断链和 sanitizer 零修改。archive SHA-256 为 `8678fdd807c155fc52ffdd9cfd94be63191971670664f4fe8fef3bbbf2bf7f5f`；source/generated/evidence manifest 依次为 `58ea6916bc63dd3042ae672c7695a863b301f7b68e1076c69999fca647501136`、`b0158df8fde2c31d8d491c211b51f209c55a20c471de4dca3e4b7bfd163e39ba`、`696f08a175d615429b54c0182c0af6b03ba4bc8df835da61631fb7002eec5d8a`。十一笔提交已原序合入本地主线为 `0d4af9c…` 至 `d8623d7…`。
+- 恢复码合同同步收紧：一次性明文必须恰好八枚，每枚固定 39 字符并匹配八组小写十六进制；`set_version` 从 1 起且不超过 JavaScript 安全整数，创建时间也限定在非负安全整数，计数固定总数 8、剩余数 0～8。持久化层在写入前执行相同边界，防止数据库状态无法无损投影为 JSON。实现与边界测试提交为 `bf7f07b…` 至 `5e11552…`。
+- 精确源码 `5e115527af5f0fc9b94cab10bfbc0c7a4c0b80df` 的 VPS 定向门通过 Rust fmt、26 项 API 测试、持久化边界测试、API/persistence Clippy `-D warnings`、OpenAPI 导出校验、SDK 生成、前端 typecheck/零 warning lint、18 个测试文件共 122 项测试和文档闭包。生成归档 SHA-256 为 `fc64584a7982b8230c77807a8f3ae9dead5a355b968c62412939d16c143d5c24`；SDK 零差异，更新后的 tracked OpenAPI 已提交为 `8d69990…`。本轮未运行 release 或 Vite production build；候选、旧归档、脚本和临时保留依赖均已按核对过的绝对路径清理，WP04 的只读源码、日志与 hash 证据仍保留。
+- 这些结果是两个独立开发门，不替代合入后精确主线的组合门，也不替代公开 GitHub Actions 的正式制品编译。下一步先跑当前主线的完整双库、运行时、Web、文档和秘密扫描门；C4 TOTP 可并行使用共享 VPS 门锁排队，但只有自己的不可变候选获得锁后才执行。
 
 ### 2026-08-27 00:26 — C2+C3 合并态 31/31 门通过并合入本地主线
 
@@ -376,6 +385,7 @@
 
 ## 下一步
 
-1. 把“正式编译只在公开 Actions、VPS 只测试/运行验收”的 verifier 与本次账本修正纳入最终 226-file freeze，完成静态门和 staged-tree 预检；随后只推送单父 `main`，等待 attempt 1 Actions 同 SHA 制品，再用 fresh standalone full clone 完成 VPS formal provenance。通过后并行推进 C2 keyring/recovery、C3 challenge 与 C4 TOTP 核心，不得把 C1 候选误记为完整身份系统。
-2. 完成 P5.2 Agent protocol/enrollment handshake，再按 WP-03～WP-20 推进后端、Vue/Vuetify 页面与 SingBox 集成。
-3. 按 358 条追踪矩阵逐项实现、测试并更新状态；不得用 schema、路由占位或页面壳替代产品行为验收。
+1. 对包含 C2+C3、恢复码合同硬化和 WP04-A/B 的精确本地主线运行完整 VPS 开发门；门禁必须覆盖双数据库、运行时 smoke、OpenAPI/SDK 零漂移、Web、文档、秘密扫描和源树 sanitizer，且不得运行 production build。
+2. 组合门通过后只显式推送 `HEAD:refs/heads/main`，等待公开 GitHub Actions 为同一 SHA 完成唯一正式生产编译，再下载制品并用 fresh standalone full clone 在 VPS 执行正式 provenance/运行验收。任何一门失败都先修复并重建候选，不沿用失败结论。
+3. 独立完成 C4 TOTP 门禁、合入与组合复验，随后收口 C5 WebAuthn；并行推进 P5.2 Agent protocol/enrollment handshake，再按 WP-03～WP-20 实现 Vue/Vuetify 业务页面与 SingBox 集成。
+4. 按 358 条追踪矩阵逐项实现、测试并更新状态；不得用 schema、路由占位或页面壳替代产品行为验收。
