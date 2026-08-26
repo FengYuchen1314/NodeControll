@@ -1,10 +1,10 @@
 # WP02-C2 Web 恢复码闭环实现
 
-本文记录 WP02-C2 Web 端源码候选。它以公开提交 `d200c033b81ebabfe0c99c50572cc46186ba5329` 为基线，覆盖首次初始化回显、账户安全页状态读取和整组再生成。对应后端与 OpenAPI 仍由同一工作包的其他提交提供；本分支没有在本机编译或测试，也没有经过 GitHub Actions 和指定 VPS 正式门，不能据此把恢复码能力标为 `verified`。
+本文记录 WP02-C2 Web 端实现与集成边界。最初的页面候选以公开提交 `d200c033b81ebabfe0c99c50572cc46186ba5329` 为基线；集成提交 `e8b821e7e0bee75fe5974b6786925da23da974f4` 已合入后端和 OpenAPI。本轮 follow-up 重新生成 SDK，并把首次初始化回显、账户安全页状态读取和整组再生成绑定到同一份生成合同。所有 Node 检查都在指定 VPS 执行，本机没有运行编译或测试，也没有执行 production build。Web 门通过不等同于整包运行时或正式制品已经 `verified`。
 
 ## 1. 接口边界
 
-基线生成 SDK 尚未包含恢复码字段和端点。`apps/web/src/api/recovery-codes.ts` 因此集中承载临时 typed adapter，生成目录保持不变。后端 OpenAPI 合并后，应重新生成 SDK，并让 adapter 复用生成的响应类型与路径合同；现有 generated client 仍会先执行无上限 `response.text()`，且 fetch 默认允许跟随重定向，所以不能直接用生成函数替掉这里的有界流式读取和 `redirect: error`。只有生成 transport 具备等价保证后，这层才可删除。
+当前 OpenAPI 和生成 SDK 已包含 bootstrap 一次性恢复码、恢复码状态与再生成端点。`apps/web/src/api/recovery-codes.ts` 直接引用生成的 request body、成功响应 data、response meta 和 literal path 类型，不再维护重复的临时合同。现有 generated client 仍会先执行无上限 `response.text()`，且 fetch 默认允许跟随重定向，所以不能直接用生成函数替掉这里的有界流式读取和 `redirect: error`。生成 transport 具备同等安全保证后，才可删除这层包装。
 
 | 请求 | 成功合同 | Web 端约束 |
 |---|---|---|
@@ -46,7 +46,8 @@ adapter 使用同源 Cookie、`cache: no-store`、`redirect: error` 和精确 en
 
 | 文件 | 职责 |
 |---|---|
-| `apps/web/src/api/recovery-codes.ts` | 可重生的临时类型/路径适配，以及当前必须保留的有界安全 transport 与运行时校验 |
+| `apps/web/src/api/generated/*` | 从当前 OpenAPI 生成的恢复码 response、operation 和 literal path 合同；禁止手改 |
+| `apps/web/src/api/recovery-codes.ts` | 复用生成类型与路径，并保留有界流式读取、拒绝重定向和秘密响应运行时校验 |
 | `apps/web/src/components/security/OneTimeRecoveryCodes.vue` | 一次性明文展示、显式下载和保存确认 |
 | `apps/web/src/stores/one-time-recovery.ts` | 仅内存的再生成结果交接和隔离事件清理 |
 | `apps/web/src/lib/credential-coordinator.ts` | 注册恢复码再生 exclusive operation；不改变 journal schema |
@@ -54,7 +55,7 @@ adapter 使用同源 Cookie、`cache: no-store`、`redirect: error` 和精确 en
 | `apps/web/src/views/SetupPage.vue` | bootstrap 回显、状态确认、降级与离页清理 |
 | `apps/web/src/views/ProfileSecurityPage.vue` | 恢复码元数据和 recent-auth 再生成交互 |
 
-## 5. 测试源码与未完成门
+## 5. 测试源码与 Web 验收
 
 新增或扩展的测试源码覆盖：
 
@@ -65,4 +66,4 @@ adapter 使用同源 Cookie、`cache: no-store`、`redirect: error` 和精确 en
 - profile 只显示元数据、近期认证前置、服务端 recent-auth 边界只调用一次，并覆盖 unmount、离开后返回同一路径和 pagehide/BFCache 的明文清理；
 - session store 成功路径不把明文写入 Pinia 或浏览器存储，stale success/401/403 统一进入结果未知，terminal settle 失败不把明文交给调用者。
 
-本分支按任务约束只做静态检查，尚未运行 Vitest、typecheck、lint 或 build。合并后必须先由公开 GitHub Actions 生成同 SHA Web 制品，再在 `185.99.135.224` 的 fresh clone 上执行既定验收；通过前不得更新需求矩阵状态。
+集成 follow-up 通过 `git archive` 把唯一候选送到 `185.99.135.224`，在固定 Node 24.19.0、pnpm 11.24.0 builder 内 fresh install。生成器对 16 个物理文件实现逐字节零漂移，typecheck、`eslint --max-warnings=0` 和 12 个文件的 111 项 Vitest 全部通过；OpenAPI validator、设计文档 validator 和上游公开内容 sanitizer 同时通过。任务明确禁止 production build，本轮没有执行。整包后端 runtime smoke、正式生产制品和公开 Actions 仍需按总验证流程独立闭环。
