@@ -31,7 +31,7 @@ const rail = ref(false)
 const commandOpen = ref(false)
 const commandNavigationError = ref('')
 const commandNavigationPending = ref(false)
-const mainElement = ref<HTMLElement>()
+const mainElement = ref<globalThis.HTMLElement>()
 const routeAnnouncement = ref('')
 const themeOptions = ['light', 'dark', 'system'] as const
 
@@ -90,7 +90,7 @@ watch(
   { immediate: true },
 )
 
-const handleGlobalKeydown = (event: KeyboardEvent) => {
+const handleGlobalKeydown = (event: globalThis.KeyboardEvent) => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === 'k') {
     event.preventDefault()
     commandNavigationError.value = ''

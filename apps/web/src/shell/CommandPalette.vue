@@ -39,7 +39,7 @@ const activeDescendant = computed(() =>
 
 const focusSearch = async () => {
   await nextTick()
-  const search = globalThis.document.querySelector<HTMLInputElement>(
+  const search = globalThis.document.querySelector<globalThis.HTMLInputElement>(
     `[data-command-palette="${paletteId}"] input`,
   )
   search?.focus()
@@ -72,7 +72,7 @@ const select = (item: ShellNavigationItem | undefined = activeItem.value) => {
   emit('navigate', item.routeName)
 }
 
-const handleKeydown = (event: KeyboardEvent) => {
+const handleKeydown = (event: globalThis.KeyboardEvent) => {
   if (event.key === 'ArrowDown') {
     event.preventDefault()
     move(1)
