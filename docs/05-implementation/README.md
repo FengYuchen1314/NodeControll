@@ -15,5 +15,6 @@
 - [WP-02-C2 Web 恢复码闭环实现](./WP02_C2_WEB_RECOVERY_CODES_IMPLEMENTATION.md)：记录 bootstrap 一次性回显、账户安全页状态/再生成、内存明文交接、credential coordinator 状态机、生成合同绑定和有界安全 transport；VPS Web 门已单独验收，整包运行时与正式制品状态仍按总进度文档追踪。
 - [WP-02-C3 持久认证 Challenge 实现](./WP02_C3_AUTH_CHALLENGE_IMPLEMENTATION.md)：逐模块记录 opaque bearer、proof 前 attempt claim、method/assurance 矩阵、单 active limiter、上下文绑定和可崩溃恢复的 replacement-session transaction claim；源码已进入本地主线，Rust/双库/API/正式制品仍待验收和接线。
 - [WP-04 SaaS 共享界面基础片](./WP04_SAAS_UI_PRIMITIVES.md)：记录 ResourceHeader、StatusChip、DangerDialog、SecretField、DesiredReportedDiff、PolicyExplainer 的 UI 合同、失败关闭和脱敏边界、360px/light-dark 处理、组件测试与未覆盖项。
+- [WP-04-B 响应式应用壳与跨域展示组件](./WP04_APP_SHELL.md)：记录真实路由的 capability 单一投影、session/强制改密 DOM 闸门、responsive drawer/top bar/command palette、主题语言恢复，以及 CapabilityGuard、AppDataTable、JobChip/JobDrawer 的安全展示合同。
 
 功能只有在 [需求追踪矩阵](../04-rebuild/REQUIREMENTS_TRACEABILITY.md) 填入实现路径、VPS run 并标记 `verified` 后才算完成。当前工程纵切用于建立质量门，不代表 358 项产品能力已经实现。
