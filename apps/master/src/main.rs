@@ -1,171 +1,18 @@
-use std::{
-    env,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
-use async_trait::async_trait;
-use nodecontroll_api::{
-    AppState, BootstrapCommand, BootstrapOutcome, BootstrapServiceError, FoundationProbe,
-    ProbeError,
-};
-use nodecontroll_config::MasterConfig;
-use nodecontroll_domain::{
-    EntityId, Instance, InstanceName, PrincipalLabel, Revision, SubscriptionBehaviorSettings,
-    UserAccount, UserRole, Username,
-};
-use nodecontroll_identity::{PasswordError, PasswordService, SetupCapability};
+use nodecontroll_api::{AppState, web_security::WebSecurityPolicy};
+use nodecontroll_application::{AuthPolicy, ControlPlaneApplication};
+use nodecontroll_config::{AuthConfig, MasterConfig};
+use nodecontroll_identity::{PasswordService, SetupCapability};
 use nodecontroll_persistence::{ConnectionSettings, Database};
 use nodecontroll_secrets::EnvelopeCipher;
-use time::OffsetDateTime;
-use tokio::{net::TcpListener, signal, sync::Mutex};
+use tokio::{net::TcpListener, signal};
 use tracing_subscriber::EnvFilter;
 
-struct DatabaseProbe {
-    database: Database,
-    cipher: EnvelopeCipher,
-    password_service: PasswordService,
-    setup_capability: Option<SetupCapability>,
-    last_bootstrap_attempt: Mutex<Option<Instant>>,
-}
-
-#[async_trait]
-impl FoundationProbe for DatabaseProbe {
-    async fn database_ready(&self) -> Result<(), ProbeError> {
-        self.database
-            .probe()
-            .await
-            .map_err(|_| ProbeError::database_unavailable())
-    }
-
-    async fn is_initialized(&self) -> Result<bool, ProbeError> {
-        self.database
-            .is_initialized()
-            .await
-            .map_err(|error| match error {
-                nodecontroll_persistence::PersistenceError::InconsistentBootstrapState => {
-                    ProbeError::bootstrap_state_inconsistent()
-                }
-                _ => ProbeError::database_unavailable(),
-            })
-    }
-
-    async fn secret_ready(&self) -> Result<(), ProbeError> {
-        self.cipher
-            .canary()
-            .map_err(|_| ProbeError::secret_unavailable())
-    }
-
-    async fn initialize(
-        &self,
-        command: BootstrapCommand,
-    ) -> Result<BootstrapOutcome, BootstrapServiceError> {
-        if self
-            .database
-            .is_initialized()
-            .await
-            .map_err(map_bootstrap_state_read_error)?
-        {
-            return Err(BootstrapServiceError::AlreadyInitialized);
-        }
-        let capability = self
-            .setup_capability
-            .as_ref()
-            .ok_or(BootstrapServiceError::CapabilityInvalid)?;
-        if !capability.authorize(command.setup_token.as_str()) {
-            return Err(BootstrapServiceError::CapabilityInvalid);
-        }
-        let instance_name = InstanceName::parse(command.instance_name)
-            .map_err(|_| BootstrapServiceError::InvalidInstanceName)?;
-        let username = Username::parse(command.username)
-            .map_err(|_| BootstrapServiceError::InvalidUsername)?;
-        self.password_service
-            .validate(command.password.as_str())
-            .map_err(map_password_error)?;
-        let mut attempt_guard = self.last_bootstrap_attempt.lock().await;
-        if attempt_guard
-            .as_ref()
-            .is_some_and(|last_attempt| last_attempt.elapsed() < Duration::from_secs(2))
-        {
-            return Err(BootstrapServiceError::RateLimited);
-        }
-        *attempt_guard = Some(Instant::now());
-        let password_service = self.password_service.clone();
-        let password = command.password;
-        let password_hash =
-            tokio::task::spawn_blocking(move || password_service.hash(password.as_str()))
-                .await
-                .map_err(|_| BootstrapServiceError::Unavailable)?
-                .map_err(map_password_error)?;
-        let created_at_ms =
-            i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
-                .map_err(|_| BootstrapServiceError::Unavailable)?;
-        let instance_id = EntityId::new();
-        let owner_id = EntityId::new();
-        let principal_label = PrincipalLabel::parse(format!("usr_{owner_id}"))
-            .map_err(|_| BootstrapServiceError::Unavailable)?;
-        let instance = Instance {
-            id: instance_id,
-            public_id: EntityId::new(),
-            name: instance_name,
-            created_at_ms,
-            revision: Revision::initial(),
-        };
-        let owner = UserAccount {
-            id: owner_id,
-            username,
-            password_hash,
-            role: UserRole::Owner,
-            principal_label,
-            force_password_change: false,
-            revision: Revision::initial(),
-            created_at_ms,
-        };
-        let persisted_instance_id = self
-            .database
-            .bootstrap_control_plane(&instance, &owner, &SubscriptionBehaviorSettings::default())
-            .await
-            .map_err(|error| match error {
-                nodecontroll_persistence::PersistenceError::AlreadyInitialized => {
-                    BootstrapServiceError::AlreadyInitialized
-                }
-                nodecontroll_persistence::PersistenceError::IdentityConflict => {
-                    BootstrapServiceError::IdentityConflict
-                }
-                nodecontroll_persistence::PersistenceError::InconsistentBootstrapState => {
-                    BootstrapServiceError::InconsistentState
-                }
-                _ => BootstrapServiceError::Unavailable,
-            })?;
-        capability.consume();
-        Ok(BootstrapOutcome {
-            instance_id: persisted_instance_id.to_string(),
-            owner_id: owner_id.to_string(),
-        })
-    }
-}
-
-fn map_password_error(error: PasswordError) -> BootstrapServiceError {
-    match error {
-        PasswordError::TooShort | PasswordError::TooLong | PasswordError::ControlCharacter => {
-            BootstrapServiceError::InvalidPassword
-        }
-        _ => BootstrapServiceError::Unavailable,
-    }
-}
-
-fn map_bootstrap_state_read_error(
-    error: nodecontroll_persistence::PersistenceError,
-) -> BootstrapServiceError {
-    match error {
-        nodecontroll_persistence::PersistenceError::InconsistentBootstrapState => {
-            BootstrapServiceError::InconsistentState
-        }
-        _ => BootstrapServiceError::Unavailable,
-    }
-}
+const DUMMY_PASSWORD: &str = "nodecontroll-dummy-password-v1";
+const SESSION_TOUCH_INTERVAL_MAX_SECONDS: u64 = 60;
+const SESSION_TOUCH_INTERVAL_DIVISOR: u64 = 4;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -193,13 +40,22 @@ async fn main() -> Result<()> {
         .migrate()
         .await
         .context("database migration failed")?;
-    let cipher = EnvelopeCipher::from_key_file(&config.secrets.root_key_file, 1)
-        .context("secret root key could not be loaded")?;
+    let cipher = EnvelopeCipher::from_key_file(
+        &config.secrets.root_key_file,
+        config.auth.digest_key_version,
+    )
+    .context("secret root key could not be loaded")?;
     cipher
         .canary()
         .context("secret root key canary failed before HTTP startup")?;
     let password_service =
         PasswordService::recommended().context("Argon2id password parameters are invalid")?;
+    let dummy_password_service = password_service.clone();
+    let dummy_password_hash =
+        tokio::task::spawn_blocking(move || dummy_password_service.hash(DUMMY_PASSWORD))
+            .await
+            .context("dummy password PHC task failed")?
+            .context("dummy password PHC could not be generated")?;
     let initialized = database
         .is_initialized()
         .await
@@ -216,30 +72,61 @@ async fn main() -> Result<()> {
         )
     };
 
-    let listener = TcpListener::bind(config.http.listen)
-        .await
-        .with_context(|| format!("could not bind {}", config.http.listen))?;
+    let listen = config.http.listen;
+    let database_engine = database.engine();
+    let control_plane = ControlPlaneApplication::new(
+        database,
+        cipher,
+        password_service,
+        dummy_password_hash,
+        setup_capability,
+        auth_policy(&config.auth),
+    )
+    .context("authentication policy is invalid")?;
+    let web_security = WebSecurityPolicy::new(
+        config.http.public_origin.clone(),
+        config.http.trusted_proxy_cidrs.clone(),
+    );
     let state = AppState::new(
         env!("CARGO_PKG_VERSION"),
-        Arc::new(DatabaseProbe {
-            database: database.clone(),
-            cipher,
-            password_service,
-            setup_capability,
-            last_bootstrap_attempt: Mutex::new(None),
-        }),
+        control_plane,
+        web_security,
+        config.auth.session_absolute_seconds,
     )?;
+    let listener = TcpListener::bind(listen)
+        .await
+        .with_context(|| format!("could not bind {listen}"))?;
 
     tracing::info!(
-        address = %config.http.listen,
-        database_engine = database.engine().as_str(),
+        address = %listen,
+        database_engine = database_engine.as_str(),
         version = env!("CARGO_PKG_VERSION"),
         "master listening"
     );
-    axum::serve(listener, nodecontroll_api::router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("HTTP server failed")
+    axum::serve(
+        listener,
+        nodecontroll_api::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("HTTP server failed")
+}
+
+fn auth_policy(config: &AuthConfig) -> AuthPolicy {
+    let session_touch_interval_seconds = (config.session_idle_seconds
+        / SESSION_TOUCH_INTERVAL_DIVISOR)
+        .clamp(1, SESSION_TOUCH_INTERVAL_MAX_SECONDS);
+    AuthPolicy {
+        session_idle: Duration::from_secs(config.session_idle_seconds),
+        session_absolute: Duration::from_secs(config.session_absolute_seconds),
+        session_touch_interval: Duration::from_secs(session_touch_interval_seconds),
+        login_window: Duration::from_secs(config.login_window_seconds),
+        login_block: Duration::from_secs(config.login_block_seconds),
+        login_account_limit: config.login_account_limit,
+        login_ip_limit: config.login_ip_limit,
+        login_global_limit: config.login_global_limit,
+        password_hash_concurrency: usize::try_from(config.password_hash_concurrency).unwrap_or(1),
+    }
 }
 
 async fn connect_database(config: &MasterConfig) -> Result<Database> {
@@ -283,20 +170,42 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use nodecontroll_api::BootstrapServiceError;
-    use nodecontroll_persistence::PersistenceError;
+    use std::time::Duration;
 
-    use super::map_bootstrap_state_read_error;
+    use nodecontroll_config::AuthConfig;
+
+    use super::auth_policy;
 
     #[test]
-    fn bootstrap_precheck_preserves_inconsistent_state() {
-        assert_eq!(
-            map_bootstrap_state_read_error(PersistenceError::InconsistentBootstrapState),
-            BootstrapServiceError::InconsistentState
-        );
-        assert_eq!(
-            map_bootstrap_state_read_error(PersistenceError::InvalidTimestamp),
-            BootstrapServiceError::Unavailable
-        );
+    fn auth_policy_maps_validated_config_values() {
+        let config = AuthConfig {
+            session_idle_seconds: 60,
+            session_absolute_seconds: 300,
+            login_window_seconds: 10,
+            login_block_seconds: 20,
+            login_account_limit: 3,
+            login_ip_limit: 30,
+            login_global_limit: 300,
+            ..AuthConfig::default()
+        };
+
+        let policy = auth_policy(&config);
+
+        assert_eq!(policy.session_idle, Duration::from_secs(60));
+        assert_eq!(policy.session_absolute, Duration::from_secs(300));
+        assert_eq!(policy.session_touch_interval, Duration::from_secs(15));
+        assert_eq!(policy.login_window, Duration::from_secs(10));
+        assert_eq!(policy.login_block, Duration::from_secs(20));
+        assert_eq!(policy.login_account_limit, 3);
+        assert_eq!(policy.login_ip_limit, 30);
+        assert_eq!(policy.login_global_limit, 300);
+        assert_eq!(policy.password_hash_concurrency, 4);
+    }
+
+    #[test]
+    fn default_idle_session_caps_touch_writes_at_one_minute() {
+        let policy = auth_policy(&AuthConfig::default());
+
+        assert_eq!(policy.session_touch_interval, Duration::from_secs(60));
     }
 }

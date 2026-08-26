@@ -8,16 +8,14 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
-async-trait.workspace = true
 axum.workspace = true
 nodecontroll-api = { path = "../../crates/api" }
+nodecontroll-application = { path = "../../crates/application" }
 nodecontroll-config = { path = "../../crates/config" }
-nodecontroll-domain = { path = "../../crates/domain" }
 nodecontroll-identity = { path = "../../crates/identity" }
 nodecontroll-persistence = { path = "../../crates/persistence" }
 nodecontroll-secrets = { path = "../../crates/secrets" }
 serde_json.workspace = true
-time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

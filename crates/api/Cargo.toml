@@ -9,6 +9,9 @@ publish = false
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
+nodecontroll-application = { path = "../application" }
+nodecontroll-config = { path = "../config" }
+nodecontroll-identity = { path = "../identity" }
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true

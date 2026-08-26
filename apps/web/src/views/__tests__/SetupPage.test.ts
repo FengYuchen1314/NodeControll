@@ -1,5 +1,7 @@
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/vue'
+import { createPinia } from 'pinia'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { vuetify } from '../../plugins/vuetify'
@@ -83,11 +85,21 @@ const renderSetupPage = () => {
       queries: { gcTime: 0, retry: false },
     },
   })
-  return render(SetupPage, {
-    global: {
-      plugins: [vuetify, [VueQueryPlugin, { queryClient }]],
-    },
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { render: () => null } },
+      { path: '/login', name: 'login', component: { render: () => null } },
+    ],
   })
+  return {
+    ...render(SetupPage, {
+      global: {
+        plugins: [createPinia(), router, vuetify, [VueQueryPlugin, { queryClient }]],
+      },
+    }),
+    router,
+  }
 }
 
 const fillValidForm = async (confirmation = password) => {
@@ -121,6 +133,7 @@ describe('SetupPage', () => {
 
     await waitFor(() => expect(sdk.initializeControlPlane).toHaveBeenCalledTimes(1))
     expect(sdk.initializeControlPlane).toHaveBeenCalledWith({
+      credentials: 'same-origin',
       headers: { 'x-nodecontroll-setup-token': setupToken },
       body: {
         instance_name: '测试实例',
@@ -153,17 +166,39 @@ describe('SetupPage', () => {
       .mockReturnValueOnce(refetchResult)
     sdk.initializeControlPlane.mockResolvedValue(successResult())
 
+    const { router } = renderSetupPage()
+    await fillValidForm()
+    const setupTokenInput = screen.getByLabelText('一次性 Setup Token') as HTMLInputElement
+    const passwordInput = screen.getByLabelText('Owner 密码') as HTMLInputElement
+    const passwordConfirmationInput = screen.getByLabelText(
+      '确认 Owner 密码',
+    ) as HTMLInputElement
+    await submit()
+
+    await waitFor(() => expect(sdk.getBootstrapState).toHaveBeenCalledTimes(2))
+    expect(setupTokenInput.value).toBe('')
+    expect(passwordInput.value).toBe('')
+    expect(passwordConfirmationInput.value).toBe('')
+
+    resolveRefetch(bootstrapResult(true))
+    expect(await screen.findByText('实例已初始化')).toBeTruthy()
+    await waitFor(() => expect(router.currentRoute.value.name).toBe('login'))
+  })
+
+  it('keeps the setup form locked when a successful write cannot be reconciled', async () => {
+    sdk.getBootstrapState
+      .mockResolvedValueOnce(bootstrapResult(false))
+      .mockRejectedValueOnce(new Error('reconcile unavailable'))
+    sdk.initializeControlPlane.mockResolvedValue(successResult())
+
     renderSetupPage()
     await fillValidForm()
     await submit()
 
-    await waitFor(() => expect(sdk.getBootstrapState).toHaveBeenCalledTimes(2))
-    expect((screen.getByLabelText('一次性 Setup Token') as HTMLInputElement).value).toBe('')
-    expect((screen.getByLabelText('Owner 密码') as HTMLInputElement).value).toBe('')
-    expect((screen.getByLabelText('确认 Owner 密码') as HTMLInputElement).value).toBe('')
-
-    resolveRefetch(bootstrapResult(true))
-    expect(await screen.findByText('实例已初始化')).toBeTruthy()
+    expect(await screen.findByTestId('setup-reconcile-lock')).toBeTruthy()
+    expect(screen.getByText('初始化写入已被接受')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '完成控制面初始化' })).toBeNull()
+    expect(screen.getByRole('button', { name: '重新读取状态' })).toBeTruthy()
   })
 
   it('maps a typed 403 Problem to the setup capability control without rendering server detail', async () => {
@@ -223,6 +258,41 @@ describe('SetupPage', () => {
     expect(await screen.findByText('实例已初始化')).toBeTruthy()
     expect(sdk.getBootstrapState).toHaveBeenCalledTimes(2)
     expect(screen.queryByRole('button', { name: '完成控制面初始化' })).toBeNull()
+  })
+
+  it('keeps an identity conflict editable and places a local error on the username', async () => {
+    sdk.initializeControlPlane.mockResolvedValue(problemResult(409, 'IDENTITY_CONFLICT'))
+
+    renderSetupPage()
+    await fillValidForm()
+    await submit()
+
+    expect(
+      await screen.findByText(
+        'Owner 用户名与数据库中的现有身份冲突。请更换用户名，或由部署管理员检查待初始化数据。',
+      ),
+    ).toBeTruthy()
+    const username = screen.getByLabelText('Owner 用户名')
+    expect(username.closest('.v-input')?.textContent).toContain(
+      '此 Owner 用户名与数据库中的现有身份冲突。',
+    )
+    expect(sdk.getBootstrapState).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: '完成控制面初始化' })).toBeTruthy()
+  })
+
+  it('locks the form for an unknown conflict until the server state is reconciled', async () => {
+    sdk.getBootstrapState
+      .mockResolvedValueOnce(bootstrapResult(false))
+      .mockRejectedValueOnce(new Error('reconcile unavailable'))
+    sdk.initializeControlPlane.mockResolvedValue(problemResult(409, 'UNKNOWN_CONFLICT'))
+
+    renderSetupPage()
+    await fillValidForm()
+    await submit()
+
+    expect(await screen.findByTestId('setup-reconcile-lock')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '完成控制面初始化' })).toBeNull()
+    expect(sdk.getBootstrapState).toHaveBeenCalledTimes(2)
   })
 
   it('renders a bounded Retry-After delay for typed rate limiting', async () => {

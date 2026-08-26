@@ -2,6 +2,8 @@
 
 ## 1. 交付边界与当前结论
 
+> 后续状态：密码登录、服务端会话和浏览器安全边界已经进入下一纵切，见 [WP-02 密码登录与服务端会话](./WP02_AUTH_SESSION_SLICE.md)。下文保留首次初始化纵切交付时的事实，不应再用其中“尚无登录/session”的描述判断当前工作树。
+
 本纵切实现了一个可实际写入数据库的首次初始化闭环：公开页面读取初始化状态，部署者同时提交短时一次性 setup token、实例名、Owner 用户名和密码，Master 先校验部署者能力，再在受限的阻塞线程中生成 Argon2id 密码哈希，最后由 SQLite 或 PostgreSQL 的同一事务创建或接管实例、创建首个 Owner、写入所需默认设置并关闭 bootstrap latch。旧的 `0001_foundation` 数据库已有实例时，`0002_identity` 会进入 `LegacyNeedsOwner`；后续初始化保留旧实例和兼容的已有设置并创建 Owner。固定的 `subscription.behavior` 设置缺失时补入默认值；schema version 或 typed JSON 不兼容时整笔 fail closed。
 
 这仍只是 [WP-02 规划](../04-rebuild/IMPLEMENTATION_PLAN.md#6-wp-02身份会话mfa角色与用户基础) 的第一个纵切，不是身份系统完成。当前没有可用的密码登录端点、登录 challenge、浏览器 session、恢复码、MFA/WebAuthn、CSRF/Origin 校验、用户管理、密码重置、API token 或 RBAC。`GET /api/v1/bootstrap` 在初始化后仍返回空的 `login_methods`，避免把已存密码凭据误报成可用登录方式。[需求追踪矩阵](../04-rebuild/REQUIREMENTS_TRACEABILITY.md) 因此不应仅凭本纵切把 `MMW-AUTH-*` 标为 `implemented` 或 `verified`。

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use axum::{
     Json, Router,
     body::Body,
@@ -8,100 +7,46 @@ use axum::{
     http::{HeaderMap, HeaderName, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
+use nodecontroll_application::{BootstrapCommand, BootstrapServiceError, ControlPlane, ProbeError};
 use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
 };
-use utoipa::{OpenApi, ToSchema};
+use utoipa::{Modify, OpenApi, ToSchema};
 use zeroize::Zeroizing;
+
+pub mod auth;
+pub mod web_security;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const SETUP_TOKEN_HEADER: HeaderName = HeaderName::from_static("x-nodecontroll-setup-token");
-
-#[async_trait]
-pub trait FoundationProbe: Send + Sync {
-    async fn database_ready(&self) -> Result<(), ProbeError>;
-    async fn secret_ready(&self) -> Result<(), ProbeError>;
-    async fn is_initialized(&self) -> Result<bool, ProbeError>;
-    async fn initialize(
-        &self,
-        command: BootstrapCommand,
-    ) -> Result<BootstrapOutcome, BootstrapServiceError>;
-}
-
-pub struct BootstrapCommand {
-    pub instance_name: String,
-    pub username: String,
-    pub password: Zeroizing<String>,
-    pub setup_token: Zeroizing<String>,
-}
-
-pub struct BootstrapOutcome {
-    pub instance_id: String,
-    pub owner_id: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BootstrapServiceError {
-    InvalidInstanceName,
-    InvalidUsername,
-    InvalidPassword,
-    CapabilityInvalid,
-    AlreadyInitialized,
-    IdentityConflict,
-    InconsistentState,
-    RateLimited,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ProbeError {
-    pub code: &'static str,
-}
-
-impl ProbeError {
-    #[must_use]
-    pub const fn database_unavailable() -> Self {
-        Self {
-            code: "DATABASE_UNAVAILABLE",
-        }
-    }
-
-    #[must_use]
-    pub const fn secret_unavailable() -> Self {
-        Self {
-            code: "SECRET_STORE_UNAVAILABLE",
-        }
-    }
-
-    #[must_use]
-    pub const fn bootstrap_state_inconsistent() -> Self {
-        Self {
-            code: "BOOTSTRAP_STATE_INCONSISTENT",
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct AppState {
     started_at: String,
     version: &'static str,
-    probe: Arc<dyn FoundationProbe>,
+    pub(crate) control_plane: Arc<dyn ControlPlane>,
+    pub(crate) web_security: web_security::WebSecurityPolicy,
+    pub(crate) session_cookie_max_age_seconds: u64,
 }
 
 impl AppState {
     pub fn new(
         version: &'static str,
-        probe: Arc<dyn FoundationProbe>,
+        control_plane: Arc<dyn ControlPlane>,
+        web_security: web_security::WebSecurityPolicy,
+        session_cookie_max_age_seconds: u64,
     ) -> Result<Self, time::error::Format> {
         Ok(Self {
             started_at: OffsetDateTime::now_utc().format(&Rfc3339)?,
             version,
-            probe,
+            control_plane,
+            web_security,
+            session_cookie_max_age_seconds,
         })
     }
 }
@@ -189,6 +134,10 @@ pub struct FieldError {
     pub message: String,
 }
 
+fn field_errors_is_empty(errors: &[FieldError]) -> bool {
+    errors.is_empty()
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Problem {
     #[serde(rename = "type")]
@@ -198,23 +147,41 @@ pub struct Problem {
     pub code: &'static str,
     pub detail: &'static str,
     pub request_id: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub errors: Vec<FieldError>,
+    #[serde(skip_serializing_if = "field_errors_is_empty")]
+    pub errors: Box<[FieldError]>,
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub retry_after_seconds: Option<u32>,
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub clear_session_cookies: bool,
 }
 
 impl IntoResponse for Problem {
     fn into_response(self) -> Response {
         let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let retry_after = self.code == "BOOTSTRAP_RATE_LIMITED";
+        let retry_after = self.retry_after_seconds;
+        let clear_session_cookies = self.clear_session_cookies;
         let mut response = (status, Json(self)).into_response();
         response.headers_mut().insert(
             axum::http::header::CONTENT_TYPE,
             axum::http::HeaderValue::from_static("application/problem+json"),
         );
-        if retry_after {
-            response.headers_mut().insert(
-                axum::http::header::RETRY_AFTER,
-                axum::http::HeaderValue::from_static("2"),
+        if let Some(retry_after) = retry_after
+            && let Ok(value) = axum::http::HeaderValue::from_str(&retry_after.to_string())
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
+        if clear_session_cookies {
+            response.headers_mut().append(
+                axum::http::header::SET_COOKIE,
+                axum::http::HeaderValue::from_static(web_security::clear_session_cookie()),
+            );
+            response.headers_mut().append(
+                axum::http::header::SET_COOKIE,
+                axum::http::HeaderValue::from_static(web_security::clear_csrf_cookie()),
             );
         }
         response
@@ -241,8 +208,8 @@ pub async fn healthz() -> Json<HealthResponse> {
     )
 )]
 pub async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<ReadinessResponse>) {
-    let database = state.probe.database_ready().await;
-    let secret = state.probe.secret_ready().await;
+    let database = state.control_plane.database_ready().await;
+    let secret = state.control_plane.secret_ready().await;
     let ready = database.is_ok() && secret.is_ok();
     let checks = vec![
         dependency_check("database", database),
@@ -277,23 +244,33 @@ fn dependency_check(name: &'static str, result: Result<(), ProbeError>) -> Depen
         Err(error) => DependencyCheck {
             name,
             status: "unavailable",
-            code: Some(error.code),
+            code: Some(probe_error_code(error)),
         },
     }
 }
 
+const fn probe_error_code(error: ProbeError) -> &'static str {
+    match error {
+        ProbeError::DatabaseUnavailable => "DATABASE_UNAVAILABLE",
+        ProbeError::SecretUnavailable => "SECRET_STORE_UNAVAILABLE",
+        ProbeError::BootstrapStateInconsistent => "BOOTSTRAP_STATE_INCONSISTENT",
+    }
+}
+
 fn bootstrap_projection_problem(error: ProbeError, headers: &HeaderMap) -> Problem {
-    if error.code == "BOOTSTRAP_STATE_INCONSISTENT" {
+    if error == ProbeError::BootstrapStateInconsistent {
         bootstrap_problem(BootstrapServiceError::InconsistentState, headers)
     } else {
         Problem {
             type_uri: "urn:nodecontroll:problem:dependency-unavailable",
             title: "Dependency unavailable",
             status: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
-            code: error.code,
+            code: probe_error_code(error),
             detail: "The bootstrap projection is temporarily unavailable",
             request_id: request_id(headers),
-            errors: Vec::new(),
+            errors: Box::default(),
+            retry_after_seconds: None,
+            clear_session_cookies: false,
         }
     }
 }
@@ -313,7 +290,7 @@ pub async fn get_bootstrap(
     headers: HeaderMap,
 ) -> Result<Json<BootstrapEnvelope>, Problem> {
     let initialized = state
-        .probe
+        .control_plane
         .is_initialized()
         .await
         .map_err(|error| bootstrap_projection_problem(error, &headers))?;
@@ -321,7 +298,7 @@ pub async fn get_bootstrap(
         data: BootstrapInfo {
             initialized,
             product: "NodeControll",
-            login_methods: Vec::new(),
+            login_methods: initialized.then_some("password").into_iter().collect(),
             setup_capability_required: !initialized,
         },
         meta: ResponseMeta {
@@ -357,6 +334,10 @@ pub async fn initialize_control_plane(
     headers: HeaderMap,
     request: Result<Json<BootstrapRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<BootstrapCreatedEnvelope>), Problem> {
+    state
+        .web_security
+        .validate_browser_origin(&headers)
+        .map_err(|_| auth::browser_security_problem(&headers))?;
     let Json(mut request) = request.map_err(|error| bootstrap_json_problem(error, &headers))?;
     let command = BootstrapCommand {
         instance_name: request.instance_name,
@@ -371,7 +352,7 @@ pub async fn initialize_control_plane(
         ),
     };
     let outcome = state
-        .probe
+        .control_plane
         .initialize(command)
         .await
         .map_err(|error| bootstrap_problem(error, &headers))?;
@@ -418,7 +399,9 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             code: "SETUP_CAPABILITY_INVALID",
             detail: "Supply the unexpired one-time capability from the deployment setup-token file",
             request_id,
-            errors: Vec::new(),
+            errors: Box::default(),
+            retry_after_seconds: None,
+            clear_session_cookies: false,
         },
         BootstrapServiceError::AlreadyInitialized => Problem {
             type_uri: "urn:nodecontroll:problem:already-initialized",
@@ -427,7 +410,9 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             code: "ALREADY_INITIALIZED",
             detail: "Control-plane bootstrap has already completed",
             request_id,
-            errors: Vec::new(),
+            errors: Box::default(),
+            retry_after_seconds: None,
+            clear_session_cookies: false,
         },
         BootstrapServiceError::IdentityConflict => Problem {
             type_uri: "urn:nodecontroll:problem:identity-conflict",
@@ -436,7 +421,9 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             code: "IDENTITY_CONFLICT",
             detail: "The requested initial owner conflicts with stored identity data",
             request_id,
-            errors: Vec::new(),
+            errors: Box::default(),
+            retry_after_seconds: None,
+            clear_session_cookies: false,
         },
         BootstrapServiceError::InconsistentState => Problem {
             type_uri: "urn:nodecontroll:problem:bootstrap-state-inconsistent",
@@ -445,7 +432,9 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             code: "BOOTSTRAP_STATE_INCONSISTENT",
             detail: "Stored control-plane records require operator recovery",
             request_id,
-            errors: Vec::new(),
+            errors: Box::default(),
+            retry_after_seconds: None,
+            clear_session_cookies: false,
         },
         BootstrapServiceError::RateLimited => Problem {
             type_uri: "urn:nodecontroll:problem:rate-limited",
@@ -454,7 +443,9 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             code: "BOOTSTRAP_RATE_LIMITED",
             detail: "Wait before attempting control-plane initialization again",
             request_id,
-            errors: Vec::new(),
+            errors: Box::default(),
+            retry_after_seconds: Some(2),
+            clear_session_cookies: false,
         },
         BootstrapServiceError::Unavailable => Problem {
             type_uri: "urn:nodecontroll:problem:dependency-unavailable",
@@ -463,7 +454,9 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             code: "BOOTSTRAP_UNAVAILABLE",
             detail: "The control plane could not complete initialization",
             request_id,
-            errors: Vec::new(),
+            errors: Box::default(),
+            retry_after_seconds: None,
+            clear_session_cookies: false,
         },
     }
 }
@@ -506,7 +499,9 @@ fn bootstrap_json_problem(error: JsonRejection, headers: &HeaderMap) -> Problem 
         code,
         detail,
         request_id: request_id(headers),
-        errors: Vec::new(),
+        errors: Box::default(),
+        retry_after_seconds: None,
+        clear_session_cookies: false,
     }
 }
 
@@ -527,7 +522,10 @@ fn validation_problem(
             pointer: pointer.to_owned(),
             code: code.to_owned(),
             message: message.to_owned(),
-        }],
+        }]
+        .into_boxed_slice(),
+        retry_after_seconds: None,
+        clear_session_cookies: false,
     }
 }
 
@@ -558,15 +556,46 @@ pub async fn system_version(
 #[derive(OpenApi)]
 #[openapi(
     info(title = "NodeControll API", version = "0.1.0"),
-    paths(healthz, readyz, get_bootstrap, initialize_control_plane, system_version),
+    paths(
+        healthz, readyz, get_bootstrap, initialize_control_plane, system_version,
+        auth::login, auth::current_actor, auth::logout
+    ),
     components(schemas(
         HealthResponse, DependencyCheck, ReadinessResponse, ResponseMeta, VersionInfo,
         VersionEnvelope, BootstrapInfo, BootstrapEnvelope, BootstrapRequest, BootstrapCreated,
-        BootstrapCreatedEnvelope, FieldError, Problem
+        BootstrapCreatedEnvelope, FieldError, Problem, auth::LoginRequest, auth::ActorResponse,
+        auth::SessionResponse, auth::AuthenticatedData, auth::AuthenticatedEnvelope
     )),
-    tags((name = "system", description = "Instance liveness and compatibility"))
+    modifiers(&SecurityAddon),
+    tags(
+        (name = "system", description = "Instance liveness and compatibility"),
+        (name = "authentication", description = "Password login and server-side browser sessions")
+    )
 )]
 struct ApiDocument;
+
+struct SecurityAddon;
+
+impl Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
+
+        if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "sessionCookie",
+                SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new(
+                    web_security::SESSION_COOKIE_NAME,
+                ))),
+            );
+            components.add_security_scheme(
+                "csrfHeader",
+                SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::new(
+                    web_security::CSRF_HEADER_NAME,
+                ))),
+            );
+        }
+    }
+}
 
 #[must_use]
 pub fn openapi() -> utoipa::openapi::OpenApi {
@@ -592,7 +621,9 @@ async fn not_found(headers: HeaderMap) -> Problem {
         code: "ROUTE_NOT_FOUND",
         detail: "The requested route does not exist",
         request_id: request_id(&headers),
-        errors: Vec::new(),
+        errors: Box::default(),
+        retry_after_seconds: None,
+        clear_session_cookies: false,
     }
 }
 
@@ -617,6 +648,9 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/bootstrap",
             get(get_bootstrap).post(initialize_control_plane),
         )
+        .route("/api/v1/auth/login", post(auth::login))
+        .route("/api/v1/me", get(auth::current_actor))
+        .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/system/version", get(system_version))
         .route("/api-docs/openapi.json", get(openapi_json))
         .fallback(not_found)
@@ -641,12 +675,21 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use axum::{Json, extract::State, http::HeaderMap};
+    use axum::{
+        Json,
+        extract::State,
+        http::{HeaderMap, HeaderValue, header},
+    };
+    use nodecontroll_application::{
+        AuthServiceError, BootstrapOutcome, ControlPlane, LoginCommand, LoginOutcome,
+        MutatingSessionCredential, SessionCredential,
+    };
+    use nodecontroll_config::PublicOrigin;
 
     use super::{
-        AppState, BootstrapCommand, BootstrapOutcome, BootstrapRequest, BootstrapServiceError,
-        FoundationProbe, ProbeError, bootstrap_problem, bootstrap_projection_problem,
-        get_bootstrap, healthz, initialize_control_plane, openapi, readyz, system_version,
+        AppState, BootstrapCommand, BootstrapRequest, BootstrapServiceError, ProbeError,
+        bootstrap_problem, bootstrap_projection_problem, get_bootstrap, healthz,
+        initialize_control_plane, openapi, readyz, system_version,
     };
 
     struct TestProbe {
@@ -655,11 +698,11 @@ mod tests {
     }
 
     #[async_trait]
-    impl FoundationProbe for TestProbe {
+    impl ControlPlane for TestProbe {
         async fn database_ready(&self) -> Result<(), ProbeError> {
             self.ready
                 .then_some(())
-                .ok_or_else(ProbeError::database_unavailable)
+                .ok_or(ProbeError::DatabaseUnavailable)
         }
 
         async fn is_initialized(&self) -> Result<bool, ProbeError> {
@@ -669,7 +712,7 @@ mod tests {
         async fn secret_ready(&self) -> Result<(), ProbeError> {
             self.ready
                 .then_some(())
-                .ok_or_else(ProbeError::secret_unavailable)
+                .ok_or(ProbeError::SecretUnavailable)
         }
 
         async fn initialize(
@@ -685,12 +728,56 @@ mod tests {
                 })
             }
         }
+
+        async fn login(&self, _command: LoginCommand) -> Result<LoginOutcome, AuthServiceError> {
+            Err(AuthServiceError::InvalidCredentials)
+        }
+
+        async fn current_actor(
+            &self,
+            _credential: SessionCredential,
+        ) -> Result<
+            (
+                nodecontroll_application::ActorProjection,
+                nodecontroll_application::SessionProjection,
+            ),
+            AuthServiceError,
+        > {
+            Err(AuthServiceError::SessionInvalid)
+        }
+
+        async fn logout(
+            &self,
+            _credential: MutatingSessionCredential,
+        ) -> Result<(), AuthServiceError> {
+            Ok(())
+        }
     }
 
     fn state(ready: bool, initialized: bool) -> AppState {
-        let state = AppState::new("test-version", Arc::new(TestProbe { ready, initialized }));
+        let origin = PublicOrigin::parse("https://panel.example.com");
+        assert!(origin.is_ok());
+        let Ok(origin) = origin else {
+            unreachable!("checked above");
+        };
+        let state = AppState::new(
+            "test-version",
+            Arc::new(TestProbe { ready, initialized }),
+            super::web_security::WebSecurityPolicy::new(origin, Vec::new()),
+            3_600,
+        );
         assert!(state.is_ok());
         state.unwrap_or_else(|_| unreachable!("checked above"))
+    }
+
+    fn browser_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://panel.example.com"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("panel.example.com"));
+        headers
     }
 
     #[tokio::test]
@@ -724,7 +811,7 @@ mod tests {
     async fn first_bootstrap_returns_created_ids() {
         let response = initialize_control_plane(
             State(state(true, false)),
-            HeaderMap::new(),
+            browser_headers(),
             Ok(Json(BootstrapRequest {
                 instance_name: "My instance".to_owned(),
                 username: "owner".to_owned(),
@@ -755,6 +842,9 @@ mod tests {
         assert!(paths.contains_key("/healthz"));
         assert!(paths.contains_key("/readyz"));
         assert!(paths.contains_key("/api/v1/bootstrap"));
+        assert!(paths.contains_key("/api/v1/auth/login"));
+        assert!(paths.contains_key("/api/v1/me"));
+        assert!(paths.contains_key("/api/v1/auth/logout"));
         assert!(paths.contains_key("/api/v1/system/version"));
     }
 
@@ -796,10 +886,8 @@ mod tests {
             axum::http::StatusCode::SERVICE_UNAVAILABLE.as_u16()
         );
         assert_eq!(post_problem.code, "BOOTSTRAP_STATE_INCONSISTENT");
-        let get_problem = bootstrap_projection_problem(
-            ProbeError::bootstrap_state_inconsistent(),
-            &HeaderMap::new(),
-        );
+        let get_problem =
+            bootstrap_projection_problem(ProbeError::BootstrapStateInconsistent, &HeaderMap::new());
         assert_eq!(get_problem.code, "BOOTSTRAP_STATE_INCONSISTENT");
         assert_eq!(get_problem.type_uri, post_problem.type_uri);
     }

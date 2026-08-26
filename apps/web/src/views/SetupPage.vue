@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { useMutation, useQuery } from '@tanstack/vue-query'
-import { computed, reactive, ref } from 'vue'
+import { computed, nextTick, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import { getBootstrapState, initializeControlPlane } from '../api/generated/sdk.gen'
+import { useSessionStore } from '../stores/session'
 
 type BootstrapField = 'instanceName' | 'password' | 'username'
 
@@ -141,7 +143,10 @@ const failureSummary = (
   if (status === 403 || code === 'SETUP_CAPABILITY_INVALID') {
     return 'Setup Token 无效、已过期或已使用。请从部署服务器重新读取当前 setup-token 文件。'
   }
-  if (status === 409 || code === 'ALREADY_INITIALIZED' || code === 'IDENTITY_CONFLICT') {
+  if (code === 'IDENTITY_CONFLICT') {
+    return 'Owner 用户名与数据库中的现有身份冲突。请更换用户名，或由部署管理员检查待初始化数据。'
+  }
+  if (status === 409 || code === 'ALREADY_INITIALIZED') {
     return '初始化状态已发生变化，页面已重新读取 Master 的最新状态。'
   }
   if (status === 429 || code === 'BOOTSTRAP_RATE_LIMITED') {
@@ -172,6 +177,9 @@ const toInitializationFailure = (error: unknown, response?: HttpResponseLike) =>
   const status = safeStatus(problem, response)
   const code = safeProblemCode(problem)
   const fieldErrors = extractFieldErrors(problem)
+  if (code === 'IDENTITY_CONFLICT' && fieldErrors.username.length === 0) {
+    fieldErrors.username.push('此 Owner 用户名与数据库中的现有身份冲突。')
+  }
   const retryAfter =
     status === 429 || code === 'BOOTSTRAP_RATE_LIMITED'
       ? retryAfterSeconds(response)
@@ -192,6 +200,8 @@ const form = reactive({
   passwordConfirmation: '',
   setupToken: '',
 })
+const router = useRouter()
+const session = useSessionStore()
 
 const utf8Encoder = new globalThis.TextEncoder()
 const controlCharacterPattern = /\p{Cc}/u
@@ -239,6 +249,7 @@ const passwordHint = computed(
     `至少 12 个 Unicode 标量值、最多 1,024 UTF-8 字节；当前 ${passwordScalarCount.value} 个标量值 / ${passwordByteCount.value} 字节`,
 )
 const lastFailure = ref<InitializationFailure>()
+const createdAwaitingReconcile = ref(false)
 const setupTokenErrors = computed(() =>
   lastFailure.value?.status === 403 || lastFailure.value?.code === 'SETUP_CAPABILITY_INVALID'
     ? ['请填写部署服务器当前 setup-token 文件中的一次性 Token。']
@@ -251,15 +262,23 @@ const passwordErrors = computed(() => lastFailure.value?.fieldErrors.password ??
 const bootstrap = useQuery({
   queryKey: ['bootstrap'],
   queryFn: async () => {
-    const response = await getBootstrapState()
+    const response = await getBootstrapState({ credentials: 'same-origin' })
     if (response.error) throw new Error('Unable to load bootstrap state')
     return response.data
   },
 })
 
+const reconcileBootstrap = async () => {
+  const result = await bootstrap.refetch()
+  if (result.data?.data.initialized !== true) return
+  session.markInitialized()
+  await router.replace({ name: 'login' })
+}
+
 const initialize = useMutation({
   mutationFn: async () => {
     const response = await initializeControlPlane({
+      credentials: 'same-origin',
       headers: {
         'x-nodecontroll-setup-token': form.setupToken,
       },
@@ -280,7 +299,9 @@ const initialize = useMutation({
     form.passwordConfirmation = ''
     form.setupToken = ''
     lastFailure.value = undefined
-    await bootstrap.refetch()
+    await nextTick()
+    createdAwaitingReconcile.value = true
+    await reconcileBootstrap()
   },
   onError: async (error) => {
     form.password = ''
@@ -289,14 +310,21 @@ const initialize = useMutation({
     lastFailure.value =
       error instanceof InitializationFailure ? error : toInitializationFailure(undefined)
     if (
-      lastFailure.value.status === 409 ||
       lastFailure.value.code === 'ALREADY_INITIALIZED' ||
-      lastFailure.value.code === 'IDENTITY_CONFLICT'
+      (lastFailure.value.status === 409 && lastFailure.value.code !== 'IDENTITY_CONFLICT')
     ) {
-      await bootstrap.refetch()
+      createdAwaitingReconcile.value = true
+      await reconcileBootstrap()
     }
   },
 })
+
+const bootstrapInitialized = computed(() => bootstrap.data.value?.data.initialized === true)
+const setupLocked = computed(() => bootstrapInitialized.value || createdAwaitingReconcile.value)
+
+const retryBootstrap = async () => {
+  await reconcileBootstrap()
+}
 
 const submit = () => {
   if (!canSubmit.value || initialize.isPending.value) return
@@ -317,25 +345,50 @@ const submit = () => {
     <v-card-text v-if="bootstrap.data.value" class="pa-6">
       <div class="d-flex align-center ga-4 mb-5">
         <v-icon
-          :icon="bootstrap.data.value.data.initialized ? 'mdi-check-circle' : 'mdi-progress-wrench'"
-          :color="bootstrap.data.value.data.initialized ? 'success' : 'warning'"
+          :icon="bootstrapInitialized ? 'mdi-check-circle' : 'mdi-progress-wrench'"
+          :color="bootstrapInitialized ? 'success' : 'warning'"
           size="36"
         />
         <div>
           <div class="text-h6">
-            {{ bootstrap.data.value.data.initialized ? '实例已初始化' : '等待首次初始化' }}
+            {{
+              bootstrapInitialized
+                ? '实例已初始化'
+                : createdAwaitingReconcile
+                  ? '初始化写入已被接受'
+                  : '等待首次初始化'
+            }}
           </div>
           <div class="text-body-2 text-medium-emphasis">
             {{
-              bootstrap.data.value.data.initialized
+              bootstrapInitialized
                 ? '首次初始化已关闭，重复请求会被 Master 拒绝。'
+                : createdAwaitingReconcile
+                  ? '为避免重复提交，页面会保持锁定，直到重新读取到 Master 的最终状态。'
                 : '提交后会在一个事务中完成当前数据库所需的初始化写入。'
             }}
           </div>
         </div>
       </div>
-      <v-alert v-if="bootstrap.data.value.data.initialized" type="success" variant="tonal">
-        控制面初始化锁已关闭。空库会创建实例、Owner 与默认设置；历史库会保留已有资源并补齐缺失的初始化记录。登录与会话端点尚未启用。
+      <v-alert v-if="bootstrapInitialized" type="success" variant="tonal">
+        控制面初始化锁已关闭，正在转到本地账户登录。
+      </v-alert>
+
+      <v-alert
+        v-else-if="setupLocked"
+        type="warning"
+        variant="tonal"
+        data-testid="setup-reconcile-lock"
+      >
+        <div>Master 已接受初始化写入，或返回了无法安全重试的冲突。确认最新状态前，表单不会重新开放。</div>
+        <v-btn
+          class="mt-4"
+          variant="outlined"
+          :loading="bootstrap.isFetching.value"
+          @click="retryBootstrap"
+        >
+          重新读取状态
+        </v-btn>
       </v-alert>
 
       <v-form v-else @submit.prevent="submit">

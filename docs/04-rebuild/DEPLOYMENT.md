@@ -69,8 +69,8 @@ reverse proxy 保留 WebSocket/HTTPUpgrade、SSE no-buffer、真实客户端 IP�
 ```toml
 [http]
 listen = "127.0.0.1:8080"
-public_url = "https://panel.example.com"
-trusted_proxies = ["127.0.0.1/32"]
+public_origin = "https://panel.example.com"
+trusted_proxy_cidrs = ["127.0.0.1/32"]
 
 [database]
 url = "sqlite:///var/lib/nodecontroll/master/db/control.db"
@@ -97,6 +97,8 @@ lease_ttl_seconds = 30
 ```toml
 [http]
 listen = "127.0.0.1:8080"
+public_origin = "https://panel.example.com"
+trusted_proxy_cidrs = ["127.0.0.1/32"]
 
 [database]
 url = "sqlite:///var/lib/nodecontroll/master/db/control.db?mode=rwc"
@@ -111,9 +113,26 @@ setup_token_file = "/etc/nodecontroll/credentials/master.setup-token"
 
 [bootstrap]
 setup_token_ttl_seconds = 1800
+
+[auth]
+session_idle_seconds = 1800
+session_absolute_seconds = 86400
+login_window_seconds = 300
+login_block_seconds = 900
+login_account_limit = 5
+login_ip_limit = 50
+login_global_limit = 10000
+password_hash_concurrency = 4
+digest_key_version = 1
 ```
 
+`login_block_seconds` 必须大于或等于 `login_window_seconds`；否则固定窗口尚未结束，封禁却先失效，计数和 `Retry-After` 会出现矛盾，Master 因此在启动前拒绝该配置。`password_hash_concurrency` 的有效范围是 1～64。
+
 首次启动前，安装器或操作者分别生成两个独立的 32-byte 随机值，以 64 位小写十六进制写入 owner-only regular file。root key 是长期数据密钥；setup token 只用于夺取首个 Owner，不能复用同一值。未初始化或 0001 legacy 数据库若不能安全读取 setup-token 文件，Master 在 bind HTTP 前失败；已经 Ready 的数据库不再要求该文件。浏览器通过 `x-nodecontroll-setup-token` header 提交，不放 URL、query、日志或 shell 参数。默认窗口是进程启动后 30 分钟、最大 60 分钟；过期且数据库仍未初始化时需要重启 Master。成功后数据库 latch 永久关闭 bootstrap，操作者应删除 setup-token 文件；Master 不自动删除部署者的 credential mount。反向代理必须使用 TLS，且不得记录该 header。
+
+`public_origin` 是浏览器写请求的精确安全边界，只允许 scheme、host 和可选端口。除 `localhost` 与字面 loopback 地址外必须使用 HTTPS；它必须与浏览器地址栏、反向代理转发的 `Host` 完全一致。配置了 `trusted_proxy_cidrs` 后，受信代理必须发送合法 `X-Forwarded-For`，否则认证请求会失败关闭；未列入的来源即使伪造转发头也只按直连地址限流。
+
+密码登录在任何 limiter 写入前先取得进程内并发许可；槽位满时立即返回带 `Retry-After` 的 429，不把 Tokio blocking pool 当作资源闸门，也不让过量请求扩张 bucket。取得许可后，repository 先只读检查 account、IP prefix、global 三个精确 bucket：已有封禁时不更新 blocked hit、不创建其他 scope 的 row；未命中才在权威事务中按 account→IP→global 占用额度。许可覆盖额度读写、凭据读取与 Argon2id verify，验证结束后释放，不占用安全事件或 session 提交时间。登录成功只向浏览器签发 `__Host-nodecontroll_session` 与 `__Host-nodecontroll_csrf`；数据库保存带版本的 HMAC，不保存原始 token。所有写操作要求同源 Origin/Host，并同时校验 CSRF cookie 与 header。会话有独立 idle 与 absolute deadline，服务端撤销后旧 cookie 不能恢复。
 
 ## 5. Agent 连接模式部署
 

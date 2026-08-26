@@ -8,7 +8,7 @@ export const i18n = createI18n({
     'zh-CN': {
       app: {
         name: 'NodeControll',
-        stage: '工程骨架',
+        stage: '自托管控制面',
       },
       nav: {
         dashboard: '总览',
@@ -18,7 +18,7 @@ export const i18n = createI18n({
     en: {
       app: {
         name: 'NodeControll',
-        stage: 'Engineering skeleton',
+        stage: 'Self-hosted control plane',
       },
       nav: {
         dashboard: 'Dashboard',
@@ -27,4 +27,3 @@ export const i18n = createI18n({
     },
   },
 })
-

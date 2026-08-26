@@ -183,13 +183,24 @@ if [[ -e "${CYCLONEDX_CLI_FILE}" || -L "${CYCLONEDX_CLI_FILE}" ]]; then
 fi
 
 cleanup() {
+  local runtime_log="${RUN_DIR}/logs/master-runtime.log"
+  local runtime_log_tmp="${RUN_DIR}/logs/master-runtime.log.capturing"
   if docker inspect "${SMOKE_CONTAINER}" >/dev/null 2>&1; then
     docker stop "${SMOKE_CONTAINER}" >/dev/null 2>&1 || true
-    docker logs "${SMOKE_CONTAINER}" > "${RUN_DIR}/logs/master-runtime.log" 2>&1 || true
-    if [[ -f "${TEST_SECRET_FILE}" && -f "${TEST_SETUP_TOKEN_FILE}" ]]; then
-      if ! scan_runtime_secrets "${RUN_DIR}/logs/master-runtime.log"; then
-        printf '%s\n' "runtime log secret scan failed during cleanup" > "${RUN_DIR}/SECRET_SCAN_FAILED"
+    if docker logs "${SMOKE_CONTAINER}" > "${runtime_log_tmp}" 2>&1; then
+      if mv -f -- "${runtime_log_tmp}" "${runtime_log}"; then
+        if ! scan_runtime_secrets "${runtime_log}"; then
+          printf '%s\n' "runtime log secret scan failed during cleanup" \
+            > "${RUN_DIR}/SECRET_SCAN_FAILED" || true
+        fi
+      else
+        printf '%s\n' "runtime log secret scan failed during cleanup" \
+          > "${RUN_DIR}/SECRET_SCAN_FAILED" || true
       fi
+    else
+      rm -f -- "${runtime_log_tmp}"
+      printf '%s\n' "runtime log capture failed during cleanup" \
+        > "${RUN_DIR}/SECRET_SCAN_FAILED" || true
     fi
   fi
   docker rm --force "${SMOKE_CONTAINER}" >/dev/null 2>&1 || true
@@ -285,32 +296,69 @@ assert_repo_digest() {
   fi
 }
 
+verify_rust_builder_toolchain() {
+  docker run --rm \
+    --network none \
+    --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+    --tmpfs /cargo-home:rw,nosuid,nodev,mode=0755 \
+    -e HOME=/tmp/rust-home \
+    -e CARGO_HOME=/cargo-home \
+    -e RUSTUP_HOME=/usr/local/rustup \
+    -e RUSTUP_TOOLCHAIN=1.98.0 \
+    "${RUST_IMAGE_ID}" sh -euc '
+      test "$(rustc --version)" = \
+        "rustc 1.98.0 (88d9e12ae 2026-08-18)"
+      test "$(cargo --version)" = \
+        "cargo 1.98.0 (797e8a9bc 2026-08-05)"
+      test "$(cargo fmt --version)" = \
+        "rustfmt 1.9.0-stable (88d9e12ae1 2026-08-18)"
+      test "$(cargo clippy --version)" = \
+        "clippy 0.1.98 (88d9e12ae1 2026-08-18)"
+    '
+}
+
 scan_runtime_secrets() {
   local log_file="$1"
-  local setup_token root_key grep_status
   [[ -f "${log_file}" && -r "${log_file}" \
     && -f "${TEST_SETUP_TOKEN_FILE}" && -r "${TEST_SETUP_TOKEN_FILE}" \
     && -f "${TEST_SECRET_FILE}" && -r "${TEST_SECRET_FILE}" ]] || return 2
-  setup_token="$(<"${TEST_SETUP_TOKEN_FILE}")" || return 2
-  root_key="$(<"${TEST_SECRET_FILE}")" || return 2
-  for forbidden in \
-    "${setup_token}" \
-    "${root_key}" \
-    'VPS smoke bootstrap passphrase' \
-    'Another smoke bootstrap passphrase' \
-    'Rejected contract passphrase' \
-    '$argon2id$'; do
-    if grep -Fq -- "${forbidden}" "${log_file}"; then
-      echo "Master runtime log contains setup-token, password, or PHC material" >&2
-      return 1
-    else
-      grep_status="$?"
-      if [[ "${grep_status}" -ne 1 ]]; then
-        echo "could not scan Master runtime log" >&2
-        return 2
-      fi
-    fi
-  done
+  python3 - \
+    "${log_file}" \
+    "${TEST_SETUP_TOKEN_FILE}" \
+    "${TEST_SECRET_FILE}" <<'PY'
+from pathlib import Path
+import sys
+
+log_path, setup_token_path, root_key_path = map(Path, sys.argv[1:])
+try:
+    log = log_path.read_bytes()
+    setup_token = setup_token_path.read_bytes().strip()
+    root_key = root_key_path.read_bytes().strip()
+except OSError:
+    print("could not scan Master runtime log", file=sys.stderr)
+    raise SystemExit(2)
+
+if not setup_token or not root_key:
+    print("runtime secret fixture is empty", file=sys.stderr)
+    raise SystemExit(2)
+
+forbidden_values = (
+    setup_token,
+    root_key,
+    b"VPS smoke bootstrap passphrase",
+    b"Another smoke bootstrap passphrase",
+    b"Rejected contract passphrase",
+    b"Incorrect smoke login passphrase",
+    b"$argon2id$",
+)
+if any(value in log for value in forbidden_values):
+    print(
+        "Master runtime log contains setup-token, password, or PHC material",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
 }
 
 stop_and_capture_master() {
@@ -2325,6 +2373,7 @@ payload = {
 pathlib.Path(manifest).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 
+run_stage rust-builder-toolchain verify_rust_builder_toolchain
 run_stage github-provenance verify_github_provenance \
   "${GITHUB_RUN_ID}" "${GITHUB_ARTIFACT_ID}" "${SOURCE_REVISION}" "${ACTIONS_ARTIFACT_SHA}" \
   "${ACTIONS_ARTIFACT_SIZE}" "${RUN_DIR}/provenance"
@@ -2400,6 +2449,7 @@ readonly CARGO_FETCH_RUN=(
   --tmpfs /tmp:rw,nosuid,nodev,mode=1777
   -e HOME=/tmp/cargo-fetch-home
   -e CARGO_HOME=/private-cargo-home
+  -e RUSTUP_HOME=/usr/local/rustup
   -e RUSTUP_TOOLCHAIN=1.98.0
   -e CARGO_INCREMENTAL=0
   -e SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}"
@@ -2420,6 +2470,7 @@ readonly RUST_RUN=(
   --tmpfs /cargo-home:rw,nosuid,nodev,mode=0755
   -e HOME=/tmp/rust-home
   -e CARGO_HOME=/cargo-home
+  -e RUSTUP_HOME=/usr/local/rustup
   -e RUSTUP_TOOLCHAIN=1.98.0
   -e CARGO_TARGET_DIR=/cargo-target
   -e CARGO_NET_OFFLINE=true
@@ -2445,6 +2496,7 @@ readonly RUST_RELEASE_RUN=(
   --tmpfs /cargo-home:rw,nosuid,nodev,mode=0755
   -e HOME=/tmp/rust-home
   -e CARGO_HOME=/cargo-home
+  -e RUSTUP_HOME=/usr/local/rustup
   -e RUSTUP_TOOLCHAIN=1.98.0
   -e CARGO_TARGET_DIR=/cargo-target
   -e CARGO_NET_OFFLINE=true
@@ -2503,6 +2555,7 @@ readonly LICENSE_RUN=(
   --tmpfs /cargo-home:rw,nosuid,nodev,mode=0755
   -e HOME=/tmp/license-home
   -e CARGO_HOME=/cargo-home
+  -e RUSTUP_HOME=/usr/local/rustup
   -e CARGO_NET_OFFLINE=true
   -e RUSTUP_TOOLCHAIN=1.98.0
   -e SOURCE_REVISION="${SOURCE_REVISION}"
@@ -2625,6 +2678,7 @@ run_stage master-start docker run --detach \
   --name "${SMOKE_CONTAINER}" \
   --network host \
   -e NODECONTROLL__HTTP__LISTEN=127.0.0.1:18080 \
+  -e NODECONTROLL__HTTP__PUBLIC_ORIGIN=http://127.0.0.1:18080 \
   -e NODECONTROLL__DATABASE__URL=sqlite::memory: \
   -e NODECONTROLL__SECRETS__ROOT_KEY_FILE=/run/secrets/nodecontroll-root-key \
   -e NODECONTROLL__SECRETS__SETUP_TOKEN_FILE=/run/secrets/nodecontroll-setup-token \

@@ -10,6 +10,145 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "authentication"
+        ],
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Password authentication succeeded and host-only session cookies were issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticatedEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The JSON request is malformed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The supplied credentials are invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The browser origin or host does not match the configured public origin",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The control plane has not been initialized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A shared login limit is active",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication dependencies are unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "authentication"
+        ],
+        "operationId": "logout",
+        "responses": {
+          "204": {
+            "description": "The current server-side session was revoked and browser cookies were expired"
+          },
+          "401": {
+            "description": "The Cookie header is oversized, ambiguous, or structurally malformed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin, host, or double-submit CSRF verification failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication dependencies are unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
     "/api/v1/bootstrap": {
       "get": {
         "tags": [
@@ -159,6 +298,61 @@
         }
       }
     },
+    "/api/v1/me": {
+      "get": {
+        "tags": [
+          "authentication"
+        ],
+        "operationId": "getCurrentActor",
+        "responses": {
+          "200": {
+            "description": "The current active actor and server-side session projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticatedEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The session is absent, invalid, revoked, inactive, or expired",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request host does not match the configured public origin",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication dependencies are unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
     "/api/v1/system/version": {
       "get": {
         "tags": [
@@ -228,6 +422,66 @@
   },
   "components": {
     "schemas": {
+      "ActorResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "username",
+          "role",
+          "capabilities",
+          "force_password_change"
+        ],
+        "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "force_password_change": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "AuthenticatedData": {
+        "type": "object",
+        "required": [
+          "actor",
+          "session"
+        ],
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/ActorResponse"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionResponse"
+          }
+        }
+      },
+      "AuthenticatedEnvelope": {
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthenticatedData"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ResponseMeta"
+          }
+        }
+      },
       "BootstrapCreated": {
         "type": "object",
         "required": [
@@ -380,6 +634,28 @@
           }
         }
       },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "format": "password",
+            "writeOnly": true,
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "username": {
+            "type": "string",
+            "maxLength": 32,
+            "minLength": 3
+          }
+        },
+        "additionalProperties": false
+      },
       "Problem": {
         "type": "object",
         "required": [
@@ -452,6 +728,37 @@
           }
         }
       },
+      "SessionResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "created_at_ms",
+          "last_seen_at_ms",
+          "idle_expires_at_ms",
+          "absolute_expires_at_ms"
+        ],
+        "properties": {
+          "absolute_expires_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "idle_expires_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_seen_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "VersionEnvelope": {
         "type": "object",
         "required": [
@@ -486,12 +793,28 @@
           }
         }
       }
+    },
+    "securitySchemes": {
+      "csrfHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-nodecontroll-csrf"
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-nodecontroll_session"
+      }
     }
   },
   "tags": [
     {
       "name": "system",
       "description": "Instance liveness and compatibility"
+    },
+    {
+      "name": "authentication",
+      "description": "Password login and server-side browser sessions"
     }
   ]
 }

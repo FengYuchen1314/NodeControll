@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 
 const baseUrl = process.argv[2] ?? 'http://127.0.0.1:18080';
+const publicOrigin = new URL(baseUrl).origin;
 const setupTokenFile = process.env.NODECONTROLL_TEST_SETUP_TOKEN_FILE;
 if (!setupTokenFile) throw new Error('NODECONTROLL_TEST_SETUP_TOKEN_FILE is required');
 const setupToken = fs.readFileSync(setupTokenFile, 'utf8').trim();
@@ -8,10 +9,14 @@ if (!/^[0-9a-f]{64}$/.test(setupToken)) throw new Error('test setup token is mal
 
 async function readResponse(path, response) {
   let body;
-  try {
-    body = await response.json();
-  } catch {
-    throw new Error(`${path}: response was not JSON`);
+  if (response.status === 204) {
+    body = null;
+  } else {
+    try {
+      body = await response.json();
+    } catch {
+      throw new Error(`${path}: response was not JSON`);
+    }
   }
   const requestId = response.headers.get('x-request-id');
   if (!requestId) throw new Error(`${path}: missing x-request-id response header`);
@@ -26,7 +31,7 @@ async function get(path, headers = undefined) {
 }
 
 async function post(path, payload, capability = undefined) {
-  const headers = { 'content-type': 'application/json' };
+  const headers = { 'content-type': 'application/json', origin: publicOrigin };
   if (capability !== undefined) headers['x-nodecontroll-setup-token'] = capability;
   const response = await fetch(new URL(path, baseUrl), {
     method: 'POST',
@@ -37,8 +42,30 @@ async function post(path, payload, capability = undefined) {
 }
 
 async function rawPost(path, { body, headers }) {
-  const response = await fetch(new URL(path, baseUrl), { method: 'POST', headers, body });
+  const response = await fetch(new URL(path, baseUrl), {
+    method: 'POST',
+    headers: { origin: publicOrigin, ...headers },
+    body,
+  });
   return readResponse(path, response);
+}
+
+function responseCookies(response) {
+  if (typeof response.headers.getSetCookie === 'function') {
+    return response.headers.getSetCookie();
+  }
+  const combined = response.headers.get('set-cookie');
+  return combined ? combined.split(/, (?=__Host-)/u) : [];
+}
+
+function cookieHeader(setCookies) {
+  return setCookies.map((value) => value.split(';', 1)[0]).join('; ');
+}
+
+function cookieValue(setCookies, name) {
+  const prefix = `${name}=`;
+  const encoded = setCookies.find((value) => value.startsWith(prefix));
+  return encoded?.slice(prefix.length).split(';', 1)[0];
 }
 
 const firstBootstrap = {
@@ -52,6 +79,7 @@ const repeatedBootstrap = {
   password: 'Another smoke bootstrap passphrase',
 };
 const rejectedContractPassword = 'Rejected contract passphrase';
+const wrongLoginPassword = 'Incorrect smoke login passphrase';
 
 const forgedRequestId = 'client-controlled-request-id';
 const health = await get('/healthz', { 'x-request-id': forgedRequestId });
@@ -80,6 +108,51 @@ const invalidCapability = await post('/api/v1/bootstrap', firstBootstrap);
 const bootstrapCreate = await post('/api/v1/bootstrap', firstBootstrap, setupToken);
 const bootstrapAfter = await get('/api/v1/bootstrap');
 const bootstrapConflict = await post('/api/v1/bootstrap', repeatedBootstrap, setupToken);
+const missingOriginLogin = await readResponse(
+  '/api/v1/auth/login',
+  await fetch(new URL('/api/v1/auth/login', baseUrl), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      username: firstBootstrap.username,
+      password: firstBootstrap.password,
+    }),
+  }),
+);
+const wrongLogin = await post('/api/v1/auth/login', {
+  username: firstBootstrap.username,
+  password: wrongLoginPassword,
+});
+const login = await post('/api/v1/auth/login', {
+  username: firstBootstrap.username,
+  password: firstBootstrap.password,
+});
+const loginCookies = responseCookies(login.response);
+const browserCookie = cookieHeader(loginCookies);
+const csrfToken = cookieValue(loginCookies, '__Host-nodecontroll_csrf');
+const me = await get('/api/v1/me', { cookie: browserCookie });
+const rejectedLogout = await readResponse(
+  '/api/v1/auth/logout',
+  await fetch(new URL('/api/v1/auth/logout', baseUrl), {
+    method: 'POST',
+    headers: { cookie: browserCookie, origin: publicOrigin },
+  }),
+);
+const logout = await readResponse(
+  '/api/v1/auth/logout',
+  await fetch(new URL('/api/v1/auth/logout', baseUrl), {
+    method: 'POST',
+    headers: {
+      cookie: browserCookie,
+      origin: publicOrigin,
+      'x-nodecontroll-csrf': csrfToken ?? '',
+    },
+  }),
+);
+const meAfterLogout = await readResponse(
+  '/api/v1/me',
+  await fetch(new URL('/api/v1/me', baseUrl), { headers: { cookie: browserCookie } }),
+);
 const version = await get('/api/v1/system/version');
 const openapi = await get('/api-docs/openapi.json');
 
@@ -100,6 +173,13 @@ const observedResponses = [
   ['bootstrap-create', bootstrapCreate],
   ['bootstrap-after', bootstrapAfter],
   ['bootstrap-conflict', bootstrapConflict],
+  ['missing-origin-login', missingOriginLogin],
+  ['wrong-login', wrongLogin],
+  ['login', login],
+  ['me', me],
+  ['rejected-logout', rejectedLogout],
+  ['logout', logout],
+  ['me-after-logout', meAfterLogout],
   ['version', version],
   ['openapi', openapi],
   ['not-found', missing],
@@ -122,6 +202,7 @@ for (const [label, result] of observedResponses) {
     firstBootstrap.password,
     repeatedBootstrap.password,
     rejectedContractPassword,
+    wrongLoginPassword,
     setupToken,
     'x'.repeat(128),
     '$argon2id$',
@@ -135,6 +216,8 @@ for (const [label, result] of [
   ['bootstrap-before', bootstrapBefore],
   ['bootstrap-create', bootstrapCreate],
   ['bootstrap-after', bootstrapAfter],
+  ['login', login],
+  ['me', me],
   ['version', version],
 ]) {
   if (result.body.meta?.request_id !== result.requestId) {
@@ -143,6 +226,10 @@ for (const [label, result] of [
 }
 for (const [label, result] of [
   ['bootstrap-conflict', bootstrapConflict],
+  ['missing-origin-login', missingOriginLogin],
+  ['wrong-login', wrongLogin],
+  ['rejected-logout', rejectedLogout],
+  ['me-after-logout', meAfterLogout],
   ['malformed-json', malformedJson],
   ['wrong-media-type', wrongMediaType],
   ['unknown-field', unknownField],
@@ -192,8 +279,8 @@ if (bootstrapAfter.body.data?.initialized !== true) throw new Error('bootstrap s
 if (bootstrapAfter.body.data?.setup_capability_required !== false) {
   throw new Error('bootstrap projection still requested a consumed setup capability');
 }
-if (bootstrapAfter.body.data?.login_methods?.length !== 0) {
-  throw new Error('bootstrap advertised a login method before its endpoint exists');
+if (bootstrapAfter.body.data?.login_methods?.join(',') !== 'password') {
+  throw new Error('bootstrap did not advertise the password login endpoint');
 }
 if (bootstrapConflict.response.status !== 409 || bootstrapConflict.body.code !== 'ALREADY_INITIALIZED') {
   throw new Error('repeat bootstrap was not rejected');
@@ -201,9 +288,54 @@ if (bootstrapConflict.response.status !== 409 || bootstrapConflict.body.code !==
 if (!bootstrapConflict.response.headers.get('content-type')?.startsWith('application/problem+json')) {
   throw new Error('repeat bootstrap did not return Problem Details');
 }
+if (missingOriginLogin.response.status !== 403 || missingOriginLogin.body.code !== 'BROWSER_ORIGIN_INVALID') {
+  throw new Error('login without the exact browser Origin was not rejected');
+}
+if (wrongLogin.response.status !== 401 || wrongLogin.body.code !== 'INVALID_CREDENTIALS') {
+  throw new Error('wrong password did not use the generic login failure contract');
+}
+if (login.response.status !== 200 || login.body.data?.actor?.username !== firstBootstrap.username) {
+  throw new Error('password login did not return the authenticated actor');
+}
+if (login.body.data?.actor?.role !== 'owner' || !login.body.data?.actor?.capabilities?.includes('instance:manage')) {
+  throw new Error('owner role/capability projection is incomplete');
+}
+if (loginCookies.length !== 2 || !csrfToken || !browserCookie.includes('__Host-nodecontroll_session=')) {
+  throw new Error('login did not issue both session and CSRF cookies');
+}
+const sessionCookie = loginCookies.find((value) => value.startsWith('__Host-nodecontroll_session='));
+const csrfCookie = loginCookies.find((value) => value.startsWith('__Host-nodecontroll_csrf='));
+if (!sessionCookie?.includes('; Path=/;') || !sessionCookie.includes('; Secure;') || !sessionCookie.includes('; HttpOnly;') || !sessionCookie.endsWith('SameSite=Lax')) {
+  throw new Error('session cookie attributes do not match the security contract');
+}
+if (!csrfCookie?.includes('; Path=/;') || !csrfCookie.includes('; Secure;') || csrfCookie.includes('HttpOnly') || !csrfCookie.endsWith('SameSite=Lax')) {
+  throw new Error('CSRF cookie attributes do not match the security contract');
+}
+if (loginCookies.some((value) => value.includes('Domain='))) {
+  throw new Error('security cookies must remain host-only');
+}
+if (me.response.status !== 200 || me.body.data?.actor?.id !== login.body.data?.actor?.id) {
+  throw new Error('server-side session restoration failed');
+}
+if (rejectedLogout.response.status !== 403 || rejectedLogout.body.code !== 'CSRF_INVALID') {
+  throw new Error('logout without double-submit CSRF was not rejected');
+}
+if (logout.response.status !== 204 || logout.body !== null) {
+  throw new Error('logout did not return an empty 204 response');
+}
+const clearedCookies = responseCookies(logout.response);
+if (clearedCookies.length !== 2 || !clearedCookies.every((value) => value.includes('Max-Age=0'))) {
+  throw new Error('logout did not expire both browser cookies');
+}
+if (meAfterLogout.response.status !== 401 || meAfterLogout.body.code !== 'SESSION_INVALID') {
+  throw new Error('revoked session remained usable after logout');
+}
 if (version.body.data?.product !== 'NodeControll') throw new Error('unexpected product');
 if (version.body.meta?.api_version !== 'v1') throw new Error('unexpected API version');
 if (!openapi.body.paths?.['/api/v1/system/version']) throw new Error('runtime OpenAPI path missing');
+for (const path of ['/api/v1/auth/login', '/api/v1/me', '/api/v1/auth/logout']) {
+  if (!openapi.body.paths?.[path]) throw new Error(`runtime OpenAPI path missing: ${path}`);
+}
 for (const [method, status] of [
   ['get', '503'],
   ['post', '400'],
@@ -233,6 +365,9 @@ console.log(JSON.stringify({
   initialized_before: bootstrapBefore.body.data.initialized,
   initialized_after: bootstrapAfter.body.data.initialized,
   repeat_bootstrap: bootstrapConflict.body.code,
+  login: login.body.data.actor.username,
+  restored_session: me.body.data.session.id === login.body.data.session.id,
+  revoked_session: meAfterLogout.body.code,
   product: version.body.data.product,
   version: version.body.data.version,
   api_version: version.body.meta.api_version,

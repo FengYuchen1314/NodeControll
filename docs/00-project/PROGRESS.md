@@ -27,6 +27,25 @@
 
 ## 已完成内容与代码说明
 
+### 2026-08-26 — WP-02 密码登录/服务端会话候选树通过 VPS 预检
+
+- 新增 `nodecontroll-application`，把 bootstrap、登录、当前身份和退出从 HTTP/SQL 细节中分离；Domain 补齐六角色、用户状态、capability、认证等级与 session 生命周期枚举。SQLite/PostgreSQL `0003_auth_core` 同步增加 `user_auth_state`、`auth_sessions`、`login_rate_buckets`、`login_security_events`，repository contract 在两库使用同一 fixture。
+- 登录在任何 limiter 写入前取得 1～64 的进程内许可，许可覆盖三层 bucket、凭据读取与 Argon2 验证。已有 account/IP/global 封禁先由一条只读查询拒绝，不更新 blocked hit，也不会随着轮换账号或 IP 扩张 row；未命中仍由 account→IP→global 固定锁序事务处理并发。不存在用户验证 dummy PHC，停用、未知、错密对外统一 401。
+- 原始 session/CSRF token 只进入 `Secure`、`__Host-` Cookie；数据库保存用途隔离、带 key version 的 HMAC。`/me` 检查 active 用户、`auth_revision`、idle/absolute deadline；写请求同时检查 canonical Origin/Host、严格 Cookie/header CSRF 与数据库 CSRF HMAC。mutating auth 已收敛为单次 typed repository outcome，错误 CSRF 不 touch session；logout 撤销与安全事件在同一事务中提交。
+- Vue 增加内存 Pinia session 状态机、登录页、路由 guard、SaaS authenticated shell 和 fail-closed 控制面门。重定向拒绝外站、反斜杠、编码控制字符和 guest route。Setup 成功前会清空 setup token/密码；登录成功但导航失败时清空密码、禁用再次登录并只允许重试导航；退出后即使路由失败，旧受保护 DOM 也会立即消失。
+- 固定 Rust builder 的候选预检通过 `cargo fmt --check`、`cargo check --locked --workspace --all-targets`、68 个双库 workspace test、Clippy `-D warnings` 和 release bins；精确工具链仍是 rustc/cargo 1.98.0、rustfmt 1.9.0、clippy 0.1.98。最终 OpenAPI SHA-256 为 `e2d8316e7f8c7543328d03044a24bf621461144fa2043f3b4562fc1c29af6280`，共 7 paths/8 operations；VPS 生成 SDK 后 typecheck、零 warning lint、6 个文件 29/29 Vitest 和 341-module production build 全绿。
+- 真实 PostgreSQL runtime 已完成一次性 bootstrap、重复初始化拒绝、登录、刷新恢复、退出、撤销后 401；Master 以同一数据库和 root key 重启后，再次登录/恢复/退出也通过。重启前后日志分别为 205/376 bytes，SHA-256 `63f0035d22a8e9d58443d1d60c495a12e8c56ae7e4544bd396aa5766f4256347` 与 `979649eacfc8d555e09996a8625bb9322642e907a385b57b2923060c8ece66d1`；按真实 setup token、root key、测试口令、PHC、session/CSRF 前缀扫描均无命中。临时 Master/PostgreSQL 容器、网络与秘密文件已删除，只保留不含秘密的候选日志。
+- 发布前审计修正 verifier 边界：runtime log 先写 `.capturing`，捕获成功后才原子替换并扫描；捕获失败、secret fixture 缺失或扫描异常都会留下失败 marker。扫描器改由 Python 按文件路径在进程内读取秘密，秘密正文不再进入子进程 argv。Cargo fetch、test、release 和许可证重建容器都显式固定 `RUSTUP_HOME`，与断网只读工具链预检一致。`bash -n` 与精确版本预检已经在 VPS 通过。
+- 这仍不是正式发布证据：候选目录没有 commit-scoped manifest，也没有绑定公开 SHA、Actions artifact 或 fresh-checkout run。下一步是提交并只推送公开 `main`，等待 Actions 生成同 SHA 制品，再运行完整 `tools/vps_verify.sh`。MFA/WebAuthn/recovery/recent-auth、token、完整 RBAC/用户生命周期、浏览器 E2E，以及 bucket/event/session retention 和持久化 key canary 仍未完成；358 项需求继续全部保持 `planned`。
+
+### 2026-08-26 — 首个公开 SHA 通过完整 Actions + VPS 正式门
+
+- commit `190492823da766d7446375f05b517d6359fb0d72` 的 Actions run `32905833325` attempt 1 全绿，artifact `9584823840` 为 4,165,197 bytes；GitHub API digest、本机 raw payload 和 VPS commit-scoped 文件的 SHA-256 都是 `6ed502ab5cc94b6ac3c19404654e28462864a8e7fb5f14682f287a4b2129f65a`。
+- 一次 SCP 在 3,899,392 bytes 处中断；不完整文件没有进入 verifier，而是移到 VPS 临时目录保留。完整文件先传到 `.uploading`，核对 size/hash 后才原子改成正式名称。新 archive 预检仍是 676 个 `0755` 目录、868 个 `0644` 普通文件和两个 `0755` ELF。
+- fresh full clone 上的正式 run `20260825T223046660411478Z-p5` 于 `22:30:46Z`～`22:34:23Z` 完成，manifest `status=completed`、无 `failed_stage`，并记录 `source_checkout_clean_after_tests=true`。Rust/Node/PostgreSQL builder 分别固定为 `6ab618...1613`、`066286...afcb`、`1c59e2...e1af`。
+- 正式门逐项通过：GitHub provenance；196 个 tracked blob/mode；1546 个 archive member；869 个 package 文件；645 个锁定组件、844 份许可证证据、20/20 overrides 和 CycloneDX 1.6；34 个 Rust test、零 warning clippy；Master/Agent ELF 与 VPS release 逐字节一致；OpenAPI 在提交、Actions 与 VPS 三方一致；848 个 notices 文件逐字节复现；Web typecheck、lint、13 个 Vitest、324-module production build 与 Actions `dist` 精确一致。
+- 真实 Master smoke 验证了 liveness、readiness、一次性 bootstrap、重复初始化 `ALREADY_INITIALIZED`、版本/API 身份、4 条 OpenAPI path 和唯一 request ID；runtime OpenAPI 与 package 合同一致，日志 secret scan 通过。这个结果只完成当前工程骨架、foundation/bootstrap slice 的公开发布门，不代表 WP-02 身份/session/MFA/RBAC 或 358 项产品需求已经完成；正式 run 的矩阵仍为 `planned=358, implemented=0, verified=0`。
+
 ### 2026-08-26 — mode 合同通过；ELF loader allowlist 缺项被正式门拒绝
 
 - commit `332b204b47d418513e4f9e5850921f744762038a` 的 Actions run `32904404331` attempt 1 全绿，job `97985122463` 用时 3 分 1 秒。artifact `9584322069` 为 4,165,204 bytes，GitHub API digest 与下载 payload SHA-256 都是 `f31986a99336a80000d5d8345afceec6d5509f96c60dccc6805e1d2f39c262ea`。
@@ -245,6 +264,8 @@
 | 2026-08-26（首次正式 artifact run） | VPS provenance/archive | run `20260825T214246348535211Z-p5` | provenance、source、CycloneDX CLI 通过；`actions-archive-members` 因 14 个 sysroot evidence 为 `0666` 而拒绝，状态 failed |
 | 2026-08-26（mode/Cargo 修复 push） | GitHub Actions 正式编译 | run `32904404331`、artifact `9584322069` | Actions 全绿；mode 与嵌入路径预检通过；artifact SHA-256 `f31986...c262ea` |
 | 2026-08-26（第二次正式 artifact run） | VPS archive/license/ELF | run `20260825T221048400560496Z-p5` | archive、package/license/SBOM 通过；`actions-elf-check` 因 allowlist 漏列合法 loader SONAME 而拒绝，状态 failed |
+| 2026-08-26（ELF verifier 修复 push） | GitHub Actions 正式编译 | run `32905833325`、artifact `9584823840` | attempt 1 全绿；artifact 4,165,197 bytes、SHA-256 `6ed502...29f65a` |
+| 2026-08-26（第三次正式 artifact run） | 完整 VPS 发布门 | run `20260825T223046660411478Z-p5` | completed；provenance、archive/license/SBOM、34 Rust tests、clippy、ELF/OpenAPI/Web 精确复现、13 Web tests、runtime smoke 全部通过 |
 
 ## 风险与约束
 
@@ -256,7 +277,6 @@
 
 ## 下一步
 
-1. 推送 ELF loader 精确 allowlist 与解析失败传播修复，取得新 SHA 的成功 attempt 1 artifact。
-2. 在新的 commit-scoped artifact 目录和 fresh standalone full checkout 运行完整正式 verifier；失败过的 `332b204...` checkout 不复用。只有二进制、OpenAPI、Web、许可证和 provenance 全部形成正式 run manifest 后，才登记发布门通过。
-3. 补齐 WP-02 登录/session/MFA/RBAC 与 SetupPage 浏览器 E2E，再完成 P5.2 Agent protocol/enrollment handshake。
-4. 按 WP-02～WP-20 和 358 条追踪矩阵逐项实现、测试并更新状态；不得用 schema/页面壳替代产品行为验收。
+1. 补齐 WP-02 登录/session/MFA/RBAC 与 SetupPage 浏览器 E2E，并把对应需求从 planned 更新为 implemented/verified；不得把当前 bootstrap slice 误记为完整身份系统。
+2. 完成 P5.2 Agent protocol/enrollment handshake，再按 WP-03～WP-20 推进后端、Vue/Vuetify 页面与 SingBox 集成。
+3. 按 358 条追踪矩阵逐项实现、测试并更新状态；不得用 schema、路由占位或页面壳替代产品行为验收。

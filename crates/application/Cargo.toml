@@ -1,5 +1,5 @@
 [package]
-name = "nodecontroll-identity"
+name = "nodecontroll-application"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,14 +7,15 @@ license.workspace = true
 publish = false
 
 [dependencies]
-argon2.workspace = true
-getrandom.workspace = true
-hex.workspace = true
+async-trait.workspace = true
 nodecontroll-domain = { path = "../domain" }
-rustix.workspace = true
+nodecontroll-identity = { path = "../identity" }
+nodecontroll-persistence = { path = "../persistence" }
+nodecontroll-secrets = { path = "../secrets" }
 sha2.workspace = true
-subtle.workspace = true
 thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
 zeroize.workspace = true
 
 [lints]

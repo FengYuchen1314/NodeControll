@@ -4,6 +4,24 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
+export type ActorResponse = {
+    capabilities: Array<string>;
+    force_password_change: boolean;
+    id: string;
+    role: string;
+    username: string;
+};
+
+export type AuthenticatedData = {
+    actor: ActorResponse;
+    session: SessionResponse;
+};
+
+export type AuthenticatedEnvelope = {
+    data: AuthenticatedData;
+    meta: ResponseMeta;
+};
+
 export type BootstrapCreated = {
     instance_id: string;
     owner_id: string;
@@ -47,6 +65,10 @@ export type HealthResponse = {
     status: string;
 };
 
+export type LoginRequest = {
+    username: string;
+};
+
 export type Problem = {
     code: string;
     detail: string;
@@ -65,6 +87,14 @@ export type ReadinessResponse = {
 export type ResponseMeta = {
     api_version: string;
     request_id: string;
+};
+
+export type SessionResponse = {
+    absolute_expires_at_ms: number;
+    created_at_ms: number;
+    id: string;
+    idle_expires_at_ms: number;
+    last_seen_at_ms: number;
 };
 
 export type VersionEnvelope = {
@@ -86,6 +116,89 @@ export type BootstrapRequestWritable = {
     password: string;
     username: string;
 };
+
+export type LoginRequestWritable = {
+    password: string;
+    username: string;
+};
+
+export type LoginData = {
+    body: LoginRequestWritable;
+    path?: never;
+    query?: never;
+    url: '/api/v1/auth/login';
+};
+
+export type LoginErrors = {
+    /**
+     * The JSON request is malformed
+     */
+    400: Problem;
+    /**
+     * The supplied credentials are invalid
+     */
+    401: Problem;
+    /**
+     * The browser origin or host does not match the configured public origin
+     */
+    403: Problem;
+    /**
+     * The control plane has not been initialized
+     */
+    409: Problem;
+    /**
+     * A shared login limit is active
+     */
+    429: Problem;
+    /**
+     * Authentication dependencies are unavailable
+     */
+    503: Problem;
+};
+
+export type LoginError = LoginErrors[keyof LoginErrors];
+
+export type LoginResponses = {
+    /**
+     * Password authentication succeeded and host-only session cookies were issued
+     */
+    200: AuthenticatedEnvelope;
+};
+
+export type LoginResponse = LoginResponses[keyof LoginResponses];
+
+export type LogoutData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/auth/logout';
+};
+
+export type LogoutErrors = {
+    /**
+     * The Cookie header is oversized, ambiguous, or structurally malformed
+     */
+    401: Problem;
+    /**
+     * Origin, host, or double-submit CSRF verification failed
+     */
+    403: Problem;
+    /**
+     * Authentication dependencies are unavailable
+     */
+    503: Problem;
+};
+
+export type LogoutError = LogoutErrors[keyof LogoutErrors];
+
+export type LogoutResponses = {
+    /**
+     * The current server-side session was revoked and browser cookies were expired
+     */
+    204: void;
+};
+
+export type LogoutResponse = LogoutResponses[keyof LogoutResponses];
 
 export type GetBootstrapStateData = {
     body?: never;
@@ -170,6 +283,39 @@ export type InitializeControlPlaneResponses = {
 };
 
 export type InitializeControlPlaneResponse = InitializeControlPlaneResponses[keyof InitializeControlPlaneResponses];
+
+export type GetCurrentActorData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/me';
+};
+
+export type GetCurrentActorErrors = {
+    /**
+     * The session is absent, invalid, revoked, inactive, or expired
+     */
+    401: Problem;
+    /**
+     * The request host does not match the configured public origin
+     */
+    403: Problem;
+    /**
+     * Authentication dependencies are unavailable
+     */
+    503: Problem;
+};
+
+export type GetCurrentActorError = GetCurrentActorErrors[keyof GetCurrentActorErrors];
+
+export type GetCurrentActorResponses = {
+    /**
+     * The current active actor and server-side session projection
+     */
+    200: AuthenticatedEnvelope;
+};
+
+export type GetCurrentActorResponse = GetCurrentActorResponses[keyof GetCurrentActorResponses];
 
 export type GetSystemVersionData = {
     body?: never;
