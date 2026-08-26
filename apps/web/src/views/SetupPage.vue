@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { useMutation, useQuery } from '@tanstack/vue-query'
-import { computed, nextTick, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, reactive, ref } from 'vue'
+import { isNavigationFailure, useRouter } from 'vue-router'
 
-import { getBootstrapState, initializeControlPlane } from '../api/generated/sdk.gen'
+import { getBootstrapState } from '../api/generated/sdk.gen'
+import { initializeControlPlaneWithRecoveryCodes } from '../api/recovery-codes'
+import OneTimeRecoveryCodes from '../components/security/OneTimeRecoveryCodes.vue'
 import { useSessionStore } from '../stores/session'
 
 type BootstrapField = 'instanceName' | 'password' | 'username'
@@ -48,6 +50,17 @@ const safeProblemCodes = new Set<SafeProblemCode>([
   'VALIDATION_FAILED',
 ])
 
+const nonCommittingBootstrapFailures = new Map<SafeProblemCode, number>([
+  ['BOOTSTRAP_JSON_INVALID', 400],
+  ['VALIDATION_FAILED', 400],
+  ['SETUP_CAPABILITY_INVALID', 403],
+  ['IDENTITY_CONFLICT', 409],
+  ['PAYLOAD_TOO_LARGE', 413],
+  ['UNSUPPORTED_MEDIA_TYPE', 415],
+  ['BOOTSTRAP_JSON_SHAPE_INVALID', 422],
+  ['BOOTSTRAP_RATE_LIMITED', 429],
+])
+
 const fieldByPointer = new Map<string, BootstrapField>([
   ['/instance_name', 'instanceName'],
   ['/password', 'password'],
@@ -74,6 +87,7 @@ class InitializationFailure extends Error {
     readonly fieldErrors: SafeFieldErrors,
     readonly status?: number,
     readonly code?: SafeProblemCode,
+    readonly outcomeUnknown = false,
   ) {
     super('Control-plane initialization failed')
     this.name = 'InitializationFailure'
@@ -88,6 +102,61 @@ const emptyFieldErrors = (): SafeFieldErrors => ({
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined
+
+const exactKeys = (candidate: Record<string, unknown>, expected: readonly string[]) => {
+  const actual = Object.keys(candidate).sort()
+  const sortedExpected = [...expected].sort()
+  return (
+    actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index])
+  )
+}
+
+const boundedProblemText = (value: unknown, maximumLength: number): value is string =>
+  typeof value === 'string' && value.length >= 1 && value.length <= maximumLength
+
+const validProblemFieldError = (value: unknown) => {
+  const fieldError = asRecord(value)
+  return (
+    fieldError !== undefined &&
+    exactKeys(fieldError, ['code', 'message', 'pointer']) &&
+    boundedProblemText(fieldError.code, 128) &&
+    boundedProblemText(fieldError.message, 1_024) &&
+    boundedProblemText(fieldError.pointer, 256)
+  )
+}
+
+const responseHasProblemContentType = (response: HttpResponseLike) =>
+  response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() ===
+  'application/problem+json'
+
+const validatedProblem = (value: unknown, response: HttpResponseLike) => {
+  const problem = asRecord(value)
+  const expectedKeys = problem?.errors === undefined
+    ? ['code', 'detail', 'request_id', 'status', 'title', 'type']
+    : ['code', 'detail', 'errors', 'request_id', 'status', 'title', 'type']
+  if (
+    problem === undefined ||
+    !responseHasProblemContentType(response) ||
+    !exactKeys(problem, expectedKeys) ||
+    problem.status !== response.status ||
+    !Number.isInteger(problem.status) ||
+    response.status < 400 ||
+    response.status >= 600 ||
+    !boundedProblemText(problem.type, 512) ||
+    !boundedProblemText(problem.title, 512) ||
+    !boundedProblemText(problem.detail, 4_096) ||
+    !boundedProblemText(problem.request_id, 128) ||
+    !boundedProblemText(problem.code, 128) ||
+    (problem.errors !== undefined &&
+      (!Array.isArray(problem.errors) ||
+        problem.errors.length > 64 ||
+        !problem.errors.every(validProblemFieldError)))
+  ) {
+    return undefined
+  }
+  return problem
+}
 
 const safeStatus = (problem: Record<string, unknown> | undefined, response?: HttpResponseLike) => {
   if (response && Number.isInteger(response.status)) return response.status
@@ -172,7 +241,11 @@ const failureSummary = (
   return '初始化未完成。请检查 Master readiness 与网络连接后重试。'
 }
 
-const toInitializationFailure = (error: unknown, response?: HttpResponseLike) => {
+const toInitializationFailure = (
+  error: unknown,
+  response?: HttpResponseLike,
+  outcomeUnknown = false,
+) => {
   const problem = asRecord(error)
   const status = safeStatus(problem, response)
   const code = safeProblemCode(problem)
@@ -190,8 +263,25 @@ const toInitializationFailure = (error: unknown, response?: HttpResponseLike) =>
     fieldErrors,
     status,
     code,
+    outcomeUnknown,
   )
 }
+
+const isProvablyNonCommittingFailure = (failure: InitializationFailure) =>
+  failure.code !== undefined &&
+  nonCommittingBootstrapFailures.get(failure.code) === failure.status
+
+const isKnownInitializedFailure = (failure: InitializationFailure) =>
+  failure.code === 'ALREADY_INITIALIZED' && failure.status === 409
+
+const unknownInitializationFailure = (status?: number) =>
+  new InitializationFailure(
+    '初始化请求的结果无法确认。页面不会自动重放请求，请重新读取 Master 状态。',
+    emptyFieldErrors(),
+    status,
+    undefined,
+    true,
+  )
 
 const form = reactive({
   instanceName: '',
@@ -250,8 +340,14 @@ const passwordHint = computed(
 )
 const lastFailure = ref<InitializationFailure>()
 const createdAwaitingReconcile = ref(false)
+const oneTimeRecoveryCodes = ref<string[]>([])
+const recoveryCodesReconciled = ref(false)
+const recoveryCodesUnavailable = ref(false)
+const recoveryCodeDownloadFailed = ref(false)
+const recoveryCodeNavigationFailed = ref(false)
+let setupPageActive = true
 const setupTokenErrors = computed(() =>
-  lastFailure.value?.status === 403 || lastFailure.value?.code === 'SETUP_CAPABILITY_INVALID'
+  lastFailure.value?.code === 'SETUP_CAPABILITY_INVALID'
     ? ['请填写部署服务器当前 setup-token 文件中的一次性 Token。']
     : [],
 )
@@ -271,34 +367,72 @@ const bootstrap = useQuery({
 const reconcileBootstrap = async () => {
   const result = await bootstrap.refetch()
   if (result.data?.data.initialized !== true) return
+  recoveryCodesReconciled.value = true
   session.markInitialized()
+  if (oneTimeRecoveryCodes.value.length > 0 || recoveryCodesUnavailable.value) return
   await router.replace({ name: 'login' })
 }
 
 const initialize = useMutation({
   mutationFn: async () => {
-    const response = await initializeControlPlane({
-      credentials: 'same-origin',
-      headers: {
-        'x-nodecontroll-setup-token': form.setupToken,
-      },
-      body: {
-        instance_name: form.instanceName,
-        username: form.username,
-        password: form.password,
-      },
-    })
-    if (response.error) throw toInitializationFailure(response.error, response.response)
-    return response.data
+    let response
+    try {
+      response = await initializeControlPlaneWithRecoveryCodes({
+        setupToken: form.setupToken,
+        body: {
+          instance_name: form.instanceName,
+          username: form.username,
+          password: form.password,
+        },
+        signal: AbortSignal.timeout(15_000),
+      })
+    } catch {
+      throw unknownInitializationFailure()
+    }
+    if (response.data === undefined) {
+      if (response.response.status === 201) {
+        throw new InitializationFailure(
+          'Master 已接受初始化请求，但恢复码响应未通过安全校验。请登录后在账户安全页重新生成。',
+          emptyFieldErrors(),
+          response.response.status,
+          undefined,
+          true,
+        )
+      }
+      if (response.payloadState === 'valid-json') {
+        const problem = validatedProblem(response.error, response.response)
+        if (problem) {
+          const failure = toInitializationFailure(problem, response.response)
+          if (isProvablyNonCommittingFailure(failure) || isKnownInitializedFailure(failure)) {
+            throw failure
+          }
+        }
+      }
+      throw unknownInitializationFailure(response.response.status)
+    }
+    form.password = ''
+    form.passwordConfirmation = ''
+    form.setupToken = ''
+    const receivedCodes = response.data.data.one_time_recovery_codes
+    const displayCodes = [...receivedCodes]
+    for (let index = 0; index < receivedCodes.length; index += 1) receivedCodes[index] = ''
+    await nextTick()
+    if (!setupPageActive) {
+      for (let index = 0; index < displayCodes.length; index += 1) displayCodes[index] = ''
+      return
+    }
+    oneTimeRecoveryCodes.value = displayCodes
   },
   onMutate: () => {
     lastFailure.value = undefined
   },
   onSuccess: async () => {
-    form.password = ''
-    form.passwordConfirmation = ''
-    form.setupToken = ''
+    if (!setupPageActive) return
     lastFailure.value = undefined
+    recoveryCodesReconciled.value = false
+    recoveryCodesUnavailable.value = false
+    recoveryCodeDownloadFailed.value = false
+    recoveryCodeNavigationFailed.value = false
     await nextTick()
     createdAwaitingReconcile.value = true
     await reconcileBootstrap()
@@ -307,8 +441,15 @@ const initialize = useMutation({
     form.password = ''
     form.passwordConfirmation = ''
     form.setupToken = ''
+    if (!setupPageActive) return
     lastFailure.value =
-      error instanceof InitializationFailure ? error : toInitializationFailure(undefined)
+      error instanceof InitializationFailure ? error : unknownInitializationFailure()
+    if (lastFailure.value.outcomeUnknown) {
+      createdAwaitingReconcile.value = true
+      recoveryCodesUnavailable.value = true
+      await reconcileBootstrap()
+      return
+    }
     if (
       lastFailure.value.code === 'ALREADY_INITIALIZED' ||
       (lastFailure.value.status === 409 && lastFailure.value.code !== 'IDENTITY_CONFLICT')
@@ -326,6 +467,31 @@ const retryBootstrap = async () => {
   await reconcileBootstrap()
 }
 
+const clearOneTimeRecoveryCodes = () => {
+  for (let index = 0; index < oneTimeRecoveryCodes.value.length; index += 1) {
+    oneTimeRecoveryCodes.value[index] = ''
+  }
+  oneTimeRecoveryCodes.value = []
+}
+
+const continueToLogin = async () => {
+  recoveryCodeNavigationFailed.value = false
+  clearOneTimeRecoveryCodes()
+  recoveryCodesUnavailable.value = false
+  await nextTick()
+  try {
+    const result = await router.replace({ name: 'login' })
+    if (isNavigationFailure(result)) recoveryCodeNavigationFailed.value = true
+  } catch {
+    recoveryCodeNavigationFailed.value = true
+  }
+}
+
+onBeforeUnmount(() => {
+  setupPageActive = false
+  clearOneTimeRecoveryCodes()
+})
+
 const submit = () => {
   if (!canSubmit.value || initialize.isPending.value) return
   initialize.mutate()
@@ -341,7 +507,66 @@ const submit = () => {
     </p>
   </header>
 
-  <v-card border flat :loading="bootstrap.isPending.value">
+  <v-alert
+    v-if="recoveryCodeNavigationFailed"
+    type="warning"
+    variant="tonal"
+    class="mb-5"
+    role="alert"
+  >
+    恢复码已经从页面清除，但登录页跳转失败。请手动打开登录页。
+  </v-alert>
+
+  <div v-if="oneTimeRecoveryCodes.length > 0">
+    <v-alert
+      v-if="recoveryCodeDownloadFailed"
+      type="error"
+      variant="tonal"
+      class="mb-5"
+      role="alert"
+    >
+      浏览器未能创建下载文件。请直接从页面抄录恢复码，并保存到受保护位置。
+    </v-alert>
+    <v-alert
+      v-if="!recoveryCodesReconciled"
+      type="warning"
+      variant="tonal"
+      class="mb-5"
+      data-testid="setup-reconcile-lock"
+    >
+      <div>恢复码已在此页面显示，但 Master 的最终初始化状态尚未确认。请先保存恢复码，再重新读取状态。</div>
+      <v-btn
+        class="mt-4"
+        variant="outlined"
+        :loading="bootstrap.isFetching.value"
+        @click="retryBootstrap"
+      >
+        重新读取状态
+      </v-btn>
+    </v-alert>
+    <OneTimeRecoveryCodes
+      :codes="oneTimeRecoveryCodes"
+      context="bootstrap"
+      :confirmation-ready="recoveryCodesReconciled"
+      @download-failed="recoveryCodeDownloadFailed = true"
+      @confirmed="continueToLogin"
+    />
+  </div>
+
+  <v-card v-else-if="recoveryCodesUnavailable && recoveryCodesReconciled" border flat>
+    <v-card-item prepend-icon="mdi-alert-octagon-outline">
+      <v-card-title>初始化完成，但未接收恢复码</v-card-title>
+      <v-card-subtitle>安全响应校验未通过</v-card-subtitle>
+    </v-card-item>
+    <v-card-text>
+      <v-alert type="warning" variant="tonal" class="mb-5">
+        页面没有展示、记录或保存服务端返回的无效恢复码响应。请使用 Owner 密码登录，并立即到账户安全页重新生成恢复码。
+      </v-alert>
+      <v-btn color="primary" variant="flat" @click="continueToLogin"> 前往登录 </v-btn>
+    </v-card-text>
+  </v-card>
+
+  <v-card v-else border flat :loading="bootstrap.isPending.value">
     <v-card-text v-if="bootstrap.data.value" class="pa-6">
       <div class="d-flex align-center ga-4 mb-5">
         <v-icon
@@ -381,6 +606,9 @@ const submit = () => {
         data-testid="setup-reconcile-lock"
       >
         <div>Master 已接受初始化写入，或返回了无法安全重试的冲突。确认最新状态前，表单不会重新开放。</div>
+        <div v-if="lastFailure" class="mt-2" data-testid="initialization-error">
+          {{ lastFailure.summary }}
+        </div>
         <v-btn
           class="mt-4"
           variant="outlined"

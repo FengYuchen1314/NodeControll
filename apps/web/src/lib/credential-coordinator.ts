@@ -8,7 +8,13 @@ const maximumSequence = 18_446_744_073_709_551_615n
 
 export type CredentialDisposition = 'quarantine' | 'reconcile'
 export type CredentialMutationOperation =
-  'change-password' | 'login' | 'logout' | 'logout-all' | 'reauth' | 'revoke'
+  | 'change-password'
+  | 'login'
+  | 'logout'
+  | 'logout-all'
+  | 'reauth'
+  | 'regenerate-recovery-codes'
+  | 'revoke'
 
 type CredentialRecordOperation = CredentialMutationOperation | 'read-401'
 
@@ -91,6 +97,7 @@ const mutationOperations = new Set<CredentialMutationOperation>([
   'logout',
   'logout-all',
   'reauth',
+  'regenerate-recovery-codes',
   'revoke',
 ])
 const listeners = new Set<CredentialEventListener>()

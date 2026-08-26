@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { isNavigationFailure, useRoute, useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { isNavigationFailure, onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 
 import type { UserSessionResponse } from '../api/generated/types.gen'
+import type { RecoveryCodeStatus } from '../api/recovery-codes'
+import OneTimeRecoveryCodes from '../components/security/OneTimeRecoveryCodes.vue'
 import { safeRedirectPath } from '../router'
+import { useOneTimeRecoveryCodeStore } from '../stores/one-time-recovery'
 import {
+  RecoveryCodeFailure,
   SessionManagementFailure,
+  type RecoveryCodeFailureReason,
   type SessionManagementFailureReason,
   useSessionStore,
 } from '../stores/session'
@@ -13,9 +18,10 @@ import {
 const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
+const oneTimeRecoveryCodes = useOneTimeRecoveryCodeStore()
 
 const sessions = computed(() => session.managedSessions)
-const failure = ref<SessionManagementFailureReason>()
+const failure = ref<SessionManagementFailureReason | RecoveryCodeFailureReason>()
 const navigationFailed = ref(false)
 const revokeCandidate = ref<UserSessionResponse>()
 const revokeDialog = ref(false)
@@ -24,12 +30,27 @@ const logoutEverywhereDialog = ref(false)
 const revokedOne = ref(false)
 const revokedOthersCount = ref<number>()
 const signedOutEverywhere = ref(false)
+const recoveryCodeStatus = ref<RecoveryCodeStatus>()
+const recoveryCodeRegenerationDialog = ref(false)
+const recoveryCodeDownloadFailed = ref(false)
+const recoveryCodesSaved = ref(false)
+
+const clearCodeArray = (codes: string[]) => {
+  for (let index = 0; index < codes.length; index += 1) codes[index] = ''
+}
+
+const abandonRecoveryCodeOwnership = () => {
+  oneTimeRecoveryCodes.abandonOperation()
+}
 
 const otherSessionCount = computed(
   () => sessions.value.filter((candidate) => !candidate.is_current).length,
 )
 const operationPending = computed(
-  () => session.logoutAllPending || session.revokingSessionIds.length > 0,
+  () =>
+    session.logoutAllPending ||
+    session.revokingSessionIds.length > 0 ||
+    session.recoveryCodeRegenerationPending,
 )
 
 const formatTimestamp = (value: number) =>
@@ -60,7 +81,7 @@ const failureMessage = computed(() => {
     case 'recent-auth-required':
       return '近期身份确认已经过期，请先再次确认身份。'
     case 'request-rejected':
-      return '此会话操作已被安全策略拒绝，请确认当前访问地址。'
+      return '这项安全操作已被策略拒绝，请确认当前访问地址。'
     case 'session-invalid':
       return '当前会话已经失效，请重新登录。'
     case 'outcome-unknown':
@@ -82,6 +103,18 @@ const loadSessions = async () => {
         ? error
         : new SessionManagementFailure('unavailable')
     failure.value = sessionFailure.reason
+  }
+}
+
+const loadRecoveryCodeStatus = async () => {
+  failure.value = undefined
+  try {
+    recoveryCodeStatus.value = await session.getRecoveryCodeStatus()
+  } catch (error) {
+    recoveryCodeStatus.value = undefined
+    const recoveryFailure =
+      error instanceof RecoveryCodeFailure ? error : new RecoveryCodeFailure('unavailable')
+    failure.value = recoveryFailure.reason
   }
 }
 
@@ -108,11 +141,64 @@ const recentAuthenticationIsReady = async () => {
 
 const acceptOperationFailure = async (error: unknown) => {
   const sessionFailure =
-    error instanceof SessionManagementFailure
+    error instanceof SessionManagementFailure || error instanceof RecoveryCodeFailure
       ? error
       : new SessionManagementFailure('outcome-unknown')
   failure.value = sessionFailure.reason
   if (sessionFailure.reason === 'recent-auth-required') await goToReauthentication()
+}
+
+const openRecoveryCodeRegenerationDialog = async () => {
+  recoveryCodesSaved.value = false
+  recoveryCodeDownloadFailed.value = false
+  if (!(await recentAuthenticationIsReady())) return
+  recoveryCodeRegenerationDialog.value = true
+}
+
+const regenerateRecoveryCodeSet = async () => {
+  recoveryCodeRegenerationDialog.value = false
+  const operationOwner = oneTimeRecoveryCodes.beginOperation()
+  const operationRoute = router.currentRoute.value
+  const stillOwnsOperation = () =>
+    oneTimeRecoveryCodes.ownsOperation(operationOwner) &&
+    router.currentRoute.value === operationRoute
+  if (
+    !(await recentAuthenticationIsReady()) ||
+    !stillOwnsOperation()
+  ) {
+    oneTimeRecoveryCodes.releaseOperation(operationOwner)
+    return
+  }
+
+  failure.value = undefined
+  try {
+    const codes = await session.regenerateRecoveryCodes()
+    if (!stillOwnsOperation()) {
+      clearCodeArray(codes)
+      return
+    }
+    let accepted = false
+    try {
+      accepted = oneTimeRecoveryCodes.acceptForOperation(operationOwner, codes)
+    } finally {
+      clearCodeArray(codes)
+    }
+    if (!accepted) {
+      throw new RecoveryCodeFailure('outcome-unknown')
+    }
+    await loadRecoveryCodeStatus()
+  } catch (error) {
+    if (!stillOwnsOperation()) return
+    await acceptOperationFailure(error)
+  } finally {
+    oneTimeRecoveryCodes.releaseOperation(operationOwner)
+  }
+}
+
+const confirmRecoveryCodesSaved = () => {
+  oneTimeRecoveryCodes.clear()
+  recoveryCodeDownloadFailed.value = false
+  recoveryCodesSaved.value = true
 }
 
 const openRevokeDialog = (candidate: UserSessionResponse) => {
@@ -200,17 +286,36 @@ const syncRecentAuthAfterVisibilityChange = () => {
   scheduleRecentAuthExpiration()
 }
 
+const clearRecoveryCodesForPageHide = () => {
+  abandonRecoveryCodeOwnership()
+}
+
 onMounted(() => {
   session.syncRecentAuthClock()
   scheduleRecentAuthExpiration()
   globalThis.document.addEventListener('visibilitychange', syncRecentAuthAfterVisibilityChange)
+  globalThis.addEventListener('pagehide', clearRecoveryCodesForPageHide)
   void loadSessions()
+  void loadRecoveryCodeStatus()
 })
 
 onBeforeUnmount(() => {
+  oneTimeRecoveryCodes.clear()
   cancelRecentAuthExpirationTimer()
   globalThis.document.removeEventListener('visibilitychange', syncRecentAuthAfterVisibilityChange)
+  globalThis.removeEventListener('pagehide', clearRecoveryCodesForPageHide)
 })
+
+onBeforeRouteLeave(() => {
+  abandonRecoveryCodeOwnership()
+})
+
+watch(
+  () => route.fullPath,
+  () => {
+    abandonRecoveryCodeOwnership()
+  },
+)
 </script>
 
 <template>
@@ -277,6 +382,25 @@ onBeforeUnmount(() => {
     >
       所有会话均已退出。请手动前往登录页。
     </v-alert>
+    <v-alert
+      v-if="recoveryCodesSaved"
+      class="mb-5"
+      type="success"
+      variant="tonal"
+      role="status"
+      data-testid="recovery-codes-saved"
+    >
+      新恢复码已确认保存，页面中的明文副本已清除。
+    </v-alert>
+    <v-alert
+      v-if="recoveryCodeDownloadFailed"
+      class="mb-5"
+      type="error"
+      variant="tonal"
+      role="alert"
+    >
+      浏览器未能创建下载文件。请直接从窗口抄录恢复码，并保存到受保护位置。
+    </v-alert>
 
     <v-row>
       <v-col cols="12" lg="4">
@@ -302,6 +426,55 @@ onBeforeUnmount(() => {
       </v-col>
 
       <v-col cols="12" lg="8">
+        <v-card border flat height="100%">
+          <v-card-item prepend-icon="mdi-key-chain-variant">
+            <template #append>
+              <v-btn
+                icon="mdi-refresh"
+                variant="text"
+                aria-label="刷新恢复码状态"
+                :loading="session.recoveryCodeStatusPending"
+                :disabled="operationPending"
+                @click="loadRecoveryCodeStatus"
+              />
+            </template>
+            <v-card-title>账户恢复码</v-card-title>
+            <v-card-subtitle>离线保存的单次使用凭据</v-card-subtitle>
+          </v-card-item>
+          <v-card-text>
+            <v-skeleton-loader
+              v-if="session.recoveryCodeStatusPending && !recoveryCodeStatus"
+              type="list-item-two-line"
+              role="status"
+            />
+            <div v-else-if="recoveryCodeStatus" data-testid="recovery-code-status">
+              <p class="text-h5 font-weight-bold mb-1">
+                剩余 {{ recoveryCodeStatus.remaining_count }} / {{ recoveryCodeStatus.total_count }} 枚
+              </p>
+              <p class="text-body-2 text-medium-emphasis mb-4">
+                第 {{ recoveryCodeStatus.set_version }} 组 · 创建于
+                {{ formatTimestamp(recoveryCodeStatus.created_at_ms) }}
+              </p>
+            </div>
+            <p v-else class="text-body-2 text-medium-emphasis mb-4">
+              暂未读取到恢复码状态。状态接口只返回数量和创建时间，不返回明文。
+            </p>
+            <v-btn
+              color="warning"
+              variant="tonal"
+              prepend-icon="mdi-autorenew"
+              :loading="session.recoveryCodeRegenerationPending"
+              :disabled="operationPending"
+              data-testid="regenerate-recovery-codes"
+              @click="openRecoveryCodeRegenerationDialog"
+            >
+              重新生成恢复码
+            </v-btn>
+          </v-card-text>
+        </v-card>
+      </v-col>
+
+      <v-col cols="12">
         <v-card border flat>
           <v-card-item prepend-icon="mdi-devices">
             <template #append>
@@ -391,6 +564,31 @@ onBeforeUnmount(() => {
         </v-card>
       </v-col>
     </v-row>
+
+    <v-dialog v-model="recoveryCodeRegenerationDialog" max-width="520">
+      <v-card>
+        <v-card-title>重新生成恢复码？</v-card-title>
+        <v-card-text>
+          新的一组恢复码生成后，现有恢复码会立即全部失效。新明文只会在下一步显示一次，操作不会自动重放。
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn autofocus @click="recoveryCodeRegenerationDialog = false">取消</v-btn>
+          <v-btn color="warning" variant="flat" @click="regenerateRecoveryCodeSet">
+            确认重新生成
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <v-dialog :model-value="oneTimeRecoveryCodes.hasCodes" persistent max-width="760">
+      <OneTimeRecoveryCodes
+        :codes="oneTimeRecoveryCodes.codes"
+        context="regenerated"
+        @download-failed="recoveryCodeDownloadFailed = true"
+        @confirmed="confirmRecoveryCodesSaved"
+      />
+    </v-dialog>
 
     <v-dialog v-model="revokeDialog" max-width="480">
       <v-card>

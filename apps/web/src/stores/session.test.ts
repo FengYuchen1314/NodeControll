@@ -13,7 +13,13 @@ const sdk = vi.hoisted(() => ({
   revokeCurrentUserSession: vi.fn(),
 }))
 
+const recoveryApi = vi.hoisted(() => ({
+  getRecoveryCodeStatus: vi.fn(),
+  regenerateRecoveryCodes: vi.fn(),
+}))
+
 vi.mock('../api/generated/sdk.gen', () => sdk)
+vi.mock('../api/recovery-codes', () => recoveryApi)
 
 import { CSRF_COOKIE_NAME, LoginFailure, readCsrfCookie, useSessionStore } from './session'
 import { CREDENTIAL_COORDINATION_KEY } from '../lib/credential-coordinator'
@@ -102,12 +108,32 @@ const problemResult = (status: number, code = 'UNTRUSTED_CODE') => ({
   response: response(status),
 })
 
+const recoveryCodes = Array.from(
+  { length: 8 },
+  (_, index) => `${index.toString(16).padStart(4, '0')}-1111-2222-3333-4444-5555-6666-7777`,
+)
+
+const recoveryRegenerationResult = () => ({
+  data: {
+    data: {
+      created_at_ms: 1_780_000_000_000,
+      one_time_recovery_codes: [...recoveryCodes],
+      set_version: 2,
+    },
+    meta: { api_version: 'v1', request_id: 'recovery-regeneration' },
+  },
+  error: undefined,
+  response: response(200, { 'cache-control': 'no-store' }),
+})
+
 beforeEach(() => {
   globalThis.localStorage.clear()
   globalThis.sessionStorage.clear()
   seedCredentialRecord()
   setActivePinia(createPinia())
   for (const mock of Object.values(sdk)) mock.mockReset()
+  recoveryApi.getRecoveryCodeStatus.mockReset()
+  recoveryApi.regenerateRecoveryCodes.mockReset()
 })
 
 afterEach(() => {
@@ -1323,5 +1349,184 @@ describe('session store', () => {
     expect(store.status).toBe('relogin-required')
     expect(store.actor).toBeUndefined()
     expect(store.session).toBeUndefined()
+  })
+
+  it('returns regenerated recovery codes only to the caller and keeps them out of browser state', async () => {
+    const csrf = `ncc1_${'a'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
+    recoveryApi.regenerateRecoveryCodes.mockResolvedValue(recoveryRegenerationResult())
+    const storageWrite = vi.spyOn(Storage.prototype, 'setItem')
+    const store = useSessionStore()
+    store.acceptAuthenticated({ actor, session: sessionProjection })
+
+    await expect(store.regenerateRecoveryCodes()).resolves.toEqual(recoveryCodes)
+
+    expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledWith({
+      csrfToken: csrf,
+      signal: expect.anything(),
+    })
+    expect(JSON.stringify(store.$state)).not.toContain(recoveryCodes[0])
+    expect(globalThis.sessionStorage.length).toBe(0)
+    const writtenValues = storageWrite.mock.calls.map((call) => String(call[1])).join('\n')
+    expect(writtenValues).not.toContain(recoveryCodes[0])
+    expect(JSON.parse(globalThis.localStorage.getItem(CREDENTIAL_COORDINATION_KEY) ?? '{}')).toMatchObject(
+      {
+        disposition: 'reconcile',
+        operation: 'regenerate-recovery-codes',
+        phase: 'settled',
+      },
+    )
+  })
+
+  it('withholds and wipes regenerated plaintext when terminal journal settlement fails', async () => {
+    const csrf = `ncc1_${'d'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
+    const apiResponse = recoveryRegenerationResult()
+    let resolveRegeneration!: (value: ReturnType<typeof recoveryRegenerationResult>) => void
+    recoveryApi.regenerateRecoveryCodes.mockReturnValue(
+      new Promise<ReturnType<typeof recoveryRegenerationResult>>((resolve) => {
+        resolveRegeneration = resolve
+      }),
+    )
+    const store = useSessionStore()
+    store.acceptAuthenticated({ actor, session: sessionProjection })
+
+    const regeneration = expect(store.regenerateRecoveryCodes()).rejects.toMatchObject({
+      reason: 'outcome-unknown',
+    })
+    await vi.waitFor(() => expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1))
+    const inflight = JSON.parse(
+      globalThis.localStorage.getItem(CREDENTIAL_COORDINATION_KEY) ?? '{}',
+    )
+    globalThis.localStorage.setItem(
+      CREDENTIAL_COORDINATION_KEY,
+      JSON.stringify({
+        ...inflight,
+        opId: '40000000-0000-4000-8000-000000000004',
+      }),
+    )
+
+    resolveRegeneration(apiResponse)
+    await regeneration
+
+    expect(store.status).toBe('relogin-required')
+    expect(apiResponse.data.data.one_time_recovery_codes.every((code) => code === '')).toBe(true)
+    expect(JSON.stringify(store.$state)).not.toContain(recoveryCodes[0])
+    expect(globalThis.localStorage.getItem(CREDENTIAL_COORDINATION_KEY)).not.toContain(
+      recoveryCodes[0],
+    )
+  })
+
+  it('rejects and wipes a regeneration projection carried by an unexpected 201 response', async () => {
+    const csrf = `ncc1_${'2'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
+    const apiResponse = recoveryRegenerationResult()
+    apiResponse.response = response(201, { 'cache-control': 'no-store' })
+    recoveryApi.regenerateRecoveryCodes.mockResolvedValue(apiResponse)
+    sdk.logout.mockResolvedValue({ data: {}, error: undefined, response: response(204) })
+    const store = useSessionStore()
+    store.acceptAuthenticated({ actor, session: sessionProjection })
+
+    await expect(store.regenerateRecoveryCodes()).rejects.toMatchObject({
+      reason: 'outcome-unknown',
+    })
+
+    expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1)
+    expect(sdk.logout).toHaveBeenCalledTimes(1)
+    expect(apiResponse.data.data.one_time_recovery_codes.every((code) => code === '')).toBe(true)
+  })
+
+  it('maps stale regeneration success, 401, and 403 to outcome-unknown without returning secrets', async () => {
+    for (const responseKind of ['success', '401', '403'] as const) {
+      seedCredentialRecord()
+      recoveryApi.regenerateRecoveryCodes.mockReset()
+      sdk.logout.mockReset()
+      sdk.logout.mockResolvedValue({ data: {}, error: undefined, response: response(204) })
+      let resolveRegeneration!: (
+        value:
+          | ReturnType<typeof recoveryRegenerationResult>
+          | ReturnType<typeof problemResult>
+      ) => void
+      recoveryApi.regenerateRecoveryCodes.mockReturnValue(
+        new Promise<
+          ReturnType<typeof recoveryRegenerationResult> | ReturnType<typeof problemResult>
+        >((resolve) => {
+          resolveRegeneration = resolve
+        }),
+      )
+      const pinia = createPinia()
+      const store = useSessionStore(pinia)
+      store.acceptAuthenticated({ actor, session: sessionProjection })
+
+      const regeneration = expect(store.regenerateRecoveryCodes()).rejects.toMatchObject({
+        reason: 'outcome-unknown',
+      })
+      await vi.waitFor(() => expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1))
+      store.acceptAuthenticated({ actor, session: sessionProjection })
+      const apiResponse =
+        responseKind === 'success'
+          ? recoveryRegenerationResult()
+          : problemResult(
+              Number(responseKind),
+              responseKind === '403' ? 'RECENT_AUTH_REQUIRED' : 'SESSION_INVALID',
+            )
+      resolveRegeneration(apiResponse)
+      await regeneration
+
+      expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1)
+      expect(sdk.logout).toHaveBeenCalledTimes(1)
+      if (responseKind === 'success' && apiResponse.data !== undefined) {
+        expect(apiResponse.data.data.one_time_recovery_codes.every((code) => code === '')).toBe(true)
+      }
+      disposePinia(pinia)
+    }
+  })
+
+  it('does not replay regeneration after a server-side recent-auth rejection', async () => {
+    const csrf = `ncc1_${'b'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
+    recoveryApi.regenerateRecoveryCodes.mockResolvedValue(
+      problemResult(403, 'RECENT_AUTH_REQUIRED'),
+    )
+    const store = useSessionStore()
+    store.acceptAuthenticated({ actor, session: sessionProjection })
+
+    await expect(store.regenerateRecoveryCodes()).rejects.toMatchObject({
+      reason: 'recent-auth-required',
+    })
+
+    expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1)
+    expect(store.status).toBe('authenticated')
+    expect(JSON.parse(globalThis.localStorage.getItem(CREDENTIAL_COORDINATION_KEY) ?? '{}')).toMatchObject(
+      {
+        disposition: 'reconcile',
+        operation: 'regenerate-recovery-codes',
+        phase: 'settled',
+      },
+    )
+  })
+
+  it('never replays an unknown regeneration outcome and requires a confirmed relogin', async () => {
+    const csrf = `ncc1_${'c'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
+    recoveryApi.regenerateRecoveryCodes.mockRejectedValue(new TypeError('connection closed'))
+    sdk.logout.mockResolvedValue({ data: {}, error: undefined, response: response(204) })
+    const store = useSessionStore()
+    store.acceptAuthenticated({ actor, session: sessionProjection })
+
+    await expect(store.regenerateRecoveryCodes()).rejects.toMatchObject({
+      reason: 'outcome-unknown',
+    })
+
+    expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1)
+    expect(sdk.logout).toHaveBeenCalledTimes(1)
+    expect(store.status).toBe('anonymous')
+    expect(JSON.parse(globalThis.localStorage.getItem(CREDENTIAL_COORDINATION_KEY) ?? '{}')).toMatchObject(
+      {
+        disposition: 'reconcile',
+        operation: 'regenerate-recovery-codes',
+        phase: 'settled',
+      },
+    )
   })
 })

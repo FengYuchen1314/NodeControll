@@ -17,9 +17,19 @@ const sdk = vi.hoisted(() => ({
   revokeCurrentUserSession: vi.fn(),
 }))
 
+const recoveryApi = vi.hoisted(() => ({
+  getRecoveryCodeStatus: vi.fn(),
+  initializeControlPlaneWithRecoveryCodes: vi.fn(),
+  regenerateRecoveryCodes: vi.fn(),
+  validOneTimeRecoveryCodes: (value: unknown) => Array.isArray(value) && value.length === 8,
+}))
+
 vi.mock('../../api/generated/sdk.gen', () => sdk)
+vi.mock('../../api/recovery-codes', () => recoveryApi)
 
 import { CSRF_COOKIE_NAME, useSessionStore } from '../../stores/session'
+import { CREDENTIAL_COORDINATION_KEY } from '../../lib/credential-coordinator'
+import { useOneTimeRecoveryCodeStore } from '../../stores/one-time-recovery'
 import ProfileSecurityPage from '../ProfileSecurityPage.vue'
 
 const response = (status: number) => ({ headers: new Headers(), status })
@@ -54,6 +64,10 @@ const otherSession = {
   is_current: false,
   last_seen_at_ms: now - 10_000,
 }
+const recoveryCodes = Array.from(
+  { length: 8 },
+  (_, index) => `${index.toString(16).padStart(4, '0')}-1111-2222-3333-4444-5555-6666-7777`,
+)
 
 const sessionListResult = () => ({
   data: {
@@ -94,6 +108,33 @@ const logoutOthersResult = () => ({
   response: response(200),
 })
 
+const recoveryStatusResult = (remainingCount = 8) => ({
+  data: {
+    data: {
+      created_at_ms: now - 30_000,
+      remaining_count: remainingCount,
+      set_version: 1,
+      total_count: 8,
+    },
+    meta: { api_version: 'v1', request_id: 'recovery-status-request' },
+  },
+  error: undefined,
+  response: response(200),
+})
+
+const recoveryRegenerationResult = () => ({
+  data: {
+    data: {
+      created_at_ms: now,
+      one_time_recovery_codes: [...recoveryCodes],
+      set_version: 2,
+    },
+    meta: { api_version: 'v1', request_id: 'recovery-regeneration-request' },
+  },
+  error: undefined,
+  response: response(200),
+})
+
 const renderPage = async (recent = true) => {
   const pinia = createPinia()
   const router = createRouter({
@@ -119,6 +160,7 @@ const renderPage = async (recent = true) => {
   session.acceptAuthenticated(projection(recent))
   return {
     ...render(ProfileSecurityPage, { global: { plugins: [pinia, router, vuetify] } }),
+    pinia,
     router,
     session,
   }
@@ -126,7 +168,10 @@ const renderPage = async (recent = true) => {
 
 beforeEach(() => {
   for (const mock of Object.values(sdk)) mock.mockReset()
+  recoveryApi.getRecoveryCodeStatus.mockReset()
+  recoveryApi.regenerateRecoveryCodes.mockReset()
   sdk.listCurrentSessions.mockResolvedValue(sessionListResult())
+  recoveryApi.getRecoveryCodeStatus.mockResolvedValue(recoveryStatusResult())
 })
 
 afterEach(() => {
@@ -135,6 +180,227 @@ afterEach(() => {
 })
 
 describe('ProfileSecurityPage', () => {
+  it('shows only recovery-code metadata and never fetches the code plaintext on status read', async () => {
+    await renderPage()
+
+    const status = await screen.findByTestId('recovery-code-status')
+    expect(status.textContent).toContain('剩余 8 / 8 枚')
+    expect(status.textContent).toContain('第 1 组')
+    expect(recoveryApi.getRecoveryCodeStatus).toHaveBeenCalledWith({ signal: expect.anything() })
+    expect(document.body.textContent).not.toContain(recoveryCodes[0])
+  })
+
+  it('regenerates once after recent auth and clears the only plaintext copy on confirmation', async () => {
+    const csrf = `ncc1_${'6'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
+    recoveryApi.regenerateRecoveryCodes.mockResolvedValue(recoveryRegenerationResult())
+    recoveryApi.getRecoveryCodeStatus
+      .mockResolvedValueOnce(recoveryStatusResult())
+      .mockResolvedValueOnce(recoveryStatusResult(8))
+    await renderPage()
+
+    await screen.findByTestId('recovery-code-status')
+    await fireEvent.click(screen.getByTestId('regenerate-recovery-codes'))
+    const dialog = await screen.findByRole('dialog')
+    await fireEvent.click(within(dialog).getByRole('button', { name: '确认重新生成' }))
+
+    expect(await screen.findByTestId('one-time-recovery-codes')).not.toBeNull()
+    expect(screen.getAllByTestId('recovery-code')).toHaveLength(8)
+    expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1)
+    expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledWith({
+      csrfToken: csrf,
+      signal: expect.anything(),
+    })
+    expect(globalThis.localStorage.getItem('nodecontroll:recovery-codes')).toBeNull()
+    expect(globalThis.sessionStorage.length).toBe(0)
+    const persistedValues = Array.from({ length: globalThis.localStorage.length }, (_, index) => {
+      const key = globalThis.localStorage.key(index)
+      return key ? globalThis.localStorage.getItem(key) : ''
+    }).join('\n')
+    expect(persistedValues).not.toContain(recoveryCodes[0])
+
+    await fireEvent.click(screen.getByLabelText('我已把这组恢复码保存到安全位置'))
+    await fireEvent.click(screen.getByTestId('confirm-recovery-codes'))
+    expect(screen.queryByTestId('one-time-recovery-codes')).toBeNull()
+    expect(await screen.findByTestId('recovery-codes-saved')).not.toBeNull()
+    expect(document.body.textContent).not.toContain(recoveryCodes[0])
+  })
+
+  it('clears the page-scoped one-time store explicitly when the profile page unmounts', async () => {
+    const rendered = await renderPage()
+    const oneTimeCodes = useOneTimeRecoveryCodeStore(rendered.pinia)
+    expect(oneTimeCodes.accept(recoveryCodes)).toBe(true)
+    expect(oneTimeCodes.hasCodes).toBe(true)
+
+    rendered.unmount()
+
+    expect(oneTimeCodes.hasCodes).toBe(false)
+    expect(oneTimeCodes.codes).toEqual([])
+  })
+
+  it('does not refill plaintext after navigation leaves and returns to the same full path', async () => {
+    const csrf = `ncc1_${'8'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
+    const apiResponse = recoveryRegenerationResult()
+    let resolveRegeneration!: (value: ReturnType<typeof recoveryRegenerationResult>) => void
+    recoveryApi.regenerateRecoveryCodes.mockReturnValue(
+      new Promise<ReturnType<typeof recoveryRegenerationResult>>((resolve) => {
+        resolveRegeneration = resolve
+      }),
+    )
+    const rendered = await renderPage()
+    const oneTimeCodes = useOneTimeRecoveryCodeStore(rendered.pinia)
+
+    await screen.findByTestId('recovery-code-status')
+    await fireEvent.click(screen.getByTestId('regenerate-recovery-codes'))
+    await fireEvent.click(
+      within(await screen.findByRole('dialog')).getByRole('button', {
+        name: '确认重新生成',
+      }),
+    )
+    await waitFor(() => expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1))
+    expect(oneTimeCodes.accept(recoveryCodes)).toBe(true)
+    await rendered.router.push('/')
+    await waitFor(() => expect(oneTimeCodes.hasCodes).toBe(false))
+    await rendered.router.push('/profile/security')
+    resolveRegeneration(apiResponse)
+    await waitFor(() => expect(rendered.session.recoveryCodeRegenerationPending).toBe(false))
+
+    expect(oneTimeCodes.hasCodes).toBe(false)
+    expect(screen.queryByTestId('one-time-recovery-codes')).toBeNull()
+    expect(apiResponse.data.data.one_time_recovery_codes.every((code) => code === '')).toBe(true)
+  })
+
+  it('clears and abandons a pending plaintext handoff on pagehide for BFCache', async () => {
+    const csrf = `ncc1_${'9'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
+    const apiResponse = recoveryRegenerationResult()
+    let resolveRegeneration!: (value: ReturnType<typeof recoveryRegenerationResult>) => void
+    recoveryApi.regenerateRecoveryCodes.mockReturnValue(
+      new Promise<ReturnType<typeof recoveryRegenerationResult>>((resolve) => {
+        resolveRegeneration = resolve
+      }),
+    )
+    const rendered = await renderPage()
+    const oneTimeCodes = useOneTimeRecoveryCodeStore(rendered.pinia)
+
+    await screen.findByTestId('recovery-code-status')
+    await fireEvent.click(screen.getByTestId('regenerate-recovery-codes'))
+    await fireEvent.click(
+      within(await screen.findByRole('dialog')).getByRole('button', {
+        name: '确认重新生成',
+      }),
+    )
+    await waitFor(() => expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1))
+    expect(oneTimeCodes.accept(recoveryCodes)).toBe(true)
+    globalThis.dispatchEvent(new Event('pagehide'))
+    expect(oneTimeCodes.hasCodes).toBe(false)
+    resolveRegeneration(apiResponse)
+    await waitFor(() => expect(rendered.session.recoveryCodeRegenerationPending).toBe(false))
+
+    expect(oneTimeCodes.hasCodes).toBe(false)
+    expect(screen.queryByTestId('one-time-recovery-codes')).toBeNull()
+    expect(apiResponse.data.data.one_time_recovery_codes.every((code) => code === '')).toBe(true)
+  })
+
+  it('does not accept plaintext when the credential terminal settlement is lost', async () => {
+    const csrf = `ncc1_${'e'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
+    const apiResponse = recoveryRegenerationResult()
+    let resolveRegeneration!: (value: ReturnType<typeof recoveryRegenerationResult>) => void
+    recoveryApi.regenerateRecoveryCodes.mockReturnValue(
+      new Promise<ReturnType<typeof recoveryRegenerationResult>>((resolve) => {
+        resolveRegeneration = resolve
+      }),
+    )
+    const rendered = await renderPage()
+    const oneTimeCodes = useOneTimeRecoveryCodeStore(rendered.pinia)
+
+    await screen.findByTestId('recovery-code-status')
+    await fireEvent.click(screen.getByTestId('regenerate-recovery-codes'))
+    await fireEvent.click(
+      within(await screen.findByRole('dialog')).getByRole('button', {
+        name: '确认重新生成',
+      }),
+    )
+    await waitFor(() => expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1))
+    const inflight = JSON.parse(
+      globalThis.localStorage.getItem(CREDENTIAL_COORDINATION_KEY) ?? '{}',
+    )
+    globalThis.localStorage.setItem(
+      CREDENTIAL_COORDINATION_KEY,
+      JSON.stringify({
+        ...inflight,
+        opId: '50000000-0000-4000-8000-000000000005',
+      }),
+    )
+    resolveRegeneration(apiResponse)
+    await waitFor(() => expect(rendered.session.status).toBe('relogin-required'))
+
+    expect(oneTimeCodes.hasCodes).toBe(false)
+    expect(screen.queryByTestId('one-time-recovery-codes')).toBeNull()
+    expect(apiResponse.data.data.one_time_recovery_codes.every((code) => code === '')).toBe(true)
+  })
+
+  it('wipes the transfer array even if the page-scoped store rejects by throwing', async () => {
+    const csrf = `ncc1_${'f'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
+    recoveryApi.regenerateRecoveryCodes.mockResolvedValue(recoveryRegenerationResult())
+    const rendered = await renderPage()
+    const oneTimeCodes = useOneTimeRecoveryCodeStore(rendered.pinia)
+    let transferredCodes: string[] | undefined
+    vi.spyOn(oneTimeCodes, 'acceptForOperation').mockImplementation((_owner, codes: unknown) => {
+      transferredCodes = codes as string[]
+      throw new Error('store rejected transfer')
+    })
+
+    await screen.findByTestId('recovery-code-status')
+    await fireEvent.click(screen.getByTestId('regenerate-recovery-codes'))
+    await fireEvent.click(
+      within(await screen.findByRole('dialog')).getByRole('button', {
+        name: '确认重新生成',
+      }),
+    )
+    await screen.findByTestId('security-error')
+
+    expect(transferredCodes).toBeDefined()
+    expect(transferredCodes?.every((code) => code === '')).toBe(true)
+    expect(oneTimeCodes.hasCodes).toBe(false)
+    expect(screen.queryByTestId('one-time-recovery-codes')).toBeNull()
+  })
+
+  it('requires step-up before regeneration and never auto-replays it', async () => {
+    const { router } = await renderPage(false)
+
+    await screen.findByTestId('recovery-code-status')
+    await fireEvent.click(screen.getByTestId('regenerate-recovery-codes'))
+
+    await waitFor(() => expect(router.currentRoute.value.name).toBe('reauth'))
+    expect(router.currentRoute.value.query.redirect).toBe('/profile/security')
+    expect(recoveryApi.regenerateRecoveryCodes).not.toHaveBeenCalled()
+  })
+
+  it('steps up once when regeneration reaches the server-side recent-auth boundary', async () => {
+    const csrf = `ncc1_${'7'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
+    recoveryApi.regenerateRecoveryCodes.mockResolvedValue(
+      problemResult(403, 'RECENT_AUTH_REQUIRED'),
+    )
+    const { router } = await renderPage()
+
+    await screen.findByTestId('recovery-code-status')
+    await fireEvent.click(screen.getByTestId('regenerate-recovery-codes'))
+    await fireEvent.click(
+      within(await screen.findByRole('dialog')).getByRole('button', {
+        name: '确认重新生成',
+      }),
+    )
+
+    await waitFor(() => expect(router.currentRoute.value.name).toBe('reauth'))
+    expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent).not.toContain('untrusted server detail')
+  })
+
   it('shows only coarse session data and revokes one non-current session after confirmation', async () => {
     const csrf = `ncc1_${'3'.repeat(64)}`
     vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)

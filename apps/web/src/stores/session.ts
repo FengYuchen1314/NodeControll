@@ -18,6 +18,11 @@ import type {
   UserSessionResponse,
 } from '../api/generated/types.gen'
 import {
+  getRecoveryCodeStatus as requestRecoveryCodeStatus,
+  regenerateRecoveryCodes as requestRecoveryCodeRegeneration,
+  type RecoveryCodeStatus,
+} from '../api/recovery-codes'
+import {
   acquireCredentialMutation,
   CredentialCoordinationFailure,
   getCredentialCoordinationCursor,
@@ -83,6 +88,14 @@ export type SessionManagementFailureReason =
   | 'session-invalid'
   | 'unavailable'
 
+export type RecoveryCodeFailureReason =
+  | 'csrf-unavailable'
+  | 'outcome-unknown'
+  | 'recent-auth-required'
+  | 'request-rejected'
+  | 'session-invalid'
+  | 'unavailable'
+
 export class LoginFailure extends Error {
   constructor(
     readonly reason: LoginFailureReason,
@@ -121,6 +134,13 @@ export class SessionManagementFailure extends Error {
   constructor(readonly reason: SessionManagementFailureReason) {
     super('Session operation failed')
     this.name = 'SessionManagementFailure'
+  }
+}
+
+export class RecoveryCodeFailure extends Error {
+  constructor(readonly reason: RecoveryCodeFailureReason) {
+    super('Recovery code operation failed')
+    this.name = 'RecoveryCodeFailure'
   }
 }
 
@@ -265,6 +285,8 @@ export const useSessionStore = defineStore('session', () => {
   const reauthenticationPending = ref(false)
   const passwordChangePending = ref(false)
   const sessionListPending = ref(false)
+  const recoveryCodeStatusPending = ref(false)
+  const recoveryCodeRegenerationPending = ref(false)
   const logoutAllPending = ref(false)
   const revokingSessionIds = ref<string[]>([])
   const managedSessions = ref<UserSessionResponse[]>([])
@@ -351,8 +373,15 @@ export const useSessionStore = defineStore('session', () => {
     lease: CredentialMutationLease | undefined,
     disposition: CredentialDisposition,
   ) => {
-    if (!lease) return
-    if (!lease.settle(disposition)) enterCredentialQuarantine()
+    if (!lease) return false
+    let settled = false
+    try {
+      settled = lease.settle(disposition)
+    } catch {
+      settled = false
+    }
+    if (!settled) enterCredentialQuarantine()
+    return settled
   }
 
   const authenticatedCredentialCursor = (): CredentialCoordinationCursor | undefined => {
@@ -895,6 +924,193 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  const getRecoveryCodeStatus = async (): Promise<RecoveryCodeStatus> => {
+    recoveryCodeStatusPending.value = true
+    let invalidation: { observation: CredentialReadObservation; sessionId: string } | undefined
+    try {
+      return await withCredentialReadLock(async (observation) => {
+        if (status.value !== 'authenticated') {
+          throw new RecoveryCodeFailure('session-invalid')
+        }
+        const readGeneration = snapshotGeneration
+        const observedSessionId = session.value?.id
+        if (!observedSessionId) throw new RecoveryCodeFailure('session-invalid')
+        const response = await requestRecoveryCodeStatus({ signal: credentialReadSignal() })
+        if (snapshotGeneration !== readGeneration) {
+          throw new RecoveryCodeFailure('session-invalid')
+        }
+        if (
+          response.error === undefined &&
+          response.data !== undefined &&
+          response.response.status === 200
+        ) {
+          return response.data.data
+        }
+        if (response.response.status === 401) {
+          if (setStatusIfCurrent(readGeneration, 'anonymous')) {
+            publishCredentialInvalidation(observation, participantId, observedSessionId)
+            invalidation = { observation, sessionId: observedSessionId }
+          }
+          throw new RecoveryCodeFailure('session-invalid')
+        }
+        if (
+          response.response.status === 400 ||
+          response.response.status === 403 ||
+          response.response.status === 422
+        ) {
+          throw new RecoveryCodeFailure('request-rejected')
+        }
+        throw new RecoveryCodeFailure('unavailable')
+      })
+    } catch (error) {
+      if (error instanceof CredentialCoordinationFailure) {
+        if (error.reason === 'quarantine') {
+          enterCredentialQuarantine()
+          throw new RecoveryCodeFailure('session-invalid')
+        }
+        if (error.reason === 'invalidated') {
+          if (status.value !== 'relogin-required') setStatus('anonymous')
+          throw new RecoveryCodeFailure('session-invalid')
+        }
+        enterCredentialQuarantine()
+        throw new RecoveryCodeFailure('unavailable')
+      }
+      if (error instanceof RecoveryCodeFailure) throw error
+      throw new RecoveryCodeFailure('unavailable')
+    } finally {
+      if (invalidation) {
+        await persistCredentialInvalidation(
+          invalidation.observation,
+          participantId,
+          invalidation.sessionId,
+        )
+      }
+      recoveryCodeStatusPending.value = false
+    }
+  }
+
+  const regenerateRecoveryCodes = async (): Promise<string[]> => {
+    if (status.value !== 'authenticated') {
+      throw new RecoveryCodeFailure('session-invalid')
+    }
+    const startingProjection = { actor: actor.value!, session: session.value! }
+    const expectedCursor = authenticatedCredentialCursor()
+    if (!expectedCursor) throw new RecoveryCodeFailure('session-invalid')
+    let credentialLease: CredentialMutationLease | undefined
+    let disposition: CredentialDisposition = 'quarantine'
+    let stagedCodes: string[] | undefined
+    let terminalSettled = false
+    const clearStagedCodes = () => {
+      if (!stagedCodes) return
+      for (let index = 0; index < stagedCodes.length; index += 1) stagedCodes[index] = ''
+      stagedCodes = undefined
+    }
+    recoveryCodeRegenerationPending.value = true
+    try {
+      credentialLease = await acquireCredentialMutation(
+        participantId,
+        'regenerate-recovery-codes',
+        expectedCursor,
+      )
+      if (!credentialLease) {
+        enterCredentialQuarantine()
+        throw new RecoveryCodeFailure('unavailable')
+      }
+      const regenerationGeneration = snapshotGeneration
+      const restoreProjection = () => {
+        const restored = acceptAuthenticatedIfCurrent(regenerationGeneration, startingProjection)
+        disposition = restored ? 'reconcile' : 'quarantine'
+        return restored
+      }
+      const csrfToken = readCsrfCookie(document.cookie)
+      if (!csrfToken) {
+        if (!restoreProjection()) throw new RecoveryCodeFailure('outcome-unknown')
+        throw new RecoveryCodeFailure('csrf-unavailable')
+      }
+      const response = await requestRecoveryCodeRegeneration({
+        csrfToken,
+        signal: credentialMutationSignal(),
+      })
+      if (
+        response.error === undefined &&
+        response.data !== undefined &&
+        response.response.status === 200
+      ) {
+        const receivedCodes = response.data.data.one_time_recovery_codes
+        const callerCodes = [...receivedCodes]
+        for (let index = 0; index < receivedCodes.length; index += 1) receivedCodes[index] = ''
+        if (!restoreProjection()) {
+          for (let index = 0; index < callerCodes.length; index += 1) callerCodes[index] = ''
+          throw new RecoveryCodeFailure('outcome-unknown')
+        }
+        stagedCodes = callerCodes
+      } else {
+        if (response.data !== undefined) {
+          const rejectedCodes = response.data.data.one_time_recovery_codes
+          for (let index = 0; index < rejectedCodes.length; index += 1) {
+            rejectedCodes[index] = ''
+          }
+        }
+        const httpStatus = response.response.status
+        const code = problemCode(response.error)
+        if (httpStatus === 401) {
+          if (snapshotGeneration !== regenerationGeneration) {
+            throw new RecoveryCodeFailure('outcome-unknown')
+          }
+          markInitialized()
+          disposition = 'reconcile'
+          throw new RecoveryCodeFailure('session-invalid')
+        }
+        if (httpStatus === 403 && code === 'RECENT_AUTH_REQUIRED') {
+          if (!restoreProjection()) throw new RecoveryCodeFailure('outcome-unknown')
+          throw new RecoveryCodeFailure('recent-auth-required')
+        }
+        if (
+          httpStatus === 400 ||
+          httpStatus === 403 ||
+          httpStatus === 409 ||
+          httpStatus === 413 ||
+          httpStatus === 415 ||
+          httpStatus === 422 ||
+          httpStatus === 429
+        ) {
+          if (!restoreProjection()) throw new RecoveryCodeFailure('outcome-unknown')
+          throw new RecoveryCodeFailure('request-rejected')
+        }
+        if (httpStatus >= 400 && httpStatus < 500) {
+          if (!restoreProjection()) throw new RecoveryCodeFailure('outcome-unknown')
+          throw new RecoveryCodeFailure('unavailable')
+        }
+        throw new RecoveryCodeFailure('outcome-unknown')
+      }
+    } catch (error) {
+      const failure =
+        error instanceof RecoveryCodeFailure
+          ? error
+          : new RecoveryCodeFailure('outcome-unknown')
+      if (failure.reason === 'outcome-unknown') {
+        clearStagedCodes()
+        disposition = (await requireReloginAfterUnknownMutation()) ? 'reconcile' : 'quarantine'
+      }
+      throw failure
+    } finally {
+      recoveryCodeRegenerationPending.value = false
+      try {
+        terminalSettled = finishCredentialMutation(credentialLease, disposition)
+      } catch {
+        terminalSettled = false
+        enterCredentialQuarantine()
+      } finally {
+        if (!terminalSettled || disposition !== 'reconcile') clearStagedCodes()
+      }
+    }
+    if (!terminalSettled || disposition !== 'reconcile' || !stagedCodes) {
+      clearStagedCodes()
+      throw new RecoveryCodeFailure('outcome-unknown')
+    }
+    return stagedCodes
+  }
+
   const listSessions = async (): Promise<UserSessionResponse[]> => {
     sessionListPending.value = true
     managedSessions.value = []
@@ -1180,6 +1396,7 @@ export const useSessionStore = defineStore('session', () => {
     actor,
     changePassword,
     ensureLoaded,
+    getRecoveryCodeStatus,
     hasResolutionError,
     isAuthenticated,
     isResolving,
@@ -1198,6 +1415,9 @@ export const useSessionStore = defineStore('session', () => {
     reauthenticationPending,
     recentAuthExpired,
     recentAuthValid,
+    recoveryCodeRegenerationPending,
+    recoveryCodeStatusPending,
+    regenerateRecoveryCodes,
     refresh,
     revokeSession,
     revokingSessionIds,
