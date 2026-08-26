@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2 Web 与后端各自通过独立 VPS 门，C3 源码已进入本地主线；`334c8ea…` 的首个 C2+C3 合并候选在 Rust 编译门失败，当前正从原提交做最小修复并准备全新候选；P0～P4 已完成。
+- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2 Web 与后端各自通过独立 VPS 门，C3 的编译/门工具修复候选正在全量重跑；WP04-A 共享 SaaS 组件已通过独立 VPS 门并进入本地主线；P0～P4 已完成。
 - 总体状态：进行中。
 - 当前上游基线：`iluobei/miaomiaowu@0b47f10c52aee10b9f759a593ca5f61a823cbb72`（`main`，2026-08-25 获取）。
 - 妙妙屋 X 文档基线：`https://miaomiaowux.com/docs/tutorial` 及同站文档页，2026-08-25 开始抓取。
@@ -26,6 +26,13 @@
 | P7 | 系统验收和交付 | 未开始 | E2E、性能、安全、升级/回滚、备份恢复全部验收 |
 
 ## 已完成内容与代码说明
+
+### 2026-08-27 00:02 — WP04-A SaaS 共享组件通过独立 VPS 门并合入主线
+
+- 新增 `ResourceHeader`、`StatusChip`、`DangerDialog`、`SecretField`、`DesiredReportedDiff`、`PolicyExplainer` 和 `SafeDisplayValueView`，公共入口只暴露展示合同，不复制尚不存在的 API DTO。主题现在同时注册 light/dark SaaS token；组件统一使用 Vuetify 语义色，在 360px 下保留标题动作、状态证据、危险确认、秘密输入、desired/reported/last-good 和策略来源的完整可访问结构。
+- `DangerDialog` 在发出危险动作前先取得本地单次提交锁。同步失败、旧错误或一次普通 pending 往返都不会自行解锁；父页面必须提供新的 `retryRevision` 作为明确 terminal failure 信号后才能重试。`SecretField` 不持久化输入，只保存 reveal 布尔值，并在 visibility/pagehide/unmount 时重新遮蔽；现有值只显示“已配置”，不会从服务端回填。差异与策略组件只接受 `text/empty/redacted` 判别值，夹带到 redacted 对象中的原文不会被渲染。
+- 分支最终提交 `0a652d1c59d53029f8d60cd5188e555e499fbb74` 的 fresh VPS run 为 `20260826T155301Z-wp04-saas-v5`。固定 Node 24.19.0/pnpm 11.24.0 下，16 个 OpenAPI 生成文件零漂移，typecheck、零 warning ESLint、18 个文件/122 项 Vitest、OpenAPI、79 篇设计文档/0 broken links 和 sanitizer 全绿；按边界没有运行 production build。archive/source、source manifest、generated manifest 和 evidence manifest SHA-256 分别为 `812daa151aea06c6f60ebd199e71804683c4656334eb540c1566fe663224fdb9`、`8b827b76cf9b963f3ecf050c10096324840d035dfa74860603456b230f9dfade`、`b0158df8fde2c31d8d491c211b51f209c55a20c471de4dca3e4b7bfd163e39ba`、`20eba2c7b3aae2dca8769a7db1ca5ec73e2bd7872d5b2343d55fd09706794f19`。
+- 八笔经过验证的提交已按顺序合入本地主线，形成 `df3595d…` 至 `7fee4b0…`；实现索引冲突只合并了 C3 与 WP04 两条独立文档链接，没有修改代码。AppShell、command palette、权限导航、DataTable、JobDrawer、MetricChart、真实 API 页面、i18n、axe/visual/Playwright 和性能预算仍属后续 WP04，不把本批组件称为完整界面。
 
 ### 2026-08-26 23:28 — C2 后端独立门通过；`334c8ea…` 合并态门已启动
 
