@@ -37,3 +37,81 @@ export type PolicyContributor = Readonly<{
   timeRange?: string
   value: SafeDisplayValue
 }>
+
+export type AppDataTableColumn = Readonly<{
+  align?: 'center' | 'end' | 'start'
+  key: string
+  label: string
+  mobileLabel?: string
+}>
+
+export type AppDataTableRow = Readonly<Record<string, unknown>>
+
+export type AppDataTableLabels = Readonly<{
+  actions: string
+  empty: string
+  emptyValue: string
+  falseValue: string
+  invalidConfiguration: string
+  loading: string
+  mobile: string
+  retry: string
+  selectAll: string
+  selectRow: (rowKey: string) => string
+  stale: string
+  trueValue: string
+}>
+
+export type JobPresentationState =
+  | 'cancelled'
+  | 'expired'
+  | 'failed'
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'waiting'
+export type JobStepPresentationState = 'failed' | 'pending' | 'running' | 'skipped' | 'succeeded'
+
+export type JobStepPresentation = Readonly<{
+  id: string
+  label: string
+  message?: SafeDisplayValue
+  state: JobStepPresentationState
+}>
+
+export type JobPresentation = Readonly<{
+  createdAt?: string
+  id: string
+  label: string
+  message?: SafeDisplayValue
+  progressPercent?: number
+  source: string
+  state: JobPresentationState
+  steps?: readonly JobStepPresentation[]
+  updatedAt?: string
+}>
+
+export type JobStateLabels = Readonly<Record<JobPresentationState, string>>
+export type JobStepStateLabels = Readonly<Record<JobStepPresentationState, string>>
+
+export type JobChipLabels = Readonly<{
+  source: (source: string) => string
+  states: JobStateLabels
+  updatedAt: (updatedAt: string) => string
+}>
+
+export type JobDrawerLabels = Readonly<{
+  close: string
+  createdAt: string
+  empty: string
+  emptyValue: string
+  jobId: string
+  overline: string
+  progress: (percent: number) => string
+  redactedValue: string
+  source: string
+  stepStates: JobStepStateLabels
+  steps: string
+  title: string
+  updatedAt: string
+}>

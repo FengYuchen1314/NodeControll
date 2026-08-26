@@ -2,6 +2,8 @@
 import type { SafeDisplayValue } from './types'
 
 defineProps<{
+  emptyLabel?: string
+  redactedLabel?: string
   value: SafeDisplayValue
 }>()
 </script>
@@ -9,10 +11,10 @@ defineProps<{
 <template>
   <span v-if="value.kind === 'redacted'" class="safe-display-value safe-display-value--redacted">
     <v-icon aria-hidden="true" icon="mdi-eye-off-outline" size="small" />
-    <span>{{ value.label ?? '敏感值已隐藏' }}</span>
+    <span>{{ value.label ?? redactedLabel ?? '敏感值已隐藏' }}</span>
   </span>
   <span v-else-if="value.kind === 'empty'" class="safe-display-value text-medium-emphasis">
-    {{ value.label ?? '未设置' }}
+    {{ value.label ?? emptyLabel ?? '未设置' }}
   </span>
   <code v-else-if="value.code" class="safe-display-value safe-display-value--code">
     {{ value.text }}
