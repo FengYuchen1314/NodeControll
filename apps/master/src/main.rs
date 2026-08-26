@@ -8,7 +8,8 @@ use nodecontroll_identity::{PasswordService, SetupCapability};
 use nodecontroll_persistence::{ConnectionSettings, Database};
 use nodecontroll_secrets::Keyring;
 use tokio::{net::TcpListener, signal};
-use tracing_subscriber::EnvFilter;
+
+mod telemetry;
 
 const DUMMY_PASSWORD: &str = "nodecontroll-dummy-password-v1";
 const SESSION_TOUCH_INTERVAL_MAX_SECONDS: u64 = 60;
@@ -16,7 +17,7 @@ const SESSION_TOUCH_INTERVAL_DIVISOR: u64 = 4;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_telemetry();
+    telemetry::init().context("hardened telemetry subscriber could not be installed")?;
 
     let config_path = env::var_os("NODECONTROLL_CONFIG").map(PathBuf::from);
     let config = nodecontroll_config::load(config_path.as_deref())?;
@@ -149,14 +150,6 @@ async fn connect_database(config: &MasterConfig) -> Result<Database> {
     )
     .await
     .context("database connection failed")
-}
-
-fn init_telemetry() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .json()
-        .try_init();
 }
 
 async fn shutdown_signal() {
