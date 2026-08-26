@@ -1,14 +1,26 @@
+import type {
+  GetCurrentRecoveryCodesData,
+  GetCurrentRecoveryCodesResponses,
+  InitializeControlPlaneData,
+  InitializeControlPlaneResponses,
+  RegenerateCurrentRecoveryCodesData,
+  RegenerateCurrentRecoveryCodesResponses,
+  ResponseMeta,
+} from './generated/types.gen'
+
 /**
- * Temporary WP02-C2 boundary.
+ * WP02-C2 bounded secret transport.
  *
- * The public d200c03 OpenAPI document predates recovery-code endpoints. Keep the temporary types,
- * request path bindings, and runtime validators here so generated code remains untouched. Once the
- * backend OpenAPI lands, reuse its generated response types and path contract, but retain this
- * bounded, redirect-rejecting transport until the generator can provide equivalent guarantees.
+ * Request bodies, response data, and literal paths come from the generated OpenAPI contract. This
+ * wrapper intentionally remains hand-written because the generated client follows redirects and
+ * reads an unbounded response with `response.text()`, neither of which is safe for one-time secrets.
  */
 
-const bootstrapPath = '/api/v1/bootstrap'
-const recoveryCodesPath = '/api/v1/me/recovery-codes'
+const bootstrapPath: InitializeControlPlaneData['url'] = '/api/v1/bootstrap'
+const recoveryCodesReadPath: GetCurrentRecoveryCodesData['url'] =
+  '/api/v1/me/recovery-codes'
+const recoveryCodesRegeneratePath: RegenerateCurrentRecoveryCodesData['url'] =
+  '/api/v1/me/recovery-codes'
 const maximumResponseBytes = 64 * 1024
 const recoveryCodeCount = 8
 const recoveryCodePattern = /^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$/i
@@ -17,35 +29,13 @@ const uuidPattern =
 
 type HttpMethod = 'GET' | 'POST'
 
-export type BootstrapRecoveryRequest = {
-  instance_name: string
-  password: string
-  username: string
-}
+export type BootstrapRecoveryRequest = InitializeControlPlaneData['body']
+export type BootstrapRecoveryData = InitializeControlPlaneResponses[201]['data']
+export type RecoveryCodeStatus = GetCurrentRecoveryCodesResponses[200]['data']
+export type RegeneratedRecoveryCodes = RegenerateCurrentRecoveryCodesResponses[200]['data']
+export type ApiMeta = ResponseMeta
 
-export type BootstrapRecoveryData = {
-  instance_id: string
-  one_time_recovery_codes: string[]
-  owner_id: string
-}
-
-export type RecoveryCodeStatus = {
-  created_at_ms: number
-  remaining_count: number
-  set_version: number
-  total_count: number
-}
-
-export type RegeneratedRecoveryCodes = {
-  created_at_ms: number
-  one_time_recovery_codes: string[]
-  set_version: number
-}
-
-export type ApiMeta = {
-  api_version: string
-  request_id: string
-}
+type OneTimeRecoveryCodes = BootstrapRecoveryData['one_time_recovery_codes']
 
 export type ApiEnvelope<T> = {
   data: T
@@ -101,7 +91,7 @@ const validMeta = (value: unknown): value is ApiMeta =>
 
 const normalizedRecoveryCode = (value: string) => value.replaceAll('-', '').toUpperCase()
 
-export const validOneTimeRecoveryCodes = (value: unknown): value is string[] => {
+export const validOneTimeRecoveryCodes = (value: unknown): value is OneTimeRecoveryCodes => {
   if (
     !Array.isArray(value) ||
     value.length !== recoveryCodeCount ||
@@ -289,7 +279,7 @@ export const getRecoveryCodeStatus = async (options: {
 } = {}): Promise<TemporaryApiResult<RecoveryCodeStatus>> => {
   const { body, response } = await request({
     method: 'GET',
-    path: recoveryCodesPath,
+    path: recoveryCodesReadPath,
     signal: options.signal,
   })
   return result(response, body, (status) => status === 200, validRecoveryCodeStatus)
@@ -302,7 +292,7 @@ export const regenerateRecoveryCodes = async (options: {
   const { body, response } = await request({
     headers: { 'x-nodecontroll-csrf': options.csrfToken },
     method: 'POST',
-    path: recoveryCodesPath,
+    path: recoveryCodesRegeneratePath,
     signal: options.signal,
   })
   return result(
