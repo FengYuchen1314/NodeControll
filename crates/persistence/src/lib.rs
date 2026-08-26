@@ -5225,13 +5225,12 @@ mod tests {
 
     use super::{
         AuthLevel, AuthSessionStatus, BootstrapState, ConnectionSettings, Database, DatabaseEngine,
-        JSON_SAFE_INTEGER_MAX_I64,
-        LoginAttemptReservation, LoginRateDecision, LoginSecurityReason, NewAuthSession,
-        NewLoginSecurityEvent, NewRecoveryCode, NewRecoveryCodeSet, NewSecretRecord,
-        PasswordChangeRotation, PersistenceError, RecoveryCodeConsumption, RecoveryCodeReplacement,
-        SessionAuthentication, SessionAuthenticationOutcome, SessionRevocationReason,
-        UserCredentials, UserSessionRevocation, decode_recovery_code_summary,
-        validate_recovery_code_set,
+        JSON_SAFE_INTEGER_MAX_I64, LoginAttemptReservation, LoginRateDecision, LoginSecurityReason,
+        NewAuthSession, NewLoginSecurityEvent, NewRecoveryCode, NewRecoveryCodeSet,
+        NewSecretRecord, PasswordChangeRotation, PersistenceError, RecoveryCodeConsumption,
+        RecoveryCodeReplacement, SessionAuthentication, SessionAuthenticationOutcome,
+        SessionRevocationReason, UserCredentials, UserSessionRevocation,
+        decode_recovery_code_summary, validate_recovery_code_set,
     };
 
     fn settings() -> ConnectionSettings {
@@ -5245,16 +5244,12 @@ mod tests {
 
     #[test]
     fn recovery_summary_is_bounded_to_the_json_integer_contract() {
-        assert!(validate_recovery_code_set(&recovery_set_fixture(
-            JSON_SAFE_INTEGER_MAX_I64,
-            1,
-        ))
-        .is_ok());
+        assert!(
+            validate_recovery_code_set(&recovery_set_fixture(JSON_SAFE_INTEGER_MAX_I64, 1,))
+                .is_ok()
+        );
         assert!(matches!(
-            validate_recovery_code_set(&recovery_set_fixture(
-                JSON_SAFE_INTEGER_MAX_I64 + 1,
-                2,
-            )),
+            validate_recovery_code_set(&recovery_set_fixture(JSON_SAFE_INTEGER_MAX_I64 + 1, 2,)),
             Err(PersistenceError::InvalidRecoveryCodeSet)
         ));
         assert!(matches!(

@@ -990,9 +990,8 @@ mod tests {
         assert!(document.is_ok());
         if let Ok(document) = document {
             for schema in ["BootstrapCreated", "RecoveryCodesCreatedData"] {
-                let base = format!(
-                    "/components/schemas/{schema}/properties/one_time_recovery_codes"
-                );
+                let base =
+                    format!("/components/schemas/{schema}/properties/one_time_recovery_codes");
                 assert_eq!(
                     document
                         .pointer(&format!("{base}/minItems"))
