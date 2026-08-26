@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2+C3、C4 TOTP 核心、恢复码 OpenAPI 合同硬化、WP04-A 与 WP04-B 已进入本地主线。TOTP step/C3 消费崩溃窗口已经用 durable handoff 闭合，精确主线 `1383b42…` 的 38 项组合开发门全绿，仍待公开推送、Actions 正式编译与 fresh-clone 制品验收；C5 WebAuthn 核心正在静态互审和锁序收口；P0～P4 已完成。
+- 当前阶段：P5，WP02-C1、C2+C3 与 C4 TOTP 核心已进入公开 `main`。TOTP step/C3 消费崩溃窗口已经用 durable handoff 闭合；精确公开提交 `a245ee341f0bf622e8583ddc4a3614190520ccf2` 的 GitHub Actions production build 与 fresh full clone VPS 制品验收均已全绿。C5 WebAuthn 核心正在完成确定性 PostgreSQL 锁交错合同、静态复核和主线集成；恢复码合同硬化、WP04-A 与 WP04-B 已在主线，P0～P4 已完成。
 - 总体状态：进行中。
 - 当前上游基线：`iluobei/miaomiaowu@0b47f10c52aee10b9f759a593ca5f61a823cbb72`（`main`，2026-08-25 获取）。
 - 妙妙屋 X 文档基线：`https://miaomiaowux.com/docs/tutorial` 及同站文档页，2026-08-25 开始抓取。
@@ -26,6 +26,16 @@
 | P7 | 系统验收和交付 | 未开始 | E2E、性能、安全、升级/回滚、备份恢复全部验收 |
 
 ## 已完成内容与代码说明
+
+### 2026-08-27 03:13 — C4 已公开发布，Actions 生产制品与 fresh-clone 正式门全绿
+
+- C4 的公开提交精确为 `a245ee341f0bf622e8583ddc4a3614190520ccf2`，GitHub `main` 与本地 `main` 同指该对象。push run `33002956564`、job `98289223266`、attempt 1 在 3 分 13 秒内成功完成：可信源码闭包、全部 Rust 二进制 production build、OpenAPI 导出与校验、固定 Node/pnpm 依赖安装、许可证 notices 与 CycloneDX SBOM、SDK 生成、Vue typecheck 和 production build、生成物零漂移、确定性打包及 provenance 上传全部为绿色。production 二进制和 Web 静态资源仍只由 GitHub Actions 编译，VPS 没有另建一份 release 冒充发布制品。
+- Actions artifact ID 为 `9619439442`，名字为 `nodecontroll-linux-x86_64-glibc2.36.tar.gz`，长度 `4,911,974` bytes，GitHub API digest 与原始下载文件的 SHA-256 同为 `f6b7ee803257e9408785b729e5dd474f1aa36a5bbffa4c659903a7c063ee3520`。正式门在 VPS 新建唯一、非 shallow、非 partial、无 ignored 输入的公开 HTTPS clone，核对唯一 remote、`main`、`origin/main`、HEAD 和全部 287 个 tracked blob/mode 后一次性 claim；没有复用开发工作树或之前的门禁目录。
+- 正式 run 为 `/opt/nodecontroll/artifacts/test-runs/20260826T190950956067105Z-p5`，从 2026-08-27 03:09:51 到 03:12:24（Asia/Shanghai）完成并退出 `0`。归档先验证 1,577 个规范成员和 16,744,801 个解压字节，再验证 895 个打包文件、650 个锁定组件、858 个许可证证据文件、20/20 个 override、Rust 1.98 runtime provenance、CycloneDX 1.6 schema、ELF interpreter/动态库白名单和严格七行 `BUILD-METADATA`。原始 Actions tar 的只读快照进入 provenance，GitHub run、attempt、event、branch、commit、artifact ID、长度与 digest 都由 API 重新核验。
+- 测试和运行时门覆盖 Rust fmt、workspace all-targets test、Clippy `-D warnings`，共 109 项 Rust 测试；真实 PostgreSQL 18.6 执行 persistence/TOTP 合同，SQLite 执行会话与运行时 smoke。OpenAPI 保持 13 paths/15 operations，runtime 导出和包内合同逐字节一致；SDK 重生成零漂移。Web typecheck、零 warning lint和 27/27 个文件、148/148 项 Vitest 全绿，Actions 的 Web artifact 入口与 8 个本地资源引用也通过。358/358 需求追踪、16 篇设计文档、81 篇自写文档和零断链继续通过；需求状态仍诚实保持 358 项 `planned`，不会把基础门禁误写成全部产品功能已实现。
+- 真实浏览器门使用固定 Playwright image、Chromium `151.0.7922.34` 和临时本地 CA，在 HTTPS 下完成认证、CSRF、并行会话、重新认证轮换、恢复码原子再生、单会话撤销、改密替换、保留当前会话以及全局注销合同。冻结后的浏览器证据为 35 个文件、10,629,958 bytes；evidence SHA-256 为 `10b2865273006f2bf62395fc911f2be5d4933b55077fcd29a0bf54d906360a8c`，闭包 SHA-256 为 `a01cd52d6c3cd4275af70ad74a9b43f91f629fbc556d3c5bc238164933668504`。运行时日志和 E2E fixture 都通过秘密扫描。
+- `manifest.json`、`checksums.txt` 与 `commands.tsv` 的 SHA-256 分别为 `695247c6cacf9ff9237e589f758e47f4a3756d6af2f2bdf632ff59e3a774e8e8`、`a4cdb249b05fbddd267b5aaf248c9e92318ceffd8e46ea9d7139895b08b17071`、`eefd0b8d7a309cc314d7b8dc244da729d145fb3b588c0951db469d1bb0cacdc0`。Cargo home、pnpm store 和浏览器证据的冻结闭包在结束时再次核验；临时容器、网络、PostgreSQL 实例、scratch、root key 与 setup token 都已由 cleanup closure 确认清理，VPS 仅保留公开源码 clone、输入 artifact 和不可变验收证据。
+- C4 至此不再有“待推送/待正式验收”状态。下一条主线是 C5 WebAuthn 事务内核：先补足 PostgreSQL 专用、带边界超时的确定性锁交错回归合同，完成二次静态审阅，再基于这个公开 SHA 重放候选提交并走同样的不可变 VPS 开发门。WebAuthn HTTP/OpenAPI/Vue 和浏览器注册/认证留在 C6，不把尚未暴露给用户的内核写成已交付 UI。
 
 ### 2026-08-27 02:55 — C4 durable handoff 闭合崩溃窗口，精确主线 38 项门全绿
 
