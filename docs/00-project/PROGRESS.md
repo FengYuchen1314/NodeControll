@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2+C3、恢复码 OpenAPI 合同硬化、WP04-A 与 WP04-B 已分别通过 VPS 开发门并进入本地主线，正等待精确主线组合门与公开 Actions 正式制品门；C4 TOTP 候选正在独立验收；P0～P4 已完成。
+- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2+C3、C4 TOTP 核心、恢复码 OpenAPI 合同硬化、WP04-A 与 WP04-B 已分别通过 VPS 开发门并进入本地主线，正等待精确主线组合门与公开 Actions 正式制品门；C5 WebAuthn 核心正在实现；P0～P4 已完成。
 - 总体状态：进行中。
 - 当前上游基线：`iluobei/miaomiaowu@0b47f10c52aee10b9f759a593ca5f61a823cbb72`（`main`，2026-08-25 获取）。
 - 妙妙屋 X 文档基线：`https://miaomiaowux.com/docs/tutorial` 及同站文档页，2026-08-25 开始抓取。
@@ -26,6 +26,15 @@
 | P7 | 系统验收和交付 | 未开始 | E2E、性能、安全、升级/回滚、备份恢复全部验收 |
 
 ## 已完成内容与代码说明
+
+### 2026-08-27 01:28 — C4 TOTP 事务内核通过独立 VPS 门并合入主线
+
+- C4 固定采用 6 位、30 秒、HMAC-SHA-1 与 `±1` 时间步。20-byte seed 由服务端生成并以 credential ID 绑定的专用 purpose/AAD 加密；派生出的六位数组使用 `Zeroizing<[u8; 6]>`。pending enrollment 与现有 active credential 可以共存，激活时在一个双库事务内完成旧 seed tombstone、active swap、首个 step CAS、恢复码整组替换、auth revision 推进、sibling session 撤销和 actor session 提升。失败或到期的 pending 不会破坏旧 active。
+- 普通验证使用持久化 challenge reservation time，而不是 HTTP 传入时间；`last_accepted_step` 以 credential revision、旧 step、auth revision、session/context 和验证窗口联合 CAS，同一步并发或顺序重放只有一次能成功。disable 同样原子清理 pending/active seed、恢复码和相关会话。`TotpManagementBinding` 只能从已经认证且近期认证有效的 session 构造，拒绝 forced-password-change、停用或已撤销身份；repository 在提交前重验全部 revision 和时间线。
+- 首轮不可变候选没有被记为通过：固定门发现三处 rustfmt 漂移、两处错误地比较含 `sqlx::Error` 的 `Result`，以及一处把函数调用写进 `matches!` pattern；Clippy 还要求缩小一个大枚举变体。最小修补改用 `matches!(…, Ok(1))`、pattern guard 和 boxed `Created` payload，并由同一固定 VPS rustfmt 产出格式，不为 SQLx 错误派生 `PartialEq`，也没有增加 `allow`。
+- 最终分支源码为 `518c39ae276cdfe147e19c2dd715dfb534fcb8e4`，成功 run 是 `/opt/nodecontroll/dev/c4-518c39a-20260826T171844Z-3d2c8b53`，33/33 stages、`overall_rc=0`。Rust fmt/check/workspace all-targets test/Clippy/debug Master 全绿，共 103 项测试，SQLite 与真实 PostgreSQL 都执行 C2/C3/C4 repository contracts；migration 8、TOTP 索引、WAL `1450272 → checkpoint truncate 0 → close → read-only reopen`、两库 Master smoke、13 paths/15 operations 运行时 OpenAPI、SDK 零漂移、前端 typecheck/零 warning lint与 18 个文件/122 项测试、358/358 文档矩阵、80 篇文档零断链、sanitizer 和 38 文件严格秘密扫描全部通过。没有运行 Rust release 或 Vite production build。
+- archive、gate、source manifest、logs manifest、evidence-files manifest 与 `evidence.txt` 的 SHA-256 依次为 `e749f0f8d45a9af1c9f0373bf5ac6338f6d5e93eff1daf18a5def51ea59d925a`、`8e88363be9c02114da3e4bfdfdccc287beb8454095fffc92a5d6ffbcbf8c1e4a`、`acf1fdc5e6af40cb1380182d856b1bc004902171156c6526d8a180c6d0898502`、`1e13af5f4750cee50bf979b68f7a2077cc43c9911954f1d14cf845aeda1b09f6`、`ccd49abc3b2980237f025730faa651a17d5dde9cae1b85cad07e32468c8e6c8a`、`4384738ce1d88c3952aba526f5b3e4f6fc037346bb7ccbe449f6f4c6c85a6e38`；source pre/post manifest 同为 264 项。容器、网络、PG 匿名卷和 scratch 已精确清理，只保留只读源码、日志与 hash。
+- 四笔提交已原序合入本地主线为 `036886c…`、`410f8f5…`、`e093917…`、`5104a28…`；自动合并保留 migration 8 断言、C3 verifier 构造器、恢复码边界硬化及 WP04 文档索引。HTTP/OpenAPI/Vue、canonical base32/`otpauth://`、二维码、credential-aware root-key rewrap 和正式审计事件仍未实现，因此当前交付是 TOTP 事务内核，不是已经开放给用户的完整 MFA 产品。
 
 ### 2026-08-27 01:16 — WP04-B 应用壳层与恢复码合同硬化合入本地主线
 
@@ -385,7 +394,7 @@
 
 ## 下一步
 
-1. 对包含 C2+C3、恢复码合同硬化和 WP04-A/B 的精确本地主线运行完整 VPS 开发门；门禁必须覆盖双数据库、运行时 smoke、OpenAPI/SDK 零漂移、Web、文档、秘密扫描和源树 sanitizer，且不得运行 production build。
+1. 对包含 C2+C3、C4 TOTP、恢复码合同硬化和 WP04-A/B 的精确本地主线运行完整 VPS 开发门；门禁必须覆盖 migration 8、双数据库、运行时 smoke、OpenAPI/SDK 零漂移、Web、文档、秘密扫描和源树 sanitizer，且不得运行 production build。
 2. 组合门通过后只显式推送 `HEAD:refs/heads/main`，等待公开 GitHub Actions 为同一 SHA 完成唯一正式生产编译，再下载制品并用 fresh standalone full clone 在 VPS 执行正式 provenance/运行验收。任何一门失败都先修复并重建候选，不沿用失败结论。
-3. 独立完成 C4 TOTP 门禁、合入与组合复验，随后收口 C5 WebAuthn；并行推进 P5.2 Agent protocol/enrollment handshake，再按 WP-03～WP-20 实现 Vue/Vuetify 业务页面与 SingBox 集成。
+3. 收口 C5 WebAuthn 核心并完成独立门；随后实现 C4/C5 的 HTTP/OpenAPI/Vue 与 C3 原子消费接线。并行推进 P5.2 Agent protocol/enrollment handshake，再按 WP-03～WP-20 实现 Vue/Vuetify 业务页面与 SingBox 集成。
 4. 按 358 条追踪矩阵逐项实现、测试并更新状态；不得用 schema、路由占位或页面壳替代产品行为验收。
