@@ -61,6 +61,14 @@ impl AuthChallengeVerificationClaim {
     pub const fn challenge(&self) -> &AuthChallenge {
         &self.challenge
     }
+
+    /// Trusted method verifiers must reject a clock value older than the durable reservation
+    /// before consuming method-specific replay state. This remains crate-private so transport
+    /// callers cannot use it to synthesize or alter a verification claim.
+    #[must_use]
+    pub(crate) const fn reserved_at_ms(&self) -> i64 {
+        self.access.now_ms
+    }
 }
 
 /// Accepted evidence can only be emitted by a method verifier inside the application crate.
