@@ -89,10 +89,14 @@ const renderShell = async (capabilities: string[]) => {
       }),
   })
   const result = render(Harness, { global: { plugins: [pinia, router, i18n, vuetify] } })
+  window.dispatchEvent(new globalThis.Event('resize'))
+  await waitFor(() => expect(screen.getByLabelText('打开主导航')).not.toBeNull())
   return {
     ...result,
-    restoreWidth: () =>
-      Object.defineProperty(globalThis, 'innerWidth', { configurable: true, value: originalWidth }),
+    restoreWidth: () => {
+      Object.defineProperty(globalThis, 'innerWidth', { configurable: true, value: originalWidth })
+      window.dispatchEvent(new globalThis.Event('resize'))
+    },
     router,
   }
 }

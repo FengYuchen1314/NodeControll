@@ -1,5 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/vue'
-import { afterEach, describe, expect, it } from 'vitest'
+import { defineComponent, h } from 'vue'
+import { VApp } from 'vuetify/components'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { vuetify } from '../../plugins/vuetify'
 import JobChip from './JobChip.vue'
@@ -51,6 +53,29 @@ const job = (state: JobPresentation['state']): JobPresentation => ({
   updatedAt: '10:00',
 })
 
+const renderDrawer = (props: {
+  chipLabels: JobChipLabels
+  job?: JobPresentation
+  labels: JobDrawerLabels
+  modelValue: boolean
+}) => {
+  const update = vi.fn()
+  const Harness = defineComponent({
+    setup: () => () =>
+      h(VApp, null, {
+        default: () =>
+          h(JobDrawer, {
+            ...props,
+            'onUpdate:modelValue': update,
+          }),
+      }),
+  })
+  return {
+    ...render(Harness, { global: { plugins: [vuetify] } }),
+    update,
+  }
+}
+
 afterEach(() => cleanup())
 
 describe('job presentation primitives', () => {
@@ -76,18 +101,15 @@ describe('job presentation primitives', () => {
       kind: 'redacted',
       text: 'RAW-SECRET-MUST-NOT-RENDER',
     }
-    render(JobDrawer, {
-      global: { plugins: [vuetify] },
-      props: {
-        chipLabels,
-        job: {
-          ...job('running'),
-          message: redacted,
-          steps: [{ id: 'step-1', label: 'Apply', message: redacted, state: 'running' }],
-        },
-        labels: drawerLabels,
-        modelValue: true,
+    renderDrawer({
+      chipLabels,
+      job: {
+        ...job('running'),
+        message: redacted,
+        steps: [{ id: 'step-1', label: 'Apply', message: redacted, state: 'running' }],
       },
+      labels: drawerLabels,
+      modelValue: true,
     })
 
     expect(await screen.findAllByText('Sensitive value hidden')).toHaveLength(2)
@@ -96,14 +118,11 @@ describe('job presentation primitives', () => {
   })
 
   it('is read-only and uses caller-provided empty and close labels', async () => {
-    const result = render(JobDrawer, {
-      global: { plugins: [vuetify] },
-      props: { chipLabels, labels: drawerLabels, modelValue: true },
-    })
+    const result = renderDrawer({ chipLabels, labels: drawerLabels, modelValue: true })
 
     expect(await screen.findByText('No job selected')).not.toBeNull()
     expect(screen.queryByRole('button', { name: /retry|cancel/i })).toBeNull()
     await fireEvent.click(screen.getByRole('button', { name: 'Close job details' }))
-    expect(result.emitted()['update:modelValue']).toEqual([[false]])
+    expect(result.update).toHaveBeenCalledWith(false)
   })
 })
