@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2+C3、C4 TOTP 核心、恢复码 OpenAPI 合同硬化、WP04-A 与 WP04-B 已进入本地主线，`a92baa7…` 的 37 项组合开发门全绿；推送被并行互审发现的 TOTP step/C3 消费崩溃窗口主动阻断，durable handoff 修补与 C5 WebAuthn 核心正在实现；P0～P4 已完成。
+- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2+C3、C4 TOTP 核心、恢复码 OpenAPI 合同硬化、WP04-A 与 WP04-B 已进入本地主线。TOTP step/C3 消费崩溃窗口已经用 durable handoff 闭合，精确主线 `1383b42…` 的 38 项组合开发门全绿，仍待公开推送、Actions 正式编译与 fresh-clone 制品验收；C5 WebAuthn 核心正在静态互审和锁序收口；P0～P4 已完成。
 - 总体状态：进行中。
 - 当前上游基线：`iluobei/miaomiaowu@0b47f10c52aee10b9f759a593ca5f61a823cbb72`（`main`，2026-08-25 获取）。
 - 妙妙屋 X 文档基线：`https://miaomiaowux.com/docs/tutorial` 及同站文档页，2026-08-25 开始抓取。
@@ -26,6 +26,15 @@
 | P7 | 系统验收和交付 | 未开始 | E2E、性能、安全、升级/回滚、备份恢复全部验收 |
 
 ## 已完成内容与代码说明
+
+### 2026-08-27 02:55 — C4 durable handoff 闭合崩溃窗口，精确主线 38 项门全绿
+
+- TOTP proof 不再先烧 step、再把只存在于内存的 evidence 交给 C3。SQLite/PostgreSQL 的未公开 0008 migration 同步加入无秘密的 `totp_verified_handoffs`：主键绑定 challenge 与 attempt claim，唯一键绑定 credential 与 accepted step；表中只保存 revision、step 和 reservation/lease/commit 时间，不保存 seed、验证码或 proof。`advance_totp_step` 现在按 principal、exact challenge/claim/context/purpose/session/auth revision、reservation 和 verifier lease 逐项锁定，把 credential step CAS 与 handoff INSERT 放在同一个事务里；任一写入失败都会一起回滚。
+- 普通 proof 必须在服务端可信时钟给出的 verifier lease 内提交。事务已经成功后，exact bearer/context/claim 可以在短 lease 之后重建 verified evidence，但仍不能跨越 challenge、session 或 auth revision 的外层生命周期；错误 claim、方法、上下文或已失效 principal 一律看不到 handoff。可信时钟短暂回拨时允许读取已经不可变的 terminal handoff，同时继续要求当前时间不早于 durable reservation。PostgreSQL 的 challenge expiry refresh 在确定性行锁之后用新的 Read Committed 语句快照观察 handoff，避免等待旧快照把刚提交的终态误清掉；正反两种排队顺序都有真实锁屏障合同。
+- 修补源提交 `4ca7e067b1afbd224df91596be3f7572c17e5c37` 以 stable patch-id 原样合入主线。首个合入候选 `6a4993b…` 没有冒充通过：全门发现 rustfmt 差异、同源 Clippy warning 和三项持久层测试失败。根因不是放宽事务，而是测试 fixture 拿到 reserve 后的 durable challenge snapshot 却误用 reserve 前的 revision 0，导致双库按设计返回 `Stale`，PG 测试也到不了行锁屏障。`1383b42e89ee2225cc92c2b1cbafb70515ef875b` 改为从 reserved snapshot 取完整绑定并应用 VPS 给出的格式差异；随后定向门的 fmt、Clippy 以及 SQLite/PG repository 与 PG expiry/handoff 竞态 3/3 全绿。
+- 最终不可变 run 为 `/opt/nodecontroll/dev/main-1383b42-20260826T184931Z-3b7ef71e`。38 个具名 stage 全部 `rc=0`，`overall_rc=0`：Rust fmt/check/workspace all-targets test/Clippy `-D warnings`/debug Master 全绿，共 109 项测试；新增的进程重启恢复和 PostgreSQL expiry-refresh 竞态均从完整测试日志提取到明确通过行。OpenAPI 仍为 13 paths/15 operations，运行时导出与 tracked 文件精确一致，SDK 全树重生成零漂移；Web typecheck、零 warning lint和 27/27 个文件、148/148 项测试通过。SQLite 与 PostgreSQL 18.6 的 Master smoke 逐字节一致，migration 8、持久状态、WAL checkpoint/只读重开均通过；358/358 追踪矩阵、81 篇文档、零断链、sanitizer 零修改和 41 个输入的严格秘密扫描也全部通过。VPS 没有运行 Rust release 或 Vite production build。
+- 源码 archive、gate、source pre/post、generated SDK、logs、runtime evidence、secret-scan inputs、最终 evidence 和 final-files manifest 的 SHA-256 分别为 `169d931caa00514a24dc08059b3a02e6bb098b68b3114372e069d0079ee87191`、`2b6adec9fa747b7bc406a75114165a38190c213e947be50eb7870115c16689e9`、`7d63560bbe104d281cdeeb0d9552306815a1a5bc53a87137293f01ac6f126b09`（pre/post 相同）、`418cadbca8000ebf0043d71bac21ee4fe9fd491b43c0f2c9e2c16adffffdca4b`（pre/post 相同）、`8d19f61608ca841274111872287e8872ea823410dd8622ef16cee8662717449f`、`68a7b38247169f24187a63be6fe6a66609c355cbf5a4ceb269c512279933358e`、`4ce87c1fd7125bc706df0dd1a840bff18c21a21bbf9dcca3274cd39991c9a794`、`b901c6c695fc7df292beaf18bf366bda46b3c247b9696410b6b567fff853e661`、`d78b8af4c26bfef898b8dab07056226e89542b612ec230dc5c83fb8fdbc58232`。源码 pre/post 完全一致；具名容器、网络、PG 匿名卷和 scratch 均已精确清理，VPS 只保留只读源码、日志与 hash。
+- 这仍是本地主线开发门，不是公开发布验收。`origin/main` 仍停在 C1 的正式 SHA；下一步先提交本记录并显式推送 `HEAD:refs/heads/main`，让 GitHub Actions 对同一提交做唯一 production 编译，再用 fresh full clone 和 Actions artifact 在 VPS 做正式验证。C4 当前仍是事务内核：HTTP/OpenAPI/Vue、canonical base32/`otpauth://`、二维码和 credential-aware rewrap 留给 C6，不把核心门通过写成最终用户功能已经完成。
 
 ### 2026-08-27 01:39 — `a92baa7…` 组合门全绿，但 TOTP 崩溃窗口阻断推送
 
