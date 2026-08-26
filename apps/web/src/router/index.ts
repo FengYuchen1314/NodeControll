@@ -8,6 +8,8 @@ import {
 
 import { pinia } from '../stores'
 import { useSessionStore, type SessionStatus } from '../stores/session'
+import { routeCapabilityAllowed } from './access'
+import { appRouteNames } from './route-names'
 
 const redirectBase = 'https://nodecontroll.invalid'
 const controlCharacterPattern = /\p{Cc}/u
@@ -70,19 +72,24 @@ export function safeRedirectPath(value: unknown): string {
 export function accessRedirect(
   to: Pick<RouteLocationNormalized, 'fullPath' | 'meta' | 'name' | 'query'>,
   status: SessionStatus,
-  security: { passwordChangeRequired: boolean; recentAuthValid: boolean } = {
+  security: {
+    capabilities: readonly string[]
+    passwordChangeRequired: boolean
+    recentAuthValid: boolean
+  } = {
+    capabilities: [],
     passwordChangeRequired: false,
     recentAuthValid: false,
   },
 ) {
   if (status === 'setup-required') {
-    return to.name === 'setup' ? undefined : { name: 'setup' }
+    return to.name === appRouteNames.setup ? undefined : { name: appRouteNames.setup }
   }
   if (status === 'anonymous' || status === 'relogin-required') {
-    if (to.name === 'login') return undefined
+    if (to.name === appRouteNames.login) return undefined
     const redirect = to.meta.requiresAuth ? safeRedirectPath(to.fullPath) : undefined
     return {
-      name: 'login',
+      name: appRouteNames.login,
       ...(redirect && redirect !== '/' ? { query: { redirect } } : {}),
     }
   }
@@ -90,19 +97,24 @@ export function accessRedirect(
     if (security.passwordChangeRequired && to.meta.allowDuringPasswordChange !== true) {
       const redirect = to.meta.requiresAuth ? safeRedirectPath(to.fullPath) : undefined
       return {
-        name: 'password-change',
+        name: appRouteNames.passwordChange,
         ...(redirect && redirect !== '/' ? { query: { redirect } } : {}),
       }
     }
     if (to.meta.requiresRecentAuth && !security.recentAuthValid) {
       const redirect = safeRedirectPath(to.fullPath)
       return {
-        name: 'reauth',
+        name: appRouteNames.reauthenticate,
         ...(redirect !== '/' ? { query: { redirect } } : {}),
       }
     }
+    if (!routeCapabilityAllowed(to.meta, security.capabilities)) {
+      return to.name === appRouteNames.dashboard ? false : { name: appRouteNames.dashboard }
+    }
     if (to.meta.guestOnly) {
-      return { path: to.name === 'login' ? safeRedirectPath(to.query.redirect) : '/' }
+      return {
+        path: to.name === appRouteNames.login ? safeRedirectPath(to.query.redirect) : '/',
+      }
     }
   }
   return undefined
@@ -117,57 +129,67 @@ export function createAppRouter(
     routes: [
       {
         path: '/',
-        name: 'dashboard',
+        name: appRouteNames.dashboard,
         component: () => import('../views/DashboardPage.vue'),
-        meta: { requiresAuth: true, title: '总览' },
+        meta: { requiresAuth: true, title: '总览', titleKey: 'routes.dashboard' },
       },
       {
         path: '/system',
-        name: 'system',
+        name: appRouteNames.system,
         component: () => import('../views/SystemPage.vue'),
-        meta: { requiresAuth: true, title: '系统' },
+        meta: {
+          requiredCapabilities: ['system:read'],
+          requiresAuth: true,
+          title: '系统',
+          titleKey: 'routes.system',
+        },
       },
       {
         path: '/login',
-        name: 'login',
+        name: appRouteNames.login,
         component: () => import('../views/LoginPage.vue'),
-        meta: { guestOnly: true, title: '登录' },
+        meta: { guestOnly: true, title: '登录', titleKey: 'routes.login' },
       },
       {
         path: '/setup',
-        name: 'setup',
+        name: appRouteNames.setup,
         component: () => import('../views/SetupPage.vue'),
-        meta: { guestOnly: true, title: '初始化' },
+        meta: { guestOnly: true, title: '初始化', titleKey: 'routes.setup' },
       },
       {
         path: '/reauth',
-        name: 'reauth',
+        name: appRouteNames.reauthenticate,
         component: () => import('../views/ReauthenticatePage.vue'),
         meta: {
           allowDuringPasswordChange: true,
+          requiredCapabilities: ['sessions:read', 'credentials:manage'],
           requiresAuth: true,
           title: '确认身份',
+          titleKey: 'routes.reauthenticate',
         },
       },
       {
         path: '/profile/security',
-        name: 'profile-security',
+        name: appRouteNames.profileSecurity,
         component: () => import('../views/ProfileSecurityPage.vue'),
         meta: {
           allowDuringPasswordChange: true,
+          requiredCapabilities: ['credentials:manage'],
           requiresAuth: true,
           title: '账户安全',
+          titleKey: 'routes.profileSecurity',
         },
       },
       {
         path: '/profile/security/password',
-        name: 'password-change',
+        name: appRouteNames.passwordChange,
         component: () => import('../views/ChangePasswordPage.vue'),
         meta: {
           allowDuringPasswordChange: true,
           requiresAuth: true,
           requiresRecentAuth: true,
           title: '修改密码',
+          titleKey: 'routes.passwordChange',
         },
       },
       {
@@ -185,6 +207,7 @@ export function createAppRouter(
       accessRedirect(to, session.status, {
         passwordChangeRequired: session.passwordChangeRequired,
         recentAuthValid: session.recentAuthValid,
+        capabilities: session.actor?.capabilities ?? [],
       }) ?? true
     )
   })

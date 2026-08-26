@@ -7,7 +7,14 @@
     BlinkMacSystemFont,
     'Segoe UI',
     sans-serif;
+}
+
+.v-theme--nodecontrollLight {
   color-scheme: light;
+}
+
+.v-theme--nodecontrollDark {
+  color-scheme: dark;
 }
 
 body {
@@ -138,6 +145,13 @@ a {
   min-height: calc(100vh - 128px);
   place-content: center;
   justify-items: center;
+}
+
+.restricted-route-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
 }
 
 .session-time-grid {
