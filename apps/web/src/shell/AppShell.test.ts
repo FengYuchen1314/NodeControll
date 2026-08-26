@@ -109,7 +109,7 @@ describe('AppShell', () => {
       )
       expect(screen.queryByText('系统')).toBeNull()
 
-      await fireEvent.keyDown(globalThis, { ctrlKey: true, key: 'k' })
+      await fireEvent.keyDown(window, { ctrlKey: true, key: 'k' })
       const dialog = await screen.findByRole('dialog')
       expect(within(dialog).queryByText('系统')).toBeNull()
       expect(within(dialog).getByText('账户安全')).not.toBeNull()
@@ -126,7 +126,7 @@ describe('AppShell', () => {
     const shell = await renderShell(['credentials:manage', 'sessions:read', 'system:read'])
     shell.router.beforeEach((to) => (to.name === appRouteNames.system ? false : true))
     try {
-      await fireEvent.keyDown(globalThis, { metaKey: true, key: 'K' })
+      await fireEvent.keyDown(window, { metaKey: true, key: 'K' })
       const dialog = await screen.findByRole('dialog')
       await fireEvent.click(within(dialog).getByText('系统'))
       expect((await within(dialog).findByRole('alert')).textContent).toContain('无法完成页面跳转')
