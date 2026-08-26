@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 当前阶段：P5，WP02-C1 密码近期认证、改密与会话管理已完成公开提交级验收；C2 恢复码/keyring 与 C3 统一认证 challenge 正在并行开发；P0～P4 已完成。
+- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2 后端已进入本地主线，C2 Web 与 C3 正按安全互审结论修正，整片 VPS 验收尚未完成；P0～P4 已完成。
 - 总体状态：进行中。
 - 当前上游基线：`iluobei/miaomiaowu@0b47f10c52aee10b9f759a593ca5f61a823cbb72`（`main`，2026-08-25 获取）。
 - 妙妙屋 X 文档基线：`https://miaomiaowux.com/docs/tutorial` 及同站文档页，2026-08-25 开始抓取。
@@ -26,6 +26,15 @@
 | P7 | 系统验收和交付 | 未开始 | E2E、性能、安全、升级/回滚、备份恢复全部验收 |
 
 ## 已完成内容与代码说明
+
+### 2026-08-26 22:40 — WP-02-C2 后端进入本地主线；Web/C3 互审阻断正在修正
+
+- C2 后端候选提交 `7bc89f04c1eb67fb2388471cd66503f3f5575ef1` 已合入本地主线，形成 `dea2b96…`。合并只在实现索引里遇到一处文字冲突：保留 C1 已通过的正式证据，同时追加 C2 待验收状态；13 个代码、锁文件、迁移与 OpenAPI 路径和候选提交逐字节一致。该提交尚未推送，不能称为公开实现。
+- `crates/secrets` 现有 typed `NCSECRET2` AAD、持久 root-key canary、current 加最多 3 枚旧 key 的有限 keyring，并新增 256-bit、严格小写十六进制、自动清零且没有 `Debug/Clone` 的 challenge bearer。session、CSRF、登录 bucket、恢复码和 challenge 各用独立 HKDF/HMAC purpose；旧记录只能按自身 key version 走有限旧 key 验证。
+- SQLite/PostgreSQL `0006_secret_recovery.sql` 增加 typed `secret_records`、恢复码 set 与单码记录。非空的旧式无 owner/schema secret 表会让迁移原子失败，不猜测归属。bootstrap 在原事务里创建 8 枚 128-bit 恢复码；数据库只保存用途隔离 HMAC 和版本，明文只在 201 响应出现一次。GET 只读摘要；POST 绑定 Origin/Host、session、double-submit CSRF、近期认证和强制改密限制，并在事务内重验 user/auth/session 时间线后整体替换旧组；同一码并发消费只有一次成功。
+- 后端分支的静态检查记录为：`cargo metadata --locked --no-deps`、13 paths/15 operations OpenAPI、358/358 需求文档与 76 份 authored docs、0 broken links、diff check 和 20 个提交 blob 的 LF 审计均通过。它没有在本机编译或运行测试。主线精确 SHA 的 Rust fmt/check/test/Clippy、真实 PostgreSQL 与文档/OpenAPI VPS 候选已经另行启动，结果未返回前不登记通过。
+- C2 Web 的独立审阅阻止了原候选直接合并：terminal coordinator settle 失败后可能把一次性明文重新放入 Pinia；bootstrap 遇畸形 5xx 或意外 2xx 时可能开放重放；页面卸载、BFCache、同 URL 离开再返回、非流式 64 KiB 上限、过宽恢复码格式和迟到 generation 分支也缺少闭包。前端分支正在改为 terminal 成功后才交付明文、status-first 不重放、operation ownership/pagehide 清理、流式限额、严格 8×32-hex 分组格式和对应负向测试。
+- C3 早期 challenge 候选同样未合并。互审发现并发同 revision 猜测只记一次、可用新 challenge 绕过 attempt budget、method/assurance 可错配、客户端摘要只存不验，以及 rotation completion 可脱离 replacement-session 事务。修正版采用 proof 前原子 claim/attempt reservation、单 active issuance、真实 context 条件、不可伪造 evidence 与 method-assurance 矩阵，并只保留能与 session replacement 共事务组合的 port seam；它将直接复用 C2 的 challenge bearer，不复制密码学实现。
 
 ### 2026-08-26 22:01 — WP-02-C1 公开 Actions 制品与 fresh-checkout VPS 正式门通过
 
