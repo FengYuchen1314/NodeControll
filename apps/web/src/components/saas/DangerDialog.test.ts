@@ -20,6 +20,7 @@ describe('DangerDialog', () => {
       },
     })
 
+    expect(await screen.findByRole('alertdialog')).not.toBeNull()
     const confirm = await screen.findByRole('button', { name: '确认执行' })
     expect((confirm as HTMLButtonElement).disabled).toBe(true)
     const objectConfirmation = screen.getByLabelText('资源名称：edge-01')
@@ -29,7 +30,7 @@ describe('DangerDialog', () => {
 
     await fireEvent.update(objectConfirmation, 'edge-01')
     expect((confirm as HTMLButtonElement).disabled).toBe(false)
-    await fireEvent.click(confirm)
+    await fireEvent.submit(screen.getByRole('form', { name: '危险操作确认' }))
     await fireEvent.click(confirm)
 
     expect(result.emitted().confirm).toEqual([[{ reason: '维护下线' }]])

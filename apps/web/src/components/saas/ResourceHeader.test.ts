@@ -45,4 +45,32 @@ describe('ResourceHeader', () => {
     await fireEvent.click(screen.getByRole('button', { name: '添加服务器' }))
     expect(result.emitted().primaryAction).toHaveLength(1)
   })
+
+  it('keeps every action in the semantic DOM at a 360px viewport', async () => {
+    const originalWidth = globalThis.innerWidth
+    Object.defineProperty(globalThis, 'innerWidth', { configurable: true, value: 360 })
+
+    try {
+      render(ResourceHeader, {
+        global: { plugins: [vuetify] },
+        props: {
+          primaryActionLabel: '新建资源',
+          title: '宽度很长仍须可操作的资源名称',
+        },
+        slots: {
+          actions: '<button type="button">刷新</button>',
+          overflow: '<div role="menuitem">归档</div>',
+        },
+      })
+
+      expect(screen.getByRole('button', { name: '刷新' })).not.toBeNull()
+      expect(screen.getByRole('button', { name: '新建资源' })).not.toBeNull()
+      expect(screen.getByRole('button', { name: '更多操作' })).not.toBeNull()
+    } finally {
+      Object.defineProperty(globalThis, 'innerWidth', {
+        configurable: true,
+        value: originalWidth,
+      })
+    }
+  })
 })

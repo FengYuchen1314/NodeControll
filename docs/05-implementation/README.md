@@ -14,5 +14,6 @@
 - [WP-02-C2 持久密钥 canary 与恢复码实现](./WP02_C2_SECRET_RECOVERY_IMPLEMENTATION.md)：typed secret record、有限旧 root-key ring、启动时持久 canary、bootstrap 原子恢复码、只回显一次的管理 API、用途隔离 HMAC、set version 与并发单次消费。代码和测试源码已进入候选，尚未取得同 SHA Actions/VPS 证据。
 - [WP-02-C2 Web 恢复码闭环实现](./WP02_C2_WEB_RECOVERY_CODES_IMPLEMENTATION.md)：记录 bootstrap 一次性回显、账户安全页状态/再生成、内存明文交接、credential coordinator 状态机、生成合同绑定和有界安全 transport；VPS Web 门已单独验收，整包运行时与正式制品状态仍按总进度文档追踪。
 - [WP-02-C3 持久认证 Challenge 实现](./WP02_C3_AUTH_CHALLENGE_IMPLEMENTATION.md)：逐模块记录 opaque bearer、proof 前 attempt claim、method/assurance 矩阵、单 active limiter、上下文绑定和可崩溃恢复的 replacement-session transaction claim；源码已进入本地主线，Rust/双库/API/正式制品仍待验收和接线。
+- [WP-04 SaaS 共享界面基础片](./WP04_SAAS_UI_PRIMITIVES.md)：记录 ResourceHeader、StatusChip、DangerDialog、SecretField、DesiredReportedDiff、PolicyExplainer 的 UI 合同、失败关闭和脱敏边界、360px/light-dark 处理、组件测试与未覆盖项。
 
 功能只有在 [需求追踪矩阵](../04-rebuild/REQUIREMENTS_TRACEABILITY.md) 填入实现路径、VPS run 并标记 `verified` 后才算完成。当前工程纵切用于建立质量门，不代表 358 项产品能力已经实现。
