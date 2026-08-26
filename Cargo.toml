@@ -30,6 +30,7 @@ getrandom = "=0.4.3"
 hex = "=0.4.3"
 hkdf = "=0.13.0"
 hmac = "=0.13.0"
+openssl = { version = "=0.10.81", features = ["vendored"] }
 password-hash = { version = "=0.5.0", default-features = false }
 rustix = { version = "=1.1.4", features = ["fs", "process"] }
 secrecy = { version = "=0.10.3", features = ["serde"] }

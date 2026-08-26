@@ -12,6 +12,9 @@ nodecontroll-domain = { path = "../domain" }
 nodecontroll-identity = { path = "../identity" }
 nodecontroll-persistence = { path = "../persistence" }
 nodecontroll-secrets = { path = "../secrets" }
+# Feature anchor for webauthn-rs-core's unconditional OpenSSL dependency. The distributed
+# binaries must not depend on a host-provided libssl/libcrypto pair.
+openssl.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

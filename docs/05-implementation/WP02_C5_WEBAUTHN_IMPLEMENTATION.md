@@ -21,6 +21,7 @@ workspace 只精确锁定版本并关闭 default features；危险能力不随
 
 ```toml
 webauthn-rs = { version = "=0.5.5", default-features = false }
+openssl = { version = "=0.10.81", features = ["vendored"] }
 url = "=2.5.8"
 ```
 
@@ -31,7 +32,10 @@ webauthn-rs = { workspace = true, features = [
   "danger-allow-state-serialisation",
   "danger-credential-internals",
 ] }
+openssl.workspace = true
 ```
+
+`webauthn-rs-core` 0.5.5 无条件依赖 `openssl`/`openssl-sys`，关闭 default features 不能移除它。application 对同一个 `openssl` package 建立显式 feature anchor，使 Cargo feature union 固定启用 `vendored`；`openssl-sys` 因而从锁定的 `openssl-src` 构建并静态链接，而不是通过 `pkg-config` 接受构建机上的动态 `libssl.so.3`/`libcrypto.so.3`。这笔依赖策略不改变 WebAuthn 语义，但会把 OpenSSL 源码组件纳入 Cargo.lock、许可证 notices 和 SBOM。开发门必须证明 feature tree 含 vendored 路径，正式门仍保持 ELF 动态库白名单不变，以 Actions artifact 的实际 `DT_NEEDED` 作最终判定；不能只为放行制品而把 `libssl`/`libcrypto` 加进白名单。
 
 依赖来源与核验入口：
 
