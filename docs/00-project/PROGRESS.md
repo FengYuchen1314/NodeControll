@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2 Web 与后端各自通过独立 VPS 门，C3 源码已进入本地主线，当前正对 `334c8ea…` 执行 C2+C3 合并态 VPS 门；P0～P4 已完成。
+- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2 Web 与后端各自通过独立 VPS 门，C3 源码已进入本地主线；`334c8ea…` 的首个 C2+C3 合并候选在 Rust 编译门失败，当前正从原提交做最小修复并准备全新候选；P0～P4 已完成。
 - 总体状态：进行中。
 - 当前上游基线：`iluobei/miaomiaowu@0b47f10c52aee10b9f759a593ca5f61a823cbb72`（`main`，2026-08-25 获取）。
 - 妙妙屋 X 文档基线：`https://miaomiaowux.com/docs/tutorial` 及同站文档页，2026-08-25 开始抓取。
@@ -34,6 +34,7 @@
 - 通过项明确覆盖 0006 迁移防护、错误/旧 key canary、首次 bootstrap 恰好八枚恢复码、整组原子替换和并发单次消费。VPS 没有执行 release 或 Web production build；本轮具名容器、网络、PostgreSQL 匿名卷及约 4.5 GB build scratch 已精确删除，源码、日志与校验文件保留。OpenAPI 对恢复码字符串长度/正则及部分计数上界的静态约束仍偏宽，已登记为后续合同硬化项；Web 运行时目前执行更严格的规范校验。
 - C3 在随后互审中补出一个只读、crate-private 的 `AuthChallengeVerificationClaim::reserved_at_ms()`，使 TOTP/WebAuthn verifier 能以服务端持久 reservation 时间判定挑战窗口，而不允许 HTTP 层伪造时间。该修补已作为本地主线 `334c8ea…` 的最后一笔提交。
 - 现已从精确、干净的本地主线 `334c8ea2af42068fd69d215c2df868c3f1d4225f` 启动新的不可变 VPS 集成候选。门禁将同时覆盖 C3 双库迁移/合同、完整 Rust 与 Web 开发门、运行时 OpenAPI/SDK 零漂移、文档闭包，并在 SQLite 与 PostgreSQL 两个真实 Master 上执行扩展恢复码 smoke；任何秘密都不得进入日志。本轮同样禁止在 VPS 编译 release/Vite production，结果返回前不登记 C3 或合并态通过，也不推送公开 `main`。
+- 首个 `334c8ea…` 集成候选的 fmt 已通过，但 workspace check/test 以 `rc=101` 失败：`crates/persistence/src/auth_challenge.rs` 有 12 处把非 `'static` `&str` 传给 SQLx 0.9 `query` 的 E0277，三个双数据库测试 helper 又把 SQLite 与 PostgreSQL 的不同 `QueryResult` 放在同一 match 返回值，触发 E0308。这是确定的源码错误，候选已判失败；门脚本会继续收集其余结果并精确清理。修复必须从原 SHA 的独立 worktree 开始，把动态 SQL 改为后端各自的静态字面量，并只把不同 QueryResult 的 `rows_affected()` 归一成共同整数；不得泄漏动态字符串、放宽 SQLx 或在失败候选原地改动。新提交形成后另建不可变候选全量重跑。
 
 ### 2026-08-26 23:24 — C2 Web 独立门通过；C2 后端第三候选与 C3 合并态待验
 
