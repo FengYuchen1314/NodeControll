@@ -581,9 +581,10 @@ watch(
       </v-card>
     </v-dialog>
 
-    <v-dialog :model-value="oneTimeRecoveryCodes.hasCodes" persistent max-width="760">
+    <v-dialog v-if="oneTimeRecoveryCodes.hasCodes" :model-value="true" persistent max-width="760">
       <OneTimeRecoveryCodes
         :codes="oneTimeRecoveryCodes.codes"
+        :confirmation-ready="true"
         context="regenerated"
         @download-failed="recoveryCodeDownloadFailed = true"
         @confirmed="confirmRecoveryCodesSaved"

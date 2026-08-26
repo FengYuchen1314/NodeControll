@@ -1437,6 +1437,8 @@ describe('session store', () => {
   })
 
   it('maps stale regeneration success, 401, and 403 to outcome-unknown without returning secrets', async () => {
+    const csrf = `ncc1_${'e'.repeat(64)}`
+    vi.spyOn(Document.prototype, 'cookie', 'get').mockReturnValue(`${CSRF_COOKIE_NAME}=${csrf}`)
     for (const responseKind of ['success', '401', '403'] as const) {
       seedCredentialRecord()
       recoveryApi.regenerateRecoveryCodes.mockReset()
@@ -1458,9 +1460,8 @@ describe('session store', () => {
       const store = useSessionStore(pinia)
       store.acceptAuthenticated({ actor, session: sessionProjection })
 
-      const regeneration = expect(store.regenerateRecoveryCodes()).rejects.toMatchObject({
-        reason: 'outcome-unknown',
-      })
+      const regeneration = store.regenerateRecoveryCodes()
+      void regeneration.catch(() => undefined)
       await vi.waitFor(() => expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1))
       store.acceptAuthenticated({ actor, session: sessionProjection })
       const apiResponse =
@@ -1471,7 +1472,7 @@ describe('session store', () => {
               responseKind === '403' ? 'RECENT_AUTH_REQUIRED' : 'SESSION_INVALID',
             )
       resolveRegeneration(apiResponse)
-      await regeneration
+      await expect(regeneration).rejects.toMatchObject({ reason: 'outcome-unknown' })
 
       expect(recoveryApi.regenerateRecoveryCodes).toHaveBeenCalledTimes(1)
       expect(sdk.logout).toHaveBeenCalledTimes(1)

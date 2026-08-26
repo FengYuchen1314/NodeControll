@@ -481,9 +481,9 @@ describe('SetupPage', () => {
     expect(alert.textContent).toContain('不会自动重放请求')
     expect(document.body.textContent).not.toContain(setupToken)
     expect(document.body.textContent).not.toContain(password)
-    expect((screen.getByLabelText('一次性 Setup Token') as HTMLInputElement).value).toBe('')
-    expect((screen.getByLabelText('Owner 密码') as HTMLInputElement).value).toBe('')
-    expect((screen.getByLabelText('确认 Owner 密码') as HTMLInputElement).value).toBe('')
+    expect(screen.queryByLabelText('一次性 Setup Token')).toBeNull()
+    expect(screen.queryByLabelText('Owner 密码')).toBeNull()
+    expect(screen.queryByLabelText('确认 Owner 密码')).toBeNull()
   })
 
   it('uses a generic fallback and never renders untrusted server detail or submitted secrets', async () => {
