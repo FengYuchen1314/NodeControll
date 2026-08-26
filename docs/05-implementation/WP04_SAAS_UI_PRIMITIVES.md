@@ -91,7 +91,7 @@ props 承载标题、描述、面包屑、revision 和主动作状态；`eyebrow
 - `DesiredReportedDiff.test.ts`：语义状态、证据、空态、脱敏原始差异入口和夹带字段不泄露；
 - `PolicyExplainer.test.ts`：优先级顺序、effective 值、适用时间证据不冒充观测时间，以及夹带字段不泄露。
 
-这些是待 VPS 执行的测试源码数量，不是本机运行声明。最终 typecheck、零 warning lint 和 Vitest 结果只接受从同一提交 `git archive` 上传到固定 Node/pnpm builder 的 fresh install；禁止在本地执行，也不运行 production build。
+最终证据 run `20260826T155301Z-wp04-saas-v5` 使用同一提交的 `git archive`，在固定镜像 Node 24.19.0、pnpm 11.24.0 中 fresh install。OpenAPI generator 对 16 个生成文件保持逐字节零漂移；typecheck、零 warning lint、18 个测试文件的 122 项 Vitest、OpenAPI validator、设计文档 validator 和上游公开内容 sanitizer 全部通过。独立 workspace 与 pnpm store 已清理。任务禁止 production build，本轮未运行。
 
 ## 5. 尚未覆盖
 
