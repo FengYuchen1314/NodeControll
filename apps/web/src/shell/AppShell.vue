@@ -288,6 +288,7 @@ const navigate = async (routeName: ShellRouteName) => {
   </v-main>
 
   <command-palette
+    v-if="commandOpen"
     :model-value="commandOpen"
     :close-label="$t('shell.closeCommandPalette')"
     :empty-label="$t('shell.noCommandResults')"

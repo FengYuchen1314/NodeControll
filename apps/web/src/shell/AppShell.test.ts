@@ -121,6 +121,17 @@ describe('AppShell', () => {
 
       await fireEvent.keyDown(within(dialog).getByRole('combobox'), { key: 'Escape' })
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      expect(screen.queryByRole('listbox')).toBeNull()
+      expect(document.querySelector('[data-command-palette]')).toBeNull()
+
+      await fireEvent.keyDown(window, { ctrlKey: true, key: 'k' })
+      const reopened = await screen.findByRole('dialog')
+      const reopenedSearch = within(reopened).getByRole('combobox')
+      await waitFor(() => expect(document.activeElement).toBe(reopenedSearch))
+      await fireEvent.keyDown(reopenedSearch, { key: 'ArrowDown' })
+      await fireEvent.keyDown(reopenedSearch, { key: 'Enter' })
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      expect(shell.router.currentRoute.value.name).toBe(appRouteNames.profileSecurity)
     } finally {
       shell.restoreWidth()
     }
