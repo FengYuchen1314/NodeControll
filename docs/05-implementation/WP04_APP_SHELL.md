@@ -50,4 +50,18 @@ Node/pnpm install、OpenAPI generation、typecheck、零 warning lint、Vitest�
 - 本片没有增加资源 CRUD、对象级授权或新 API；
 - 浏览器级视觉回归与完整真实路由 E2E 仍属于后续验收，production Web build 仍只允许 Actions。
 
-VPS run、archive hash、source manifest、日志 hash 与精确测试数将在候选源码门完成后写回本节。
+## 6. VPS 候选门证据
+
+实现候选 `5bfa15b3ee18b61503aa3c30ed194d9c204315a0` 由 `git archive` 生成唯一源码包，并在 VPS 的固定 builder `sha256:06628671caed76e73560464d4ce47cacb202fcf28d090c0d24f2ead1cc23afcb` 中以 Node `v24.19.0`、pnpm `11.24.0` 和 run-scoped 空 store 完成 fresh frozen install；未运行 production build。
+
+- run：`20260826T170138Z-wp04-app-shell-v5`
+- archive SHA-256：`8678fdd807c155fc52ffdd9cfd94be63191971670664f4fe8fef3bbbf2bf7f5f`
+- source manifest：281 files，生成前后完全相同，SHA-256 `58ea6916bc63dd3042ae672c7695a863b301f7b68e1076c69999fca647501136`
+- generated manifest：16 files，生成前后完全相同，SHA-256 `b0158df8fde2c31d8d491c211b51f209c55a20c471de4dca3e4b7bfd163e39ba`
+- evidence manifest SHA-256：`696f08a175d615429b54c0182c0af6b03ba4bc8df835da61631fb7002eec5d8a`
+
+门禁结果：OpenAPI SDK generator zero-drift；Vue typecheck 通过；ESLint 零 warning；Vitest `27/27` files、`148/148` tests；OpenAPI validator 为 3.1.0、13 paths、15 operations；文档 validator 为 358/358 trace rows、16 design documents、80 authored documents、0 broken links；sanitizer 为 0 files changed；不存在 `apps/web/dist`。
+
+关键日志 SHA-256：generator `3f2ddcaed69115700bed6b8fb01ba25d73aaea116ff9addf91d64eede322398c`，typecheck `a47392ecb7cad530f3fb24433d02ab40cc5b98523be4c2b859cc80b91a1c9ea9`，lint `0596cdf27bfaa95796264046fc05b1a818227055fe896e07dd6911ebb67d4592`，Vitest `3f286f93cd29e164cf9dd97c7e4171c242281684ae0a68f76110a73359b8eb39`，OpenAPI `d9dc0729e874073cd4b922f47e4f29e3b9b55f25505701dcb7bc9b69014b61d3`，文档 `f8e2d1e0e6a94c9b7dcf7b10fba04b21c544435c6d0216ac0cd8df452498e724`，sanitizer `93d300cbea2f1c12cff3baef2943bae1b380ee8ca53a0b34e6ed949e69237cc3`。
+
+run-scoped pnpm store、上传 archive、gate script 和 named container 已精确清除。为同一依赖锁下的后续 OpenAPI 定向生成，门禁成功后暂时保留只读的 root `node_modules`（280,128,403 bytes）与 Web `node_modules`（103,700 bytes）；两棵树的非 symlink 文件和目录均无写位，它们不是交付制品，复用完成后必须按精确路径删除。
