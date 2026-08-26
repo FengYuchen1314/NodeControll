@@ -9,9 +9,12 @@ import { i18n } from './plugins/i18n'
 import { vuetify } from './plugins/vuetify'
 import { useSessionStore } from './stores/session'
 
-const authenticatedProjection = (forcePasswordChange = false) => ({
+const authenticatedProjection = (
+  forcePasswordChange = false,
+  capabilities = ['credentials:manage', 'sessions:read', 'system:read'],
+) => ({
   actor: {
-    capabilities: ['system:read'],
+    capabilities,
     force_password_change: forcePasswordChange,
     id: '01900000-0000-7000-8000-000000000001',
     role: 'owner',
@@ -28,7 +31,7 @@ const authenticatedProjection = (forcePasswordChange = false) => ({
   },
 })
 
-const renderProtectedApp = async () => {
+const renderProtectedApp = async (initialPath = '/') => {
   const pinia = createPinia()
   const router = createRouter({
     history: createMemoryHistory(),
@@ -55,29 +58,39 @@ const renderProtectedApp = async () => {
         path: '/system',
         name: 'system',
         component: { render: () => h('div', 'SYSTEM-PAGE') },
-        meta: { requiresAuth: true, title: '系统' },
+        meta: { requiredCapabilities: ['system:read'], requiresAuth: true, title: '系统' },
       },
       {
         path: '/profile/security',
         name: 'profile-security',
         component: { render: () => h('div', 'SECURITY-PAGE') },
-        meta: { allowDuringPasswordChange: true, requiresAuth: true, title: '账户安全' },
+        meta: {
+          allowDuringPasswordChange: true,
+          requiredCapabilities: ['sessions:read', 'credentials:manage'],
+          requiresAuth: true,
+          title: '账户安全',
+        },
       },
       {
         path: '/profile/security/password',
         name: 'password-change',
         component: { render: () => h('div', 'PASSWORD-PAGE') },
-        meta: { allowDuringPasswordChange: true, requiresAuth: true, title: '修改密码' },
+        meta: {
+          allowDuringPasswordChange: true,
+          requiredCapabilities: ['credentials:manage'],
+          requiresAuth: true,
+          title: '修改密码',
+        },
       },
     ],
   })
-  await router.push('/')
+  await router.push(initialPath)
   await router.isReady()
 
   const session = useSessionStore(pinia)
   session.acceptAuthenticated(authenticatedProjection())
   render(App, { global: { plugins: [pinia, router, vuetify, i18n] } })
-  expect(await screen.findByText('SENSITIVE-PROTECTED-CONTENT')).not.toBeNull()
+  expect(await screen.findByText(initialPath === '/system' ? 'SYSTEM-PAGE' : 'SENSITIVE-PROTECTED-CONTENT')).not.toBeNull()
   return { router, session }
 }
 
@@ -97,6 +110,8 @@ describe('App session boundary', () => {
     expect(screen.getByTestId('protected-route-session-gate').textContent).toContain(
       '受保护页面已关闭',
     )
+    expect(screen.queryByLabelText('打开命令面板')).toBeNull()
+    expect(screen.queryByText('owner')).toBeNull()
   })
 
   it('removes protected DOM even when logout cannot start without a CSRF cookie', async () => {
@@ -111,6 +126,8 @@ describe('App session boundary', () => {
     expect(screen.getByTestId('protected-route-session-gate').textContent).toContain(
       '受保护页面已关闭',
     )
+    expect(screen.queryByLabelText('打开命令面板')).toBeNull()
+    expect(screen.queryByText('owner')).toBeNull()
   })
 
   it('immediately removes ordinary protected content when forced password change becomes true', async () => {
@@ -126,5 +143,20 @@ describe('App session boundary', () => {
     )
     expect(screen.getByText('修改密码')).not.toBeNull()
     expect(screen.getByText('账户安全')).not.toBeNull()
+    expect(screen.queryByLabelText('打开命令面板')).toBeNull()
+    expect(screen.queryByText('owner')).toBeNull()
+  })
+
+  it('immediately removes a protected page when a capability projection shrinks', async () => {
+    const { session } = await renderProtectedApp('/system')
+
+    session.acceptAuthenticated(authenticatedProjection(false, []))
+
+    await waitFor(() => expect(screen.queryByText('SYSTEM-PAGE')).toBeNull())
+    expect(screen.getByTestId('capability-restricted-route-gate').textContent).toContain(
+      '当前页面权限已关闭',
+    )
+    expect(screen.queryByLabelText('打开命令面板')).toBeNull()
+    expect(screen.queryByText('owner')).toBeNull()
   })
 })

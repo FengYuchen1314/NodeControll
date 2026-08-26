@@ -47,13 +47,15 @@ const anonymousResult = () => ({
   },
   response: response(401),
 })
-const authenticatedResult = () => {
+const authenticatedResult = (
+  capabilities = ['credentials:manage', 'sessions:read', 'system:read'],
+) => {
   const now = Date.now()
   return {
     data: {
     data: {
       actor: {
-        capabilities: ['system:read'],
+        capabilities,
         force_password_change: false,
         id: '01900000-0000-7000-8000-000000000001',
         role: 'owner',
@@ -171,6 +173,29 @@ describe('authentication router guard', () => {
 
     expect(router.currentRoute.value.name).toBe('reauth')
     expect(router.currentRoute.value.query.redirect).toBe('/profile/security/password')
+  })
+
+  it('rejects a direct route when the actor lacks every required capability', async () => {
+    sdk.getBootstrapState.mockResolvedValue(bootstrapResult(true))
+    sdk.getCurrentActor.mockResolvedValue(authenticatedResult([]))
+    const router = createAppRouter(createMemoryHistory(), createPinia())
+
+    await router.push('/system')
+
+    expect(router.currentRoute.value.name).toBe('dashboard')
+  })
+
+  it('keeps the dashboard capability-free and validates protected metadata invariants', () => {
+    const router = createAppRouter(createMemoryHistory(), createPinia())
+    const dashboard = router.resolve({ name: 'dashboard' }).matched.at(-1)
+
+    expect(dashboard?.meta.requiresAuth).toBe(true)
+    expect(dashboard?.meta.requiredCapabilities).toBeUndefined()
+    for (const record of router.getRoutes()) {
+      if (record.meta.requiredCapabilities || record.meta.requiresRecentAuth) {
+        expect(record.meta.requiresAuth).toBe(true)
+      }
+    }
   })
 })
 
