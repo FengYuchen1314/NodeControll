@@ -84,6 +84,7 @@ const handleKeydown = (event: globalThis.KeyboardEvent) => {
     select()
   } else if (event.key === 'Escape') {
     event.preventDefault()
+    event.stopPropagation()
     close()
   }
 }
