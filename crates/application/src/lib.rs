@@ -38,6 +38,7 @@ use zeroize::Zeroizing;
 
 mod auth_challenge;
 mod totp;
+mod webauthn;
 
 pub use auth_challenge::{
     AuthChallengePort, AuthChallengePortError, AuthChallengeReservationOutcome,
@@ -51,6 +52,14 @@ pub use totp::{
     BegunTotpEnrollment, DisableTotpCredentialCommand, SystemTotpClock, TotpChallengeProofOutcome,
     TotpClock, TotpManagementBinding, TotpManagementBindingError, TotpPort, TotpPortError,
     TotpService, TotpServiceError,
+};
+pub use webauthn::{
+    BeginWebAuthnRegistrationCommand, BegunWebAuthnAuthentication,
+    BegunWebAuthnRegistration, FinishWebAuthnAuthenticationCommand,
+    FinishWebAuthnRegistrationCommand, RenameWebAuthnCredentialCommand,
+    RevokeWebAuthnCredentialCommand, SystemWebAuthnClock, WebAuthnChallengeProofOutcome,
+    WebAuthnClock, WebAuthnManagementBinding, WebAuthnManagementBindingError, WebAuthnPolicy,
+    WebAuthnService, WebAuthnServiceError,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
