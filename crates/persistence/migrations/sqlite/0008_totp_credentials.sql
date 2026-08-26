@@ -103,3 +103,52 @@ CREATE INDEX totp_credentials_user_status_idx
 CREATE INDEX totp_credentials_pending_expiry_idx
     ON totp_credentials(pending_expires_at_ms, id)
     WHERE status = 'pending';
+
+-- A verifier retry can recover only this non-secret terminal fact. The TOTP seed and presented
+-- code never enter the handoff; the exact challenge/claim/context remains authoritative.
+CREATE TABLE totp_verified_handoffs (
+    challenge_id TEXT NOT NULL REFERENCES auth_challenges(id) ON DELETE CASCADE CHECK (
+        typeof(challenge_id) = 'text' AND length(challenge_id) = 36
+        AND substr(challenge_id, 9, 1) = '-' AND substr(challenge_id, 14, 1) = '-'
+        AND substr(challenge_id, 19, 1) = '-' AND substr(challenge_id, 24, 1) = '-'
+        AND length(replace(challenge_id, '-', '')) = 32
+        AND replace(challenge_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    attempt_claim_id TEXT NOT NULL CHECK (
+        typeof(attempt_claim_id) = 'text' AND length(attempt_claim_id) = 36
+        AND substr(attempt_claim_id, 9, 1) = '-' AND substr(attempt_claim_id, 14, 1) = '-'
+        AND substr(attempt_claim_id, 19, 1) = '-' AND substr(attempt_claim_id, 24, 1) = '-'
+        AND length(replace(attempt_claim_id, '-', '')) = 32
+        AND replace(attempt_claim_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    challenge_revision INTEGER NOT NULL CHECK (
+        typeof(challenge_revision) = 'integer' AND challenge_revision >= 0
+    ),
+    credential_id TEXT NOT NULL REFERENCES totp_credentials(id) ON DELETE RESTRICT CHECK (
+        typeof(credential_id) = 'text' AND length(credential_id) = 36
+        AND substr(credential_id, 9, 1) = '-' AND substr(credential_id, 14, 1) = '-'
+        AND substr(credential_id, 19, 1) = '-' AND substr(credential_id, 24, 1) = '-'
+        AND length(replace(credential_id, '-', '')) = 32
+        AND replace(credential_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    credential_revision_after INTEGER NOT NULL CHECK (
+        typeof(credential_revision_after) = 'integer' AND credential_revision_after > 0
+    ),
+    accepted_step INTEGER NOT NULL CHECK (
+        typeof(accepted_step) = 'integer' AND accepted_step >= 0
+    ),
+    reserved_at_ms INTEGER NOT NULL CHECK (
+        typeof(reserved_at_ms) = 'integer' AND reserved_at_ms >= 0
+    ),
+    verification_expires_at_ms INTEGER NOT NULL CHECK (
+        typeof(verification_expires_at_ms) = 'integer'
+        AND verification_expires_at_ms > reserved_at_ms
+    ),
+    committed_at_ms INTEGER NOT NULL CHECK (
+        typeof(committed_at_ms) = 'integer'
+        AND committed_at_ms >= reserved_at_ms
+        AND committed_at_ms < verification_expires_at_ms
+    ),
+    PRIMARY KEY (challenge_id, attempt_claim_id),
+    UNIQUE (credential_id, accepted_step)
+);

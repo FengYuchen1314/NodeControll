@@ -64,3 +64,24 @@ CREATE INDEX totp_credentials_user_status_idx
 CREATE INDEX totp_credentials_pending_expiry_idx
     ON totp_credentials(pending_expires_at_ms, id)
     WHERE status = 'pending';
+
+-- A verifier retry can recover only this non-secret terminal fact. The TOTP seed and presented
+-- code never enter the handoff; the exact challenge/claim/context remains authoritative.
+CREATE TABLE totp_verified_handoffs (
+    challenge_id UUID NOT NULL REFERENCES auth_challenges(id) ON DELETE CASCADE,
+    attempt_claim_id UUID NOT NULL,
+    challenge_revision BIGINT NOT NULL CHECK (challenge_revision >= 0),
+    credential_id UUID NOT NULL REFERENCES totp_credentials(id) ON DELETE RESTRICT,
+    credential_revision_after BIGINT NOT NULL CHECK (credential_revision_after > 0),
+    accepted_step BIGINT NOT NULL CHECK (accepted_step >= 0),
+    reserved_at_ms BIGINT NOT NULL CHECK (reserved_at_ms >= 0),
+    verification_expires_at_ms BIGINT NOT NULL CHECK (
+        verification_expires_at_ms > reserved_at_ms
+    ),
+    committed_at_ms BIGINT NOT NULL CHECK (
+        committed_at_ms >= reserved_at_ms
+        AND committed_at_ms < verification_expires_at_ms
+    ),
+    PRIMARY KEY (challenge_id, attempt_claim_id),
+    UNIQUE (credential_id, accepted_step)
+);

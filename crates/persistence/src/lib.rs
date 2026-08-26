@@ -19,14 +19,16 @@ mod totp;
 pub use auth_challenge::{
     AuthChallengeAccess, AuthChallengeAttemptFailure, AuthChallengeAttemptOutcome,
     AuthChallengeAttemptReservation, AuthChallengeAttemptReservationOutcome,
-    AuthChallengeClientContext, AuthChallengeConsumption, AuthChallengeConsumptionOutcome,
-    AuthChallengeRotationReservation, AuthChallengeRotationReservationOutcome,
-    AuthChallengeTokenLookup, CreateAuthChallengeOutcome, NewAuthChallenge,
+    AuthChallengeAttemptResume, AuthChallengeClientContext, AuthChallengeConsumption,
+    AuthChallengeConsumptionOutcome, AuthChallengeRotationReservation,
+    AuthChallengeRotationReservationOutcome, AuthChallengeTokenLookup, CreateAuthChallengeOutcome,
+    NewAuthChallenge, ResumedAuthChallengeAttempt,
 };
 pub use totp::{
     ActivateTotpCredential, ActivateTotpCredentialOutcome, BeginTotpEnrollmentOutcome,
     DisableTotpCredential, DisableTotpCredentialOutcome, NewTotpEnrollment, StoredTotpCredential,
-    TotpActivationResult, TotpSessionGuard, TotpStepAdvance, TotpStepAdvanceOutcome,
+    TotpActivationResult, TotpChallengeBinding, TotpSessionGuard, TotpStepAdvance,
+    TotpStepAdvanceOutcome, TotpVerifiedHandoff,
 };
 
 static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("./migrations/sqlite");

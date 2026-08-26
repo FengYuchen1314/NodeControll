@@ -7,8 +7,8 @@ use nodecontroll_persistence::{
     ActivateTotpCredential, ActivateTotpCredentialOutcome, AuthSessionStatus, AuthenticatedSession,
     BeginTotpEnrollmentOutcome, Database, DisableTotpCredential, DisableTotpCredentialOutcome,
     NewRecoveryCode, NewRecoveryCodeSet, NewSecretRecord, NewTotpEnrollment, PersistenceError,
-    StoredTotpCredential, TotpActivationResult, TotpSessionGuard, TotpStepAdvance,
-    TotpStepAdvanceOutcome,
+    StoredTotpCredential, TotpActivationResult, TotpChallengeBinding, TotpSessionGuard,
+    TotpStepAdvance, TotpStepAdvanceOutcome, TotpVerifiedHandoff,
 };
 use nodecontroll_secrets::{
     KeyedDigestPurpose, Keyring, RecoveryCode, SecretBinding, SecretOwnerKind, SecretPurpose,
@@ -16,7 +16,10 @@ use nodecontroll_secrets::{
 };
 use thiserror::Error;
 
-use crate::{AuthChallengeVerificationClaim, VerifiedAuthChallengeEvidence};
+use crate::{
+    AuthChallengePort, AuthChallengeService, AuthChallengeServiceError,
+    AuthChallengeVerificationClaim, PresentAuthChallengeCommand, VerifiedAuthChallengeEvidence,
+};
 
 pub trait TotpClock: Send + Sync {
     fn now_utc_ms(&self) -> Result<i64, TotpServiceError>;
@@ -168,6 +171,11 @@ pub trait TotpPort: Send + Sync {
         now_ms: i64,
     ) -> Result<Option<StoredTotpCredential>, TotpPortError>;
 
+    async fn verified_handoff(
+        &self,
+        binding: TotpChallengeBinding,
+    ) -> Result<Option<TotpVerifiedHandoff>, TotpPortError>;
+
     async fn activate(
         &self,
         activation: ActivateTotpCredential<'_>,
@@ -215,6 +223,15 @@ impl TotpPort for Database {
             .map_err(map_persistence_error)
     }
 
+    async fn verified_handoff(
+        &self,
+        binding: TotpChallengeBinding,
+    ) -> Result<Option<TotpVerifiedHandoff>, TotpPortError> {
+        self.totp_verified_handoff(&binding)
+            .await
+            .map_err(map_persistence_error)
+    }
+
     async fn activate(
         &self,
         activation: ActivateTotpCredential<'_>,
@@ -246,6 +263,7 @@ impl TotpPort for Database {
 fn map_persistence_error(error: PersistenceError) -> TotpPortError {
     match error {
         PersistenceError::InvalidTimestamp
+        | PersistenceError::InvalidAuthChallenge
         | PersistenceError::RevisionOutOfRange
         | PersistenceError::InvalidKeyVersion
         | PersistenceError::InvalidSecretRecord
@@ -383,9 +401,8 @@ where
         }
     }
 
-    /// Verifies a claim already reserved by C3. The accepted step is durably advanced before
-    /// evidence is emitted; a process crash therefore burns at most that one code and can never
-    /// reopen it. The C3 claim lease recovers independently and no evidence survives the crash.
+    /// Verifies a claim already reserved by C3. Replay state and a non-secret durable handoff are
+    /// committed atomically; an exact retry can recreate evidence without seeing the seed/code.
     pub async fn verify_challenge(
         &self,
         claim: AuthChallengeVerificationClaim,
@@ -395,7 +412,14 @@ where
             return Err(TotpServiceError::InvalidChallengeClaim);
         }
         let now_ms = self.clock.now_utc_ms()?;
-        if now_ms < claim.reserved_at_ms() || now_ms >= claim.challenge().expires_at_ms {
+        if !claim_context_is_live(&claim, now_ms) {
+            return Err(TotpServiceError::ClockUnavailable);
+        }
+        let binding = challenge_binding(&claim, now_ms);
+        if let Some(handoff) = self.port.verified_handoff(binding).await? {
+            return verified_handoff_outcome(claim, &handoff);
+        }
+        if !claim_verifier_lease_is_live(&claim, now_ms) {
             return Err(TotpServiceError::ClockUnavailable);
         }
         let Ok(code) = TotpCode::parse(presented_code) else {
@@ -420,31 +444,89 @@ where
         else {
             return Ok(TotpChallengeProofOutcome::Rejected(claim));
         };
+        let commit_at_ms = self.clock.now_utc_ms()?;
+        if !claim_verifier_lease_is_live(&claim, commit_at_ms)
+            || !claim_context_is_live(&claim, commit_at_ms)
+        {
+            return Err(TotpServiceError::ClockUnavailable);
+        }
         let advance = self
             .port
             .advance_step(TotpStepAdvance {
                 credential_id: stored.credential.id,
-                user_id,
                 expected_credential_revision: stored.credential.revision,
                 expected_last_accepted_step: stored.credential.last_accepted_step,
                 accepted_step,
-                expected_auth_revision: claim.challenge().auth_revision,
-                session_id: claim.challenge().session_id,
-                verification_time_ms,
-                now_ms,
+                challenge: challenge_binding(&claim, commit_at_ms),
+                now_ms: commit_at_ms,
             })
             .await?;
         match advance {
-            TotpStepAdvanceOutcome::Advanced(_) => {
-                let evidence = VerifiedAuthChallengeEvidence::from_method_verifier(
-                    claim,
-                    AuthenticationAssurance::Mfa,
-                )
-                .map_err(|_| TotpServiceError::InvalidChallengeClaim)?;
-                Ok(TotpChallengeProofOutcome::Verified(evidence))
+            TotpStepAdvanceOutcome::Advanced { handoff, .. }
+            | TotpStepAdvanceOutcome::AlreadyVerified(handoff) => {
+                verified_handoff_outcome(claim, &handoff)
             }
             TotpStepAdvanceOutcome::Stale => Ok(TotpChallengeProofOutcome::Rejected(claim)),
         }
+    }
+
+    /// Reauthorizes the original bearer/context and restores a verifier result after the process
+    /// that committed the replay CAS lost its in-memory evidence. No seed or presented code is
+    /// read on this path.
+    pub async fn resume_verified_challenge<AuthPort>(
+        &self,
+        auth_challenges: &AuthChallengeService<AuthPort>,
+        presentation: PresentAuthChallengeCommand,
+        claim_id: EntityId,
+    ) -> Result<Option<VerifiedAuthChallengeEvidence>, TotpServiceError>
+    where
+        AuthPort: AuthChallengePort,
+    {
+        let now_ms = self.clock.now_utc_ms()?;
+        let PresentAuthChallengeCommand {
+            id,
+            token,
+            client_context,
+            now_ms: _,
+        } = presentation;
+        let Some(claim) = auth_challenges
+            .resume_verification_claim(
+                PresentAuthChallengeCommand {
+                    id,
+                    token,
+                    client_context,
+                    now_ms,
+                },
+                claim_id,
+                AuthenticationMethod::Totp,
+            )
+            .await
+            .map_err(map_auth_challenge_error)?
+        else {
+            return Ok(None);
+        };
+        self.resume_verified_claim(claim, now_ms).await
+    }
+
+    async fn resume_verified_claim(
+        &self,
+        claim: AuthChallengeVerificationClaim,
+        now_ms: i64,
+    ) -> Result<Option<VerifiedAuthChallengeEvidence>, TotpServiceError> {
+        if claim.method() != AuthenticationMethod::Totp {
+            return Err(TotpServiceError::InvalidChallengeClaim);
+        }
+        if !claim_context_is_live(&claim, now_ms) {
+            return Ok(None);
+        }
+        let Some(handoff) = self
+            .port
+            .verified_handoff(challenge_binding(&claim, now_ms))
+            .await?
+        else {
+            return Ok(None);
+        };
+        verified_handoff_evidence(claim, &handoff).map(Some)
     }
 
     pub async fn disable(
@@ -508,6 +590,60 @@ where
     }
 }
 
+fn claim_context_is_live(claim: &AuthChallengeVerificationClaim, now_ms: i64) -> bool {
+    now_ms >= claim.reserved_at_ms()
+        && now_ms < claim.challenge().expires_at_ms
+}
+
+fn claim_verifier_lease_is_live(claim: &AuthChallengeVerificationClaim, now_ms: i64) -> bool {
+    now_ms < claim.verification_expires_at_ms()
+}
+
+fn challenge_binding(
+    claim: &AuthChallengeVerificationClaim,
+    now_ms: i64,
+) -> TotpChallengeBinding {
+    TotpChallengeBinding {
+        access: claim.access_at(now_ms),
+        claim_id: claim.claim_id(),
+        purpose: claim.challenge().purpose,
+        user_id: claim.challenge().user_id,
+        session_id: claim.challenge().session_id,
+        expected_auth_revision: claim.challenge().auth_revision,
+        expected_challenge_revision: claim.challenge().revision,
+        challenge_created_at_ms: claim.challenge().created_at_ms,
+        challenge_expires_at_ms: claim.challenge().expires_at_ms,
+        reserved_at_ms: claim.reserved_at_ms(),
+        verification_expires_at_ms: claim.verification_expires_at_ms(),
+    }
+}
+
+fn verified_handoff_outcome(
+    claim: AuthChallengeVerificationClaim,
+    handoff: &TotpVerifiedHandoff,
+) -> Result<TotpChallengeProofOutcome, TotpServiceError> {
+    verified_handoff_evidence(claim, handoff).map(TotpChallengeProofOutcome::Verified)
+}
+
+fn verified_handoff_evidence(
+    claim: AuthChallengeVerificationClaim,
+    handoff: &TotpVerifiedHandoff,
+) -> Result<VerifiedAuthChallengeEvidence, TotpServiceError> {
+    if handoff.challenge_id != claim.challenge().id
+        || handoff.claim_id != claim.claim_id()
+        || handoff.committed_at_ms < claim.reserved_at_ms()
+        || handoff.committed_at_ms >= claim.verification_expires_at_ms()
+    {
+        return Err(TotpServiceError::InvalidChallengeClaim);
+    }
+    let evidence = VerifiedAuthChallengeEvidence::from_method_verifier(
+        claim,
+        AuthenticationAssurance::Mfa,
+    )
+    .map_err(|_| TotpServiceError::InvalidChallengeClaim)?;
+    Ok(evidence)
+}
+
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum TotpServiceError {
     #[error("TOTP command is invalid")]
@@ -538,25 +674,46 @@ impl From<TotpPortError> for TotpServiceError {
     }
 }
 
+fn map_auth_challenge_error(error: AuthChallengeServiceError) -> TotpServiceError {
+    match error {
+        AuthChallengeServiceError::InvalidCommand | AuthChallengeServiceError::InvalidEvidence => {
+            TotpServiceError::InvalidChallengeClaim
+        }
+        AuthChallengeServiceError::AlreadyPending | AuthChallengeServiceError::Unauthorized => {
+            TotpServiceError::Stale
+        }
+        AuthChallengeServiceError::Unavailable => TotpServiceError::Unavailable,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
 
     use async_trait::async_trait;
     use nodecontroll_domain::{
-        AuthChallenge, AuthChallengePurpose, AuthChallengeRotationState, AuthChallengeStatus,
-        AuthenticationMethod, EntityId, PrincipalLabel, Revision, TotpCredential,
-        TotpCredentialStatus, TotpEnrollmentPolicy, UserRole, Username,
+        AuthChallenge, AuthChallengePolicy, AuthChallengePurpose, AuthChallengeRotationState,
+        AuthChallengeStatus, AuthenticationMethod, EntityId, PrincipalLabel, Revision,
+        TotpCredential, TotpCredentialStatus, TotpEnrollmentPolicy, UserRole, Username,
     };
     use nodecontroll_persistence::{
         ActivateTotpCredential, ActivateTotpCredentialOutcome, AuthLevel, AuthSessionStatus,
-        AuthSessionSummary, AuthenticatedSession, BeginTotpEnrollmentOutcome,
-        DisableTotpCredential, DisableTotpCredentialOutcome, NewTotpEnrollment,
-        SessionRevocationReason, StoredSecretRecord, StoredTotpCredential, TotpStepAdvance,
-        TotpStepAdvanceOutcome,
+        AuthSessionSummary, AuthenticatedSession, AuthChallengeAccess,
+        AuthChallengeAttemptFailure, AuthChallengeAttemptOutcome, AuthChallengeAttemptReservation,
+        AuthChallengeAttemptReservationOutcome, AuthChallengeAttemptResume,
+        AuthChallengeClientContext, AuthChallengeConsumption, AuthChallengeConsumptionOutcome,
+        AuthChallengeRotationReservation, AuthChallengeRotationReservationOutcome,
+        AuthChallengeTokenLookup, BeginTotpEnrollmentOutcome, CreateAuthChallengeOutcome,
+        DisableTotpCredential, DisableTotpCredentialOutcome, NewAuthChallenge, NewTotpEnrollment,
+        ResumedAuthChallengeAttempt, SessionRevocationReason, StoredSecretRecord,
+        StoredTotpCredential, TotpChallengeBinding, TotpStepAdvance, TotpStepAdvanceOutcome,
+        TotpVerifiedHandoff,
     };
     use nodecontroll_secrets::{
-        EnvelopeCipher, Keyring, SecretBinding, SecretOwnerKind, SecretPurpose,
+        EnvelopeCipher, KeyedDigest, Keyring, SecretBinding, SecretOwnerKind, SecretPurpose,
         TOTP_SEED_SCHEMA_VERSION, TotpSeed,
     };
 
@@ -564,7 +721,10 @@ mod tests {
         TotpChallengeProofOutcome, TotpClock, TotpManagementBinding, TotpManagementBindingError,
         TotpPort, TotpPortError, TotpService, TotpServiceError,
     };
-    use crate::AuthChallengeVerificationClaim;
+    use crate::{
+        AuthChallengePort, AuthChallengePortError, AuthChallengeService,
+        AuthChallengeVerificationClaim, PresentAuthChallengeCommand,
+    };
 
     #[derive(Clone, Copy)]
     struct FixedClock(i64);
@@ -576,9 +736,23 @@ mod tests {
     }
 
     #[derive(Clone)]
+    struct SequenceClock(Arc<Mutex<VecDeque<i64>>>);
+
+    impl TotpClock for SequenceClock {
+        fn now_utc_ms(&self) -> Result<i64, TotpServiceError> {
+            self.0
+                .lock()
+                .ok()
+                .and_then(|mut values| values.pop_front())
+                .ok_or(TotpServiceError::ClockUnavailable)
+        }
+    }
+
+    #[derive(Clone)]
     struct FakePort {
         active: StoredTotpCredential,
         advanced: Arc<Mutex<Option<TotpStepAdvance>>>,
+        handoff: Arc<Mutex<Option<TotpVerifiedHandoff>>>,
     }
 
     fn authenticated_session(force_password_change: bool) -> AuthenticatedSession {
@@ -679,6 +853,20 @@ mod tests {
             Ok((self.active.credential.user_id == user_id).then(|| self.active.clone()))
         }
 
+        async fn verified_handoff(
+            &self,
+            binding: TotpChallengeBinding,
+        ) -> Result<Option<TotpVerifiedHandoff>, TotpPortError> {
+            let handoff = self.handoff.lock();
+            Ok(handoff.ok().and_then(|stored| {
+                stored.as_ref().filter(|handoff| {
+                    handoff.challenge_id == binding.access.id
+                        && handoff.claim_id == binding.claim_id
+                        && binding.access.now_ms < binding.challenge_expires_at_ms
+                }).cloned()
+            }))
+        }
+
         async fn activate(
             &self,
             _activation: ActivateTotpCredential<'_>,
@@ -691,12 +879,25 @@ mod tests {
             advance: TotpStepAdvance,
         ) -> Result<TotpStepAdvanceOutcome, TotpPortError> {
             if let Ok(mut observed) = self.advanced.lock() {
-                *observed = Some(advance);
+                *observed = Some(advance.clone());
             }
             let mut credential = self.active.credential.clone();
             credential.last_accepted_step = Some(1);
             credential.revision = Revision::from_value(6);
-            Ok(TotpStepAdvanceOutcome::Advanced(credential))
+            let handoff = TotpVerifiedHandoff {
+                challenge_id: advance.challenge.access.id,
+                claim_id: advance.challenge.claim_id,
+                credential_id: advance.credential_id,
+                accepted_step: advance.accepted_step,
+                committed_at_ms: advance.now_ms,
+            };
+            if let Ok(mut stored) = self.handoff.lock() {
+                *stored = Some(handoff.clone());
+            }
+            Ok(TotpStepAdvanceOutcome::Advanced {
+                credential,
+                handoff,
+            })
         }
 
         async fn disable(
@@ -704,6 +905,98 @@ mod tests {
             _disable: DisableTotpCredential,
         ) -> Result<DisableTotpCredentialOutcome, TotpPortError> {
             Ok(DisableTotpCredentialOutcome::Stale)
+        }
+    }
+
+    #[derive(Clone)]
+    struct ResumeAuthPort {
+        digest: KeyedDigest,
+        context: AuthChallengeClientContext,
+        challenge: AuthChallenge,
+        claim_id: EntityId,
+        reserved_at_ms: i64,
+        verification_expires_at_ms: i64,
+        observed_now_ms: Arc<Mutex<Vec<i64>>>,
+    }
+
+    #[async_trait]
+    impl AuthChallengePort for ResumeAuthPort {
+        async fn create(
+            &self,
+            _challenge: NewAuthChallenge,
+        ) -> Result<CreateAuthChallengeOutcome, AuthChallengePortError> {
+            Err(AuthChallengePortError::Unavailable)
+        }
+
+        async fn token_digest(
+            &self,
+            lookup: AuthChallengeTokenLookup,
+        ) -> Result<Option<KeyedDigest>, AuthChallengePortError> {
+            if let Ok(mut observed) = self.observed_now_ms.lock() {
+                observed.push(lookup.now_ms);
+            }
+            Ok((lookup.id == self.challenge.id
+                && lookup.client_context == self.context
+                && lookup.now_ms >= self.reserved_at_ms
+                && lookup.now_ms < self.challenge.expires_at_ms)
+                .then(|| self.digest.clone()))
+        }
+
+        async fn load(
+            &self,
+            _access: AuthChallengeAccess,
+        ) -> Result<Option<AuthChallenge>, AuthChallengePortError> {
+            Err(AuthChallengePortError::Unavailable)
+        }
+
+        async fn reserve_attempt(
+            &self,
+            _reservation: AuthChallengeAttemptReservation,
+        ) -> Result<AuthChallengeAttemptReservationOutcome, AuthChallengePortError> {
+            Err(AuthChallengePortError::Unavailable)
+        }
+
+        async fn resume_attempt(
+            &self,
+            resume: AuthChallengeAttemptResume,
+        ) -> Result<Option<ResumedAuthChallengeAttempt>, AuthChallengePortError> {
+            if let Ok(mut observed) = self.observed_now_ms.lock() {
+                observed.push(resume.access.now_ms);
+            }
+            Ok((resume.access.id == self.challenge.id
+                && resume.access.token_key_version == self.digest.key_version
+                && resume.access.token_hmac == self.digest.digest
+                && resume.access.client_context == self.context
+                && resume.access.now_ms >= self.reserved_at_ms
+                && resume.access.now_ms < self.challenge.expires_at_ms
+                && resume.claim_id == self.claim_id
+                && resume.method == AuthenticationMethod::Totp)
+                .then(|| ResumedAuthChallengeAttempt {
+                    challenge: self.challenge.clone(),
+                    reserved_at_ms: self.reserved_at_ms,
+                    verification_expires_at_ms: self.verification_expires_at_ms,
+                }))
+        }
+
+        async fn record_failure(
+            &self,
+            _failure: AuthChallengeAttemptFailure,
+        ) -> Result<AuthChallengeAttemptOutcome, AuthChallengePortError> {
+            Err(AuthChallengePortError::Unavailable)
+        }
+
+        async fn begin_consumption(
+            &self,
+            _consumption: AuthChallengeConsumption,
+        ) -> Result<AuthChallengeConsumptionOutcome, AuthChallengePortError> {
+            Err(AuthChallengePortError::Unavailable)
+        }
+
+        async fn reserve_rotation(
+            &self,
+            _reservation: AuthChallengeRotationReservation,
+        ) -> Result<AuthChallengeRotationReservationOutcome, AuthChallengePortError> {
+            Err(AuthChallengePortError::Unavailable)
         }
     }
 
@@ -767,7 +1060,11 @@ mod tests {
         }
     }
 
-    fn claim(user_id: EntityId, reserved_at_ms: i64) -> AuthChallengeVerificationClaim {
+    fn claim(
+        user_id: EntityId,
+        reserved_at_ms: i64,
+        verification_expires_at_ms: i64,
+    ) -> AuthChallengeVerificationClaim {
         AuthChallengeVerificationClaim::test_fixture(
             AuthChallenge {
                 id: EntityId::new(),
@@ -793,6 +1090,7 @@ mod tests {
             },
             AuthenticationMethod::Totp,
             reserved_at_ms,
+            verification_expires_at_ms,
         )
     }
 
@@ -805,6 +1103,7 @@ mod tests {
         let port = FakePort {
             active,
             advanced: advanced.clone(),
+            handoff: Arc::new(Mutex::new(None)),
         };
         let policy = TotpEnrollmentPolicy::new(600_000);
         assert!(policy.is_ok());
@@ -819,16 +1118,16 @@ mod tests {
         // Reservation is in step 2, so the RFC step-1 code is valid. Commit is in step 3, where
         // that code would already be outside a window incorrectly anchored to commit time.
         let result = service
-            .verify_challenge(claim(user_id, 89_999), "287082")
+            .verify_challenge(claim(user_id, 89_999, 100_000), "287082")
             .await;
         assert!(matches!(result, Ok(TotpChallengeProofOutcome::Verified(_))));
         assert!(matches!(
             advanced.lock(),
             Ok(ref observed) if matches!(observed.as_ref(), Some(advance)
                 if advance.accepted_step == 1
-                    && advance.verification_time_ms == 89_999
+                    && advance.challenge.reserved_at_ms == 89_999
                     && advance.now_ms == 90_001
-                    && advance.expected_auth_revision == Revision::from_value(7))
+                    && advance.challenge.expected_auth_revision == Revision::from_value(7))
         ));
     }
 
@@ -840,6 +1139,7 @@ mod tests {
         let port = FakePort {
             active: active_fixture(&keyring, user_id),
             advanced: advanced.clone(),
+            handoff: Arc::new(Mutex::new(None)),
         };
         let policy = TotpEnrollmentPolicy::new(600_000);
         assert!(policy.is_ok());
@@ -851,11 +1151,181 @@ mod tests {
         if let Ok(service) = service {
             assert!(matches!(
                 service
-                    .verify_challenge(claim(user_id, 89_999), "287082")
+                    .verify_challenge(claim(user_id, 89_999, 100_000), "287082")
                     .await,
                 Err(TotpServiceError::ClockUnavailable)
             ));
             assert!(matches!(advanced.lock(), Ok(ref observed) if observed.is_none()));
+        }
+    }
+
+    #[tokio::test]
+    async fn clock_rollback_after_terminal_commit_recovers_instead_of_rejecting() {
+        let keyring = keyring();
+        let user_id = EntityId::new();
+        let claim = claim(user_id, 89_999, 90_005);
+        let handoff = TotpVerifiedHandoff {
+            challenge_id: claim.challenge().id,
+            claim_id: claim.claim_id(),
+            credential_id: EntityId::new(),
+            accepted_step: 1,
+            committed_at_ms: 90_001,
+        };
+        let advanced = Arc::new(Mutex::new(None));
+        let port = FakePort {
+            active: active_fixture(&keyring, user_id),
+            advanced: advanced.clone(),
+            handoff: Arc::new(Mutex::new(Some(handoff))),
+        };
+        let policy = TotpEnrollmentPolicy::new(600_000);
+        assert!(policy.is_ok());
+        if let Ok(policy) = policy {
+            let service = TotpService::new(port, keyring, policy, 300_000, FixedClock(90_000));
+            assert!(service.is_ok());
+            if let Ok(service) = service {
+                assert!(matches!(
+                    service.verify_challenge(claim, "not-a-code").await,
+                    Ok(TotpChallengeProofOutcome::Verified(_))
+                ));
+                assert!(matches!(advanced.lock(), Ok(ref observed) if observed.is_none()));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn verifier_lease_expiry_before_commit_never_advances_the_step() {
+        let keyring = keyring();
+        let user_id = EntityId::new();
+        let advanced = Arc::new(Mutex::new(None));
+        let handoff = Arc::new(Mutex::new(None));
+        let port = FakePort {
+            active: active_fixture(&keyring, user_id),
+            advanced: advanced.clone(),
+            handoff: handoff.clone(),
+        };
+        let policy = TotpEnrollmentPolicy::new(600_000);
+        assert!(policy.is_ok());
+        let Ok(policy) = policy else {
+            panic!("policy must be valid");
+        };
+        let clock = SequenceClock(Arc::new(Mutex::new(VecDeque::from([
+            90_001, 90_005,
+        ]))));
+        let service = TotpService::new(port, keyring, policy, 300_000, clock);
+        assert!(service.is_ok());
+        if let Ok(service) = service {
+            assert!(matches!(
+                service
+                    .verify_challenge(claim(user_id, 89_999, 90_005), "287082")
+                    .await,
+                Err(TotpServiceError::ClockUnavailable)
+            ));
+            assert!(matches!(advanced.lock(), Ok(ref observed) if observed.is_none()));
+            assert!(matches!(handoff.lock(), Ok(ref observed) if observed.is_none()));
+        }
+    }
+
+    #[tokio::test]
+    async fn bearer_context_retry_reaches_terminal_handoff_after_process_restart() {
+        let keyring = keyring();
+        for supplied_now_ms in [0, i64::MAX] {
+            let user_id = EntityId::new();
+            let generated = keyring.generate_auth_challenge();
+            assert!(generated.is_ok());
+            let Ok(generated) = generated else {
+                panic!("challenge token generation must succeed");
+            };
+            let nodecontroll_secrets::GeneratedAuthChallenge { token, digest } = generated;
+            let challenge_id = EntityId::new();
+            let claim_id = EntityId::new();
+            let context = AuthChallengeClientContext {
+                key_version: Some(1),
+                client_network_hmac: Some([31; 32]),
+                user_agent_hash: Some([32; 32]),
+            };
+            let challenge = AuthChallenge {
+                id: challenge_id,
+                purpose: AuthChallengePurpose::Login,
+                user_id,
+                session_id: None,
+                auth_revision: Revision::from_value(7),
+                allowed_methods: vec![AuthenticationMethod::Totp],
+                status: AuthChallengeStatus::VerificationPending,
+                rotation_state: AuthChallengeRotationState::NotRequired,
+                attempts_used: 1,
+                max_attempts: 5,
+                created_at_ms: 1,
+                expires_at_ms: 120_000,
+                verified_method: None,
+                achieved_assurance: None,
+                consumed_at_ms: None,
+                verification_in_progress: true,
+                rotation_transaction_in_progress: false,
+                has_client_network_context: true,
+                has_user_agent_context: true,
+                revision: Revision::from_value(1),
+            };
+            let handoff = TotpVerifiedHandoff {
+                challenge_id,
+                claim_id,
+                credential_id: EntityId::new(),
+                accepted_step: 1,
+                committed_at_ms: 90_001,
+            };
+            let advanced = Arc::new(Mutex::new(None));
+            let port = FakePort {
+                active: active_fixture(&keyring, user_id),
+                advanced: advanced.clone(),
+                handoff: Arc::new(Mutex::new(Some(handoff))),
+            };
+            let observed_now_ms = Arc::new(Mutex::new(Vec::new()));
+            let auth_port = ResumeAuthPort {
+                digest,
+                context: context.clone(),
+                challenge,
+                claim_id,
+                reserved_at_ms: 89_999,
+                verification_expires_at_ms: 90_005,
+                observed_now_ms: observed_now_ms.clone(),
+            };
+            let auth_policy = AuthChallengePolicy::new(120_000, 10_000, 5);
+            assert!(auth_policy.is_ok());
+            let policy = TotpEnrollmentPolicy::new(600_000);
+            assert!(policy.is_ok());
+            if let (Ok(policy), Ok(auth_policy)) = (policy, auth_policy) {
+                let auth_challenges =
+                    AuthChallengeService::new(auth_port, keyring.clone(), auth_policy);
+                let service = TotpService::new(
+                    port,
+                    keyring.clone(),
+                    policy,
+                    300_000,
+                    FixedClock(100_000),
+                );
+                assert!(service.is_ok());
+                if let Ok(service) = service {
+                    assert!(matches!(
+                        service
+                            .resume_verified_challenge(
+                                &auth_challenges,
+                                PresentAuthChallengeCommand {
+                                    id: challenge_id,
+                                    token,
+                                    client_context: context,
+                                    now_ms: supplied_now_ms,
+                                },
+                                claim_id,
+                            )
+                            .await,
+                        Ok(Some(_))
+                    ));
+                    assert!(matches!(advanced.lock(), Ok(ref observed) if observed.is_none()));
+                    assert!(matches!(
+                        observed_now_ms.lock(),
+                        Ok(ref observed) if observed.as_slice() == [100_000, 100_000]
+                    ));
+                }
+            }
         }
     }
 }

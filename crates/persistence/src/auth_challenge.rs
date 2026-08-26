@@ -82,6 +82,20 @@ pub enum AuthChallengeAttemptReservationOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthChallengeAttemptResume {
+    pub access: AuthChallengeAccess,
+    pub claim_id: EntityId,
+    pub method: AuthenticationMethod,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumedAuthChallengeAttempt {
+    pub challenge: AuthChallenge,
+    pub reserved_at_ms: i64,
+    pub verification_expires_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthChallengeAttemptFailure {
     pub access: AuthChallengeAccess,
     pub claim_id: EntityId,
@@ -514,6 +528,142 @@ impl Database {
                 };
                 transaction.commit().await?;
                 Ok(challenge)
+            }
+        }
+    }
+
+    /// Rehydrates only the exact in-progress verifier claim. An ordinary claim must still be
+    /// inside its lease; a TOTP claim whose replay CAS already committed may instead be pinned by
+    /// its exact durable handoff until the enclosing challenge expires.
+    pub async fn resume_auth_challenge_attempt(
+        &self,
+        resume: &AuthChallengeAttemptResume,
+    ) -> Result<Option<ResumedAuthChallengeAttempt>, PersistenceError> {
+        validate_access(&resume.access)?;
+        let key_version = database_key_version(resume.access.token_key_version)?;
+        let context_key_version = resume
+            .access
+            .client_context
+            .key_version
+            .map(database_key_version)
+            .transpose()?;
+        match self {
+            Self::Sqlite(pool) => {
+                let mut transaction = pool.begin().await?;
+                refresh_access_sqlite(&mut transaction, &resume.access, key_version).await?;
+                let attempt: Option<(i64, i64, i64)> = sqlx::query_as(
+                    "SELECT attempt_started_at_ms,attempt_expires_at_ms,revision FROM auth_challenges WHERE id=? AND token_key_version=? AND token_hmac=? AND context_key_version IS ? AND client_network_hmac IS ? AND user_agent_hash IS ? AND status='verification_pending' AND attempt_claim_id=? AND attempted_method=? AND created_at_ms<=? AND expires_at_ms>? AND (attempt_expires_at_ms>? OR (attempted_method='totp' AND EXISTS(SELECT 1 FROM totp_verified_handoffs h WHERE h.challenge_id=auth_challenges.id AND h.attempt_claim_id=auth_challenges.attempt_claim_id AND h.challenge_revision=auth_challenges.revision AND h.reserved_at_ms=auth_challenges.attempt_started_at_ms AND h.verification_expires_at_ms=auth_challenges.attempt_expires_at_ms))) AND EXISTS(SELECT 1 FROM users u JOIN user_auth_state uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) AND (session_id IS NULL OR EXISTS(SELECT 1 FROM auth_sessions s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>?))",
+                )
+                .bind(resume.access.id.to_string())
+                .bind(key_version)
+                .bind(resume.access.token_hmac.as_slice())
+                .bind(context_key_version)
+                .bind(
+                    resume
+                        .access
+                        .client_context
+                        .client_network_hmac
+                        .as_ref()
+                        .map(|value| value.as_slice()),
+                )
+                .bind(
+                    resume
+                        .access
+                        .client_context
+                        .user_agent_hash
+                        .as_ref()
+                        .map(|value| value.as_slice()),
+                )
+                .bind(resume.claim_id.to_string())
+                .bind(resume.method.as_str())
+                .bind(resume.access.now_ms)
+                .bind(resume.access.now_ms)
+                .bind(resume.access.now_ms)
+                .bind(resume.access.now_ms)
+                .bind(resume.access.now_ms)
+                .bind(resume.access.now_ms)
+                .fetch_optional(&mut *transaction)
+                .await?;
+                let Some((reserved_at_ms, verification_expires_at_ms, revision)) = attempt else {
+                    transaction.commit().await?;
+                    return Ok(None);
+                };
+                let row = sqlx::query_as::<_, ChallengeRow>(
+                    "SELECT id,purpose,user_id,session_id,auth_revision,status,rotation_state,attempts_used,max_attempts,created_at_ms,expires_at_ms,verified_method,achieved_assurance,consumed_at_ms,CASE WHEN attempt_claim_id IS NULL THEN 0 ELSE 1 END AS has_attempt_claim,CASE WHEN client_network_hmac IS NULL THEN 0 ELSE 1 END AS has_client_network_context,CASE WHEN user_agent_hash IS NULL THEN 0 ELSE 1 END AS has_user_agent_context,revision FROM auth_challenges WHERE id=? AND revision=?",
+                )
+                .bind(resume.access.id.to_string())
+                .bind(revision)
+                .fetch_one(&mut *transaction)
+                .await?;
+                let methods: Vec<String> = sqlx::query_scalar(
+                    "SELECT method FROM auth_challenge_methods WHERE challenge_id=? ORDER BY method",
+                )
+                .bind(resume.access.id.to_string())
+                .fetch_all(&mut *transaction)
+                .await?;
+                let challenge = decode_challenge(row, methods)?;
+                transaction.commit().await?;
+                Ok(Some(ResumedAuthChallengeAttempt {
+                    challenge,
+                    reserved_at_ms,
+                    verification_expires_at_ms,
+                }))
+            }
+            Self::Postgres(pool) => {
+                let mut transaction = pool.begin().await?;
+                refresh_access_postgres(&mut transaction, &resume.access, key_version).await?;
+                let attempt: Option<(i64, i64, i64)> = sqlx::query_as(
+                    "SELECT attempt_started_at_ms,attempt_expires_at_ms,revision FROM auth_challenges WHERE id=$1 AND token_key_version=$2 AND token_hmac=$3 AND context_key_version IS NOT DISTINCT FROM $4 AND client_network_hmac IS NOT DISTINCT FROM $5 AND user_agent_hash IS NOT DISTINCT FROM $6 AND status='verification_pending' AND attempt_claim_id=$7 AND attempted_method=$8 AND created_at_ms<=$9 AND expires_at_ms>$9 AND (attempt_expires_at_ms>$9 OR (attempted_method='totp' AND EXISTS(SELECT 1 FROM totp_verified_handoffs h WHERE h.challenge_id=auth_challenges.id AND h.attempt_claim_id=auth_challenges.attempt_claim_id AND h.challenge_revision=auth_challenges.revision AND h.reserved_at_ms=auth_challenges.attempt_started_at_ms AND h.verification_expires_at_ms=auth_challenges.attempt_expires_at_ms))) AND EXISTS(SELECT 1 FROM users u JOIN user_auth_state uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) AND (session_id IS NULL OR EXISTS(SELECT 1 FROM auth_sessions s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=$9 AND s.idle_expires_at_ms>$9 AND s.absolute_expires_at_ms>$9)) FOR UPDATE",
+                )
+                .bind(resume.access.id.into_uuid())
+                .bind(key_version)
+                .bind(resume.access.token_hmac.as_slice())
+                .bind(context_key_version)
+                .bind(
+                    resume
+                        .access
+                        .client_context
+                        .client_network_hmac
+                        .as_ref()
+                        .map(|value| value.as_slice()),
+                )
+                .bind(
+                    resume
+                        .access
+                        .client_context
+                        .user_agent_hash
+                        .as_ref()
+                        .map(|value| value.as_slice()),
+                )
+                .bind(resume.claim_id.into_uuid())
+                .bind(resume.method.as_str())
+                .bind(resume.access.now_ms)
+                .fetch_optional(&mut *transaction)
+                .await?;
+                let Some((reserved_at_ms, verification_expires_at_ms, revision)) = attempt else {
+                    transaction.commit().await?;
+                    return Ok(None);
+                };
+                let row = sqlx::query_as::<_, ChallengeRow>(
+                    "SELECT id::text AS id,purpose,user_id::text AS user_id,session_id::text AS session_id,auth_revision,status,rotation_state,attempts_used::BIGINT AS attempts_used,max_attempts::BIGINT AS max_attempts,created_at_ms,expires_at_ms,verified_method,achieved_assurance,consumed_at_ms,CASE WHEN attempt_claim_id IS NULL THEN 0::BIGINT ELSE 1::BIGINT END AS has_attempt_claim,CASE WHEN client_network_hmac IS NULL THEN 0::BIGINT ELSE 1::BIGINT END AS has_client_network_context,CASE WHEN user_agent_hash IS NULL THEN 0::BIGINT ELSE 1::BIGINT END AS has_user_agent_context,revision FROM auth_challenges WHERE id=$1 AND revision=$2",
+                )
+                .bind(resume.access.id.into_uuid())
+                .bind(revision)
+                .fetch_one(&mut *transaction)
+                .await?;
+                let methods: Vec<String> = sqlx::query_scalar(
+                    "SELECT method FROM auth_challenge_methods WHERE challenge_id=$1 ORDER BY method",
+                )
+                .bind(resume.access.id.into_uuid())
+                .fetch_all(&mut *transaction)
+                .await?;
+                let challenge = decode_challenge(row, methods)?;
+                transaction.commit().await?;
+                Ok(Some(ResumedAuthChallengeAttempt {
+                    challenge,
+                    reserved_at_ms,
+                    verification_expires_at_ms,
+                }))
             }
         }
     }
@@ -1527,7 +1677,7 @@ fn validate_lookup(lookup: &AuthChallengeTokenLookup) -> Result<(), PersistenceE
     Ok(())
 }
 
-fn validate_access(access: &AuthChallengeAccess) -> Result<(), PersistenceError> {
+pub(super) fn validate_access(access: &AuthChallengeAccess) -> Result<(), PersistenceError> {
     database_key_version(access.token_key_version)?;
     validate_client_context(&access.client_context)?;
     if access.now_ms < 0 {
@@ -1720,7 +1870,7 @@ async fn refresh_access_sqlite(
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "UPDATE auth_challenges SET status=CASE WHEN attempts_used=max_attempts THEN 'exhausted' ELSE 'pending' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE id=? AND token_key_version=? AND token_hmac=? AND context_key_version IS ? AND client_network_hmac IS ? AND user_agent_hash IS ? AND status='verification_pending' AND created_at_ms<=? AND expires_at_ms>? AND attempt_expires_at_ms<=?",
+        "UPDATE auth_challenges SET status=CASE WHEN attempts_used=max_attempts THEN 'exhausted' ELSE 'pending' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE id=? AND token_key_version=? AND token_hmac=? AND context_key_version IS ? AND client_network_hmac IS ? AND user_agent_hash IS ? AND status='verification_pending' AND created_at_ms<=? AND expires_at_ms>? AND attempt_expires_at_ms<=? AND (attempted_method!='totp' OR NOT EXISTS(SELECT 1 FROM totp_verified_handoffs h WHERE h.challenge_id=auth_challenges.id AND h.attempt_claim_id=auth_challenges.attempt_claim_id AND h.challenge_revision=auth_challenges.revision AND h.reserved_at_ms=auth_challenges.attempt_started_at_ms AND h.verification_expires_at_ms=auth_challenges.attempt_expires_at_ms))",
     )
     .bind(access.now_ms)
     .bind(access.id.to_string())
@@ -1772,6 +1922,22 @@ async fn refresh_access_postgres(
         .user_agent_hash
         .as_ref()
         .map(|value| value.as_slice());
+    // PostgreSQL READ COMMITTED takes one snapshot per statement. Lock the challenge first so a
+    // concurrent TOTP terminal transaction either observes this refresh before advancing replay
+    // state, or commits its handoff before the following UPDATE statements take fresh snapshots.
+    // A single waiting UPDATE with a cross-table NOT EXISTS predicate is not sufficient: after
+    // waiting it can observe a changed target tuple while retaining a stale snapshot of handoffs.
+    sqlx::query(
+        "SELECT id FROM auth_challenges WHERE id=$1 AND token_key_version=$2 AND token_hmac=$3 AND context_key_version IS NOT DISTINCT FROM $4 AND client_network_hmac IS NOT DISTINCT FROM $5 AND user_agent_hash IS NOT DISTINCT FROM $6 FOR UPDATE",
+    )
+    .bind(access.id.into_uuid())
+    .bind(token_key_version)
+    .bind(access.token_hmac.as_slice())
+    .bind(context_key_version)
+    .bind(network)
+    .bind(user_agent)
+    .fetch_all(&mut **transaction)
+    .await?;
     sqlx::query(
         "UPDATE auth_challenges SET status='expired',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE id=$2 AND token_key_version=$3 AND token_hmac=$4 AND context_key_version IS NOT DISTINCT FROM $5 AND client_network_hmac IS NOT DISTINCT FROM $6 AND user_agent_hash IS NOT DISTINCT FROM $7 AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=$8 AND expires_at_ms<=$9"
     )
@@ -1804,7 +1970,7 @@ async fn refresh_access_postgres(
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "UPDATE auth_challenges SET status=CASE WHEN attempts_used=max_attempts THEN 'exhausted' ELSE 'pending' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE id=$2 AND token_key_version=$3 AND token_hmac=$4 AND context_key_version IS NOT DISTINCT FROM $5 AND client_network_hmac IS NOT DISTINCT FROM $6 AND user_agent_hash IS NOT DISTINCT FROM $7 AND status='verification_pending' AND created_at_ms<=$8 AND expires_at_ms>$9 AND attempt_expires_at_ms<=$10",
+        "UPDATE auth_challenges SET status=CASE WHEN attempts_used=max_attempts THEN 'exhausted' ELSE 'pending' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE id=$2 AND token_key_version=$3 AND token_hmac=$4 AND context_key_version IS NOT DISTINCT FROM $5 AND client_network_hmac IS NOT DISTINCT FROM $6 AND user_agent_hash IS NOT DISTINCT FROM $7 AND status='verification_pending' AND created_at_ms<=$8 AND expires_at_ms>$9 AND attempt_expires_at_ms<=$10 AND (attempted_method!='totp' OR NOT EXISTS(SELECT 1 FROM totp_verified_handoffs h WHERE h.challenge_id=auth_challenges.id AND h.attempt_claim_id=auth_challenges.attempt_claim_id AND h.challenge_revision=auth_challenges.revision AND h.reserved_at_ms=auth_challenges.attempt_started_at_ms AND h.verification_expires_at_ms=auth_challenges.attempt_expires_at_ms))",
     )
     .bind(access.now_ms)
     .bind(access.id.into_uuid())
@@ -1866,7 +2032,7 @@ async fn refresh_user_purpose_sqlite(
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "UPDATE auth_challenges SET status=CASE WHEN attempts_used=max_attempts THEN 'exhausted' ELSE 'pending' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE user_id=? AND purpose=? AND status='verification_pending' AND created_at_ms<=? AND expires_at_ms>? AND attempt_expires_at_ms<=?",
+        "UPDATE auth_challenges SET status=CASE WHEN attempts_used=max_attempts THEN 'exhausted' ELSE 'pending' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE user_id=? AND purpose=? AND status='verification_pending' AND created_at_ms<=? AND expires_at_ms>? AND attempt_expires_at_ms<=? AND (attempted_method!='totp' OR NOT EXISTS(SELECT 1 FROM totp_verified_handoffs h WHERE h.challenge_id=auth_challenges.id AND h.attempt_claim_id=auth_challenges.attempt_claim_id AND h.challenge_revision=auth_challenges.revision AND h.reserved_at_ms=auth_challenges.attempt_started_at_ms AND h.verification_expires_at_ms=auth_challenges.attempt_expires_at_ms))",
     )
     .bind(now_ms)
     .bind(user_id.to_string())
@@ -1896,6 +2062,16 @@ async fn refresh_user_purpose_postgres(
     purpose: AuthChallengePurpose,
     now_ms: i64,
 ) -> Result<(), PersistenceError> {
+    // Use a deterministic lock order and a separate statement snapshot for the refresh queries.
+    // This serializes bulk expiry recovery with a TOTP transaction that locks one of these rows
+    // before committing its durable terminal handoff in another table.
+    sqlx::query(
+        "SELECT id FROM auth_challenges WHERE user_id=$1 AND purpose=$2 AND status IN ('pending','verification_pending','rotation_pending','exhausted') ORDER BY id FOR UPDATE",
+    )
+    .bind(user_id.into_uuid())
+    .bind(purpose.as_str())
+    .fetch_all(&mut **transaction)
+    .await?;
     sqlx::query(
         "UPDATE auth_challenges SET status='expired',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE user_id=$2 AND purpose=$3 AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=$4 AND expires_at_ms<=$5"
     )
@@ -1920,7 +2096,7 @@ async fn refresh_user_purpose_postgres(
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "UPDATE auth_challenges SET status=CASE WHEN attempts_used=max_attempts THEN 'exhausted' ELSE 'pending' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE user_id=$2 AND purpose=$3 AND status='verification_pending' AND created_at_ms<=$4 AND expires_at_ms>$5 AND attempt_expires_at_ms<=$6",
+        "UPDATE auth_challenges SET status=CASE WHEN attempts_used=max_attempts THEN 'exhausted' ELSE 'pending' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE user_id=$2 AND purpose=$3 AND status='verification_pending' AND created_at_ms<=$4 AND expires_at_ms>$5 AND attempt_expires_at_ms<=$6 AND (attempted_method!='totp' OR NOT EXISTS(SELECT 1 FROM totp_verified_handoffs h WHERE h.challenge_id=auth_challenges.id AND h.attempt_claim_id=auth_challenges.attempt_claim_id AND h.challenge_revision=auth_challenges.revision AND h.reserved_at_ms=auth_challenges.attempt_started_at_ms AND h.verification_expires_at_ms=auth_challenges.attempt_expires_at_ms))",
     )
     .bind(now_ms)
     .bind(user_id.into_uuid())
@@ -2206,7 +2382,7 @@ impl Database {
                 let mut transaction = pool.begin().await?;
                 refresh_access_sqlite(&mut transaction, &consumption.access, key_version).await?;
                 let rows = sqlx::query(
-                    "UPDATE auth_challenges SET status=CASE WHEN rotation_state='required' THEN 'rotation_pending' ELSE 'consumed' END,rotation_state=CASE WHEN rotation_state='required' THEN 'pending' ELSE 'not_required' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,verified_method=?,achieved_assurance=?,consumed_at_ms=CASE WHEN rotation_state='required' THEN NULL ELSE ? END,revision=revision+1,updated_at_ms=? WHERE id=? AND token_key_version=? AND token_hmac=? AND context_key_version IS ? AND client_network_hmac IS ? AND user_agent_hash IS ? AND revision=? AND status='verification_pending' AND attempt_claim_id=? AND attempted_method=? AND attempt_expires_at_ms>? AND expires_at_ms>? AND EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) AND (session_id IS NULL OR EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>?))",
+                    "UPDATE auth_challenges SET status=CASE WHEN rotation_state='required' THEN 'rotation_pending' ELSE 'consumed' END,rotation_state=CASE WHEN rotation_state='required' THEN 'pending' ELSE 'not_required' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,verified_method=?,achieved_assurance=?,consumed_at_ms=CASE WHEN rotation_state='required' THEN NULL ELSE ? END,revision=revision+1,updated_at_ms=? WHERE id=? AND token_key_version=? AND token_hmac=? AND context_key_version IS ? AND client_network_hmac IS ? AND user_agent_hash IS ? AND revision=? AND status='verification_pending' AND attempt_claim_id=? AND attempted_method=? AND (attempt_expires_at_ms>? OR (attempted_method='totp' AND EXISTS(SELECT 1 FROM totp_verified_handoffs h WHERE h.challenge_id=auth_challenges.id AND h.attempt_claim_id=auth_challenges.attempt_claim_id AND h.challenge_revision=auth_challenges.revision AND h.reserved_at_ms=auth_challenges.attempt_started_at_ms AND h.verification_expires_at_ms=auth_challenges.attempt_expires_at_ms))) AND expires_at_ms>? AND EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) AND (session_id IS NULL OR EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>?))",
                 )
                 .bind(consumption.method.as_str())
                 .bind(consumption.achieved_assurance.as_str())
@@ -2250,7 +2426,7 @@ impl Database {
                 let mut transaction = pool.begin().await?;
                 refresh_access_postgres(&mut transaction, &consumption.access, key_version).await?;
                 let rows = sqlx::query(
-                    "UPDATE auth_challenges SET status=CASE WHEN rotation_state='required' THEN 'rotation_pending' ELSE 'consumed' END,rotation_state=CASE WHEN rotation_state='required' THEN 'pending' ELSE 'not_required' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,verified_method=$1,achieved_assurance=$2,consumed_at_ms=CASE WHEN rotation_state='required' THEN NULL ELSE $3 END,revision=revision+1,updated_at_ms=$4 WHERE id=$5 AND token_key_version=$6 AND token_hmac=$7 AND context_key_version IS NOT DISTINCT FROM $8 AND client_network_hmac IS NOT DISTINCT FROM $9 AND user_agent_hash IS NOT DISTINCT FROM $10 AND revision=$11 AND status='verification_pending' AND attempt_claim_id=$12 AND attempted_method=$13 AND attempt_expires_at_ms>$14 AND expires_at_ms>$15 AND EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) AND (session_id IS NULL OR EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=$16 AND s.idle_expires_at_ms>$17 AND s.absolute_expires_at_ms>$18))",
+                    "UPDATE auth_challenges SET status=CASE WHEN rotation_state='required' THEN 'rotation_pending' ELSE 'consumed' END,rotation_state=CASE WHEN rotation_state='required' THEN 'pending' ELSE 'not_required' END,attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,verified_method=$1,achieved_assurance=$2,consumed_at_ms=CASE WHEN rotation_state='required' THEN NULL ELSE $3 END,revision=revision+1,updated_at_ms=$4 WHERE id=$5 AND token_key_version=$6 AND token_hmac=$7 AND context_key_version IS NOT DISTINCT FROM $8 AND client_network_hmac IS NOT DISTINCT FROM $9 AND user_agent_hash IS NOT DISTINCT FROM $10 AND revision=$11 AND status='verification_pending' AND attempt_claim_id=$12 AND attempted_method=$13 AND (attempt_expires_at_ms>$14 OR (attempted_method='totp' AND EXISTS(SELECT 1 FROM totp_verified_handoffs h WHERE h.challenge_id=auth_challenges.id AND h.attempt_claim_id=auth_challenges.attempt_claim_id AND h.challenge_revision=auth_challenges.revision AND h.reserved_at_ms=auth_challenges.attempt_started_at_ms AND h.verification_expires_at_ms=auth_challenges.attempt_expires_at_ms))) AND expires_at_ms>$15 AND EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) AND (session_id IS NULL OR EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=$16 AND s.idle_expires_at_ms>$17 AND s.absolute_expires_at_ms>$18))",
                 )
                 .bind(consumption.method.as_str())
                 .bind(consumption.achieved_assurance.as_str())

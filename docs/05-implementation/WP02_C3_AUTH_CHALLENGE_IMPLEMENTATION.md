@@ -109,7 +109,7 @@ repository 写 lease 时还会把截止时间截到 challenge 自身 expiry，ap
 - 写随机 claim ID、method、开始/截止时间；
 - `revision += 1`。
 
-只有 CAS winner 得到 `AuthChallengeVerificationClaim`。claim 字段私有，HTTP DTO 不能自己拼出 claim ID 或 revision；loser 得到 `Stale`，不得继续验证 proof。
+只有 CAS winner 得到 `AuthChallengeVerificationClaim`。claim 字段私有，HTTP DTO 不能自己拼出 claim ID 或 revision；独立的 `reserved_at_ms` 不会在重试时被新的 access 时间覆盖。loser 得到 `Stale`，不得继续验证 proof。
 
 最后一个 attempt 预留后，`attempts_used == max_attempts` 但仍保持 `verification_pending`。这一 slot 的正确 proof 可以成功；只有错误 proof 或 lease 超时才进入 `exhausted`。
 
@@ -155,7 +155,7 @@ proof 成功后不能直接公开 `complete_rotation`。application 会继续调
 
 1. 总 TTL 到期：开放状态转 `expired`；
 2. 用户、认证版本或 session 无效：转 `invalidated`；
-3. proof lease 到期：清 claim，未耗尽回 `pending`，已耗尽进 `exhausted`；
+3. proof lease 到期：没有 method-specific terminal handoff 时清 claim，未耗尽回 `pending`，已耗尽进 `exhausted`；exact TOTP terminal 可把同一 claim 固定到总 challenge/session/auth 生命周期，供崩溃恢复；
 4. rotation handoff lease 到期：只清 transaction claim，保持 `rotation_pending`。
 
 每次自动刷新都推进 revision，并把 `updated_at_ms` 写成调用方受控当前时间。旧 claim 因 revision 不再匹配，不能在刷新后迟到提交。
@@ -165,6 +165,7 @@ proof 成功后不能直接公开 `complete_rotation`。application 会继续调
 | repository 方法 | 原子效果 |
 |---|---|
 | `reserve_auth_challenge_attempt` | 预占一次猜测预算和唯一 verifier lease |
+| `resume_auth_challenge_attempt` | 以原 bearer/context 恢复 exact claim；普通 claim 仍受 verifier lease 限制，method terminal 可跨短 lease |
 | `record_auth_challenge_failure` | 只让 claim owner 提交失败，决定 retryable/exhausted |
 | `begin_auth_challenge_consumption` | 只让 claim owner提交 typed 成功，进入 consumed/rotation_pending |
 | `reserve_auth_challenge_rotation` | 为 replacement-session 事务预占可恢复 handoff lease |
@@ -213,7 +214,7 @@ Persistence 的同一个 `auth_challenge_contract` 会由 SQLite 和真实 Postg
 
 ## 8. 尚未完成的集成
 
-- C4 需要提供 TOTP enrollment/verification，并从 crate 内生成 `VerifiedAuthChallengeEvidence`；
+- C4 已提供 TOTP enrollment/verification 与 durable terminal handoff；尚待 HTTP transport 把原 bearer/context resume 接到真实请求生命周期；
 - C5 需要提供 WebAuthn ceremony、credential counter 与真实 assurance 判断；
 - 恢复码登录要把 C2 单次消费接到 C3 claim，成功后走 rotation transaction seam；
 - C6 要把 challenge issue/verify 接入登录、近期认证、凭据 enrollment 和全部高危 use case；

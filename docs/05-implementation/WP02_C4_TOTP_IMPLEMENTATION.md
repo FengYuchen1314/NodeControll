@@ -25,8 +25,8 @@ C4 将服务端 TOTP profile 收敛为一个不可由 Handler 改写的集合：
 | `crates/domain/src/totp.rs` | 状态闭集、无秘密 credential 投影、固定 profile 与 enrollment TTL |
 | `crates/secrets/src/lib.rs` | `TotpSeed`/`TotpCode` 的零化容器、CSPRNG、RFC 计算、窗口验证、keyring 加解密 |
 | `crates/application/src/totp.rs` | 受控管理身份绑定、begin/activate/verify/disable 编排、C3 typed evidence 交接 |
-| `crates/persistence/src/totp.rs` | 双库 repository、事务锁序、CAS replay、恢复码/auth/session 原子联动和共用合同 |
-| `crates/persistence/migrations/*/0008_totp_credentials.sql` | credential 表、状态约束、pending/active 唯一索引及 TOTP seed coexistence 规则 |
+| `crates/persistence/src/totp.rs` | 双库 repository、事务锁序、CAS replay、durable verified handoff、恢复码/auth/session 原子联动和共用合同 |
+| `crates/persistence/migrations/*/0008_totp_credentials.sql` | credential/handoff 表、状态约束、pending/active 唯一索引及 TOTP seed coexistence 规则 |
 | `crates/*/src/lib.rs` | 公开无秘密类型和受控 application/repository 边界 |
 
 ## 3. Domain 合同
@@ -111,13 +111,17 @@ application 先读取当前 pending credential，精确匹配 credential ID/revi
 C4 不自己签发 bearer，也不接受 HTTP 层拼出的 challenge。它只接收 C3 已持久预留的 `AuthChallengeVerificationClaim`，并执行：
 
 1. claim method 必须是 `totp`；transport 传入的 borrowed proof 只在本次调用内解析，未来 HTTP 层必须按上一节持有并清零 owned 原缓冲区；
-2. commit 时钟不能早于 claim 的持久 `reserved_at_ms`，也不能越过 challenge expiry；
-3. code 窗口锚定 `reserved_at_ms`，而不是可能跨入下一 period 的 commit 时间；
-4. active credential、secret envelope 与上次 step 从 repository 取得；
-5. repository 以 credential revision、previous step、auth revision、可选 session 和 reservation window 做条件更新；
-6. 只有 durable step advance 成功后，才调用 crate-private `VerifiedAuthChallengeEvidence::from_method_verifier` 产生 `mfa` evidence。
+2. 先读取受控时钟并检查 `reserved_at_ms <= now < challenge.expires_at_ms`，随后查找 exact terminal handoff；已提交 handoff 可在短 verifier lease 之后恢复，但不能越过 challenge、session 或 auth revision 生命周期；
+3. 没有 handoff 时才进入普通 proof 路径，并在解析/解密前要求 `now < verification_expires_at_ms`；
+4. code 窗口锚定独立保存的 `reserved_at_ms`，而不是 retry 时间或可能跨入下一 period 的 commit 时间；
+5. active credential、secret envelope 与上次 step 从 repository 取得；
+6. 写事务前再次读取受控时钟，同时检查 verifier lease 与 challenge expiry。repository 再逐项匹配 bearer digest、context、purpose、user/session/auth revision、challenge revision、claim ID、method、reservation 和 lease；
+7. credential step CAS 与无秘密的 verified handoff 在同一事务提交。handoff 插入、绑定或唯一约束失败会回滚 step；
+8. `Advanced` 与同一 claim 的 `AlreadyVerified` 都可调用 crate-private `VerifiedAuthChallengeEvidence::from_method_verifier` 产生 `mfa` evidence，其他 stale 状态不产生成功证据。
 
-进程若在 step advance 后崩溃，该 code 已被烧毁，但 C3 verifier lease 可独立恢复；不会出现 evidence 已发出而 replay state 未持久化的窗口。时钟回退不会消费 replay 状态。
+`resume_verified_challenge` 是进程重启后的公开入口。调用方提交原 opaque bearer、原 client context 和 claim ID；TOTP service 会丢弃 `PresentAuthChallengeCommand` 自带的时间，改用受控 clock 重新授权，再由 C3 恢复不可伪造的私有 claim。只有 exact TOTP terminal handoff 才能跨 verifier lease 重建 evidence，恢复过程不读取 seed 或 code。错误 bearer、context、claim、method，失效 session/auth revision 和已过 challenge expiry 都返回不可见。transport 提供 future/past `now_ms` 不能提前 expire 或回退持久状态。
+
+进程若在 step/handoff commit 后、C3 success transition 前崩溃，新请求仍可用原 bearer/context 恢复 evidence，再让 C3 完成 success transition。若过期 refresh 先锁到 challenge，普通 verifier 写会因旧 claim/revision 失效而回滚，step 不会被烧毁。时钟回退到 handoff commit 时间之前时，数据库 terminal 事实仍优先于重新校验旧 code，避免把已成功的 claim 误走 failure 路径。
 
 ### 5.5 `disable`
 
@@ -162,7 +166,11 @@ active 与 pending 可以共存，这是换绑时维持可登录性的必要条�
 
 ### 6.4 replay CAS
 
-`advance_totp_step` 不只比较数字。条件更新同时匹配 credential/user/status/revision、expected previous step、auth revision、可选 active session、reservation step window 和非回退 commit clock。两路同一快照并发推进只有一个 `Advanced`，另一个 `Stale`；成功后复制请求和旧 code 都不能再次推进。
+`advance_totp_step` 不只比较数字。事务先锁 user/auth/session，再锁 exact C3 challenge；写前匹配 credential/user/status/revision、expected previous step、bearer/context、purpose、claim/method、auth revision、可选 active session、原 reservation、verifier expiry 和非回退 commit clock。随后 step CAS 与 `totp_verified_handoffs` 插入一起提交。两路同一 claim 并发时，一个返回 `Advanced`，另一个在取得 challenge 锁后读取同一 handoff，返回 `AlreadyVerified`；不会重复推进 step。
+
+handoff 只保存 challenge/claim/revision、credential、accepted step、原 reservation/lease 和 commit 时间，不保存 seed、code 或 proof。C3 的 lease refresh 与 success transition 都只在 exact TOTP handoff 存在时允许跨 verifier lease；没有 terminal 的 claim 到期后照常恢复为 pending/exhausted，旧 verifier 事务再拿锁时得到 `Stale`。
+
+PostgreSQL `READ COMMITTED` 每条语句取得新 snapshot；一条等待 target row 的 `UPDATE ... NOT EXISTS(handoff)` 可能看到 target row 的并发变化，却看不到另一表刚提交的 handoff。`refresh_access_postgres` 先锁 exact challenge，bulk refresh 按 ID 顺序锁定目标 challenge，再用后续 UPDATE 的新 snapshot 判断 handoff。该选择对应 [PostgreSQL transaction isolation 文档](https://www.postgresql.org/docs/17/transaction-iso.html) 对 updating command 与 subsequent command 可见性的说明。barriered PostgreSQL 合同会让 terminal/refresh 依次排队，分别验证 handoff 先赢时 claim 保持可恢复，以及 refresh 先赢时 step/handoff 均不写入。
 
 ### 6.5 disable 原子性
 
@@ -181,7 +189,7 @@ disable 事务 tombstone 该用户所有 pending/active TOTP seed，把对应 cr
 - 每用户最多一个 pending、一个 active 的部分唯一索引；
 - SQLite 的动态类型/规范 UUID 检查与 PostgreSQL native UUID/BIGINT 语义对齐。
 
-repository raw-schema 合同还验证表中不存在 seed/recovery 明文字段，并直接尝试破坏状态约束，确保错误由数据库拒绝而不是只依赖 Rust decoder。
+`totp_verified_handoffs` 以 `(challenge_id, attempt_claim_id)` 为主键，以 `(credential_id, accepted_step)` 保证 replay terminal 唯一；challenge 删除时级联清理，credential 仍被 handoff 引用时不得删除。时间约束要求 `reserved_at_ms <= committed_at_ms < verification_expires_at_ms`。repository raw-schema 合同同时验证 credential 与 handoff 列中不存在 seed/code/proof 明文字段，并直接尝试破坏状态约束，确保错误由数据库拒绝而不是只依赖 Rust decoder。
 
 ## 8. 测试合同
 
@@ -195,11 +203,13 @@ repository raw-schema 合同还验证表中不存在 seed/recovery 明文字段�
 - replacement 成功原子 swap、旧 seed tombstone、恢复码版本递增、auth revision/session 联动；
 - tombstoned envelope 不再可读；
 - reservation 跨 30 秒边界仍按持久预留时间验证；
-- stale auth revision、expired/revoked session 被拒绝；
-- 并发 step CAS 只有一个 winner，随后 replay 拒绝；
+- stale auth revision、错误 claim/context、expired lease 与 revoked session 都不能推进 step；
+- 并发 step CAS 只有一个实际写入者，另一请求读取同一 handoff；
+- commit 后跨 verifier lease 可用 exact bearer/context/claim 恢复，错误 method/claim/context 与 challenge expiry 不可恢复；
+- PostgreSQL barriered expiry race 覆盖 terminal 先锁与 refresh 先锁两种确定顺序，检查 claim/handoff/step 最终状态；
 - stale recent-auth 不能 disable；成功 disable 清除 active/recovery 并推进 auth revision。
 
-Domain/secrets/application 测试另覆盖固定 profile、TTL 边界、RFC vectors、精确 6 位格式、`±1` window、owner/AAD/key rotation、binding factory 的 forced-password-change 拒绝、reservation time 跨步和 clock rollback。
+Domain/secrets/application 测试另覆盖固定 profile、TTL 边界、RFC vectors、精确 6 位格式、`±1` window、owner/AAD/key rotation、binding factory 的 forced-password-change 拒绝、reservation time 跨步、pre-commit clock rollback、terminal commit 后 clock rollback，以及忽略 transport future/past 时间的 fresh bearer resume。
 
 这些是源码合同；只有固定镜像的 workspace all-target tests、Clippy `-D warnings`、真实 PostgreSQL、OpenAPI/SDK/Web/doc/secret scan 全部完成，才可在项目账本登记对应 run 证据。
 

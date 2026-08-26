@@ -6,10 +6,10 @@ use nodecontroll_domain::{
 use nodecontroll_persistence::{
     AuthChallengeAccess, AuthChallengeAttemptFailure, AuthChallengeAttemptOutcome,
     AuthChallengeAttemptReservation, AuthChallengeAttemptReservationOutcome,
-    AuthChallengeClientContext, AuthChallengeConsumption, AuthChallengeConsumptionOutcome,
-    AuthChallengeRotationReservation, AuthChallengeRotationReservationOutcome,
-    AuthChallengeTokenLookup, CreateAuthChallengeOutcome, Database, NewAuthChallenge,
-    PersistenceError,
+    AuthChallengeAttemptResume, AuthChallengeClientContext, AuthChallengeConsumption,
+    AuthChallengeConsumptionOutcome, AuthChallengeRotationReservation,
+    AuthChallengeRotationReservationOutcome, AuthChallengeTokenLookup, CreateAuthChallengeOutcome,
+    Database, NewAuthChallenge, PersistenceError, ResumedAuthChallengeAttempt,
 };
 use nodecontroll_secrets::{AuthChallengeToken, KeyedDigest, Keyring};
 use thiserror::Error;
@@ -48,6 +48,8 @@ pub struct AuthChallengeVerificationClaim {
     access: AuthChallengeAccess,
     claim_id: EntityId,
     method: AuthenticationMethod,
+    reserved_at_ms: i64,
+    verification_expires_at_ms: i64,
     challenge: AuthChallenge,
 }
 
@@ -67,7 +69,24 @@ impl AuthChallengeVerificationClaim {
     /// callers cannot use it to synthesize or alter a verification claim.
     #[must_use]
     pub(crate) const fn reserved_at_ms(&self) -> i64 {
-        self.access.now_ms
+        self.reserved_at_ms
+    }
+
+    #[must_use]
+    pub(crate) const fn verification_expires_at_ms(&self) -> i64 {
+        self.verification_expires_at_ms
+    }
+
+    #[must_use]
+    pub(crate) const fn claim_id(&self) -> EntityId {
+        self.claim_id
+    }
+
+    #[must_use]
+    pub(crate) fn access_at(&self, now_ms: i64) -> AuthChallengeAccess {
+        let mut access = self.access.clone();
+        access.now_ms = now_ms;
+        access
     }
 
     #[cfg(test)]
@@ -75,6 +94,7 @@ impl AuthChallengeVerificationClaim {
         challenge: AuthChallenge,
         method: AuthenticationMethod,
         reserved_at_ms: i64,
+        verification_expires_at_ms: i64,
     ) -> Self {
         Self {
             access: AuthChallengeAccess {
@@ -86,6 +106,8 @@ impl AuthChallengeVerificationClaim {
             },
             claim_id: EntityId::new(),
             method,
+            reserved_at_ms,
+            verification_expires_at_ms,
             challenge,
         }
     }
@@ -207,6 +229,11 @@ pub trait AuthChallengePort: Send + Sync {
         reservation: AuthChallengeAttemptReservation,
     ) -> Result<AuthChallengeAttemptReservationOutcome, AuthChallengePortError>;
 
+    async fn resume_attempt(
+        &self,
+        resume: AuthChallengeAttemptResume,
+    ) -> Result<Option<ResumedAuthChallengeAttempt>, AuthChallengePortError>;
+
     async fn record_failure(
         &self,
         failure: AuthChallengeAttemptFailure,
@@ -257,6 +284,15 @@ impl AuthChallengePort for Database {
         reservation: AuthChallengeAttemptReservation,
     ) -> Result<AuthChallengeAttemptReservationOutcome, AuthChallengePortError> {
         self.reserve_auth_challenge_attempt(&reservation)
+            .await
+            .map_err(map_persistence_error)
+    }
+
+    async fn resume_attempt(
+        &self,
+        resume: AuthChallengeAttemptResume,
+    ) -> Result<Option<ResumedAuthChallengeAttempt>, AuthChallengePortError> {
+        self.resume_auth_challenge_attempt(&resume)
             .await
             .map_err(map_persistence_error)
     }
@@ -399,11 +435,15 @@ where
             .await?
         {
             AuthChallengeAttemptReservationOutcome::Reserved(challenge) => {
+                let verification_expires_at_ms =
+                    verification_expires_at_ms.min(challenge.expires_at_ms);
                 Ok(AuthChallengeReservationOutcome::Reserved(Box::new(
                     AuthChallengeVerificationClaim {
                         access,
                         claim_id,
                         method,
+                        reserved_at_ms: now_ms,
+                        verification_expires_at_ms,
                         challenge,
                     },
                 )))
@@ -430,6 +470,39 @@ where
             })
             .await
             .map_err(Into::into)
+    }
+
+    /// Reauthorizes the original opaque bearer/context and restores only its exact persisted
+    /// verifier claim. A method-specific terminal handoff may pin the claim beyond the verifier
+    /// lease, but never beyond the enclosing challenge or principal/session lifetime.
+    pub(crate) async fn resume_verification_claim(
+        &self,
+        presentation: PresentAuthChallengeCommand,
+        claim_id: EntityId,
+        method: AuthenticationMethod,
+    ) -> Result<Option<AuthChallengeVerificationClaim>, AuthChallengeServiceError> {
+        let Some(access) = self.authorize(presentation).await? else {
+            return Ok(None);
+        };
+        let Some(resumed) = self
+            .port
+            .resume_attempt(AuthChallengeAttemptResume {
+                access: access.clone(),
+                claim_id,
+                method,
+            })
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(AuthChallengeVerificationClaim {
+            access,
+            claim_id,
+            method,
+            reserved_at_ms: resumed.reserved_at_ms,
+            verification_expires_at_ms: resumed.verification_expires_at_ms,
+            challenge: resumed.challenge,
+        }))
     }
 
     pub async fn accept_verified_method(
@@ -662,6 +735,33 @@ mod tests {
             reserved.verification_in_progress = true;
             reserved.revision = Revision::from_value(1);
             Ok(AuthChallengeAttemptReservationOutcome::Reserved(reserved))
+        }
+
+        async fn resume_attempt(
+            &self,
+            resume: AuthChallengeAttemptResume,
+        ) -> Result<Option<ResumedAuthChallengeAttempt>, AuthChallengePortError> {
+            let reserved = self.reserved.lock();
+            let created = self.created.lock();
+            let (Ok(reserved), Ok(created)) = (reserved, created) else {
+                return Ok(None);
+            };
+            let (Some(reservation), Some(created)) = (reserved.as_ref(), created.as_ref()) else {
+                return Ok(None);
+            };
+            if reservation.claim_id != resume.claim_id || reservation.method != resume.method {
+                return Ok(None);
+            }
+            let mut challenge = project_new(created);
+            challenge.status = AuthChallengeStatus::VerificationPending;
+            challenge.attempts_used = 1;
+            challenge.verification_in_progress = true;
+            challenge.revision = Revision::from_value(1);
+            Ok(Some(ResumedAuthChallengeAttempt {
+                challenge,
+                reserved_at_ms: reservation.access.now_ms,
+                verification_expires_at_ms: reservation.verification_expires_at_ms,
+            }))
         }
 
         async fn record_failure(
@@ -1014,6 +1114,8 @@ mod tests {
                 },
                 claim_id: EntityId::new(),
                 method,
+                reserved_at_ms: 2,
+                verification_expires_at_ms: 50,
                 challenge,
             };
             assert_eq!(
