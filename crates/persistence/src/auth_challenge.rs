@@ -7,8 +7,6 @@ use sqlx::FromRow;
 
 use super::{AuthHmac, Database, PersistenceError, database_key_version, database_revision};
 
-const OPEN_STATUSES_SQL: &str = "'pending','verification_pending','rotation_pending','exhausted'";
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthChallengeClientContext {
     pub key_version: Option<u32>,
@@ -243,9 +241,9 @@ impl Database {
                     transaction.commit().await?;
                     None
                 } else {
-                    let open: Option<i64> = sqlx::query_scalar(&format!(
-                        "SELECT 1 FROM auth_challenges WHERE user_id=? AND purpose=? AND status IN ({OPEN_STATUSES_SQL}) LIMIT 1"
-                    ))
+                    let open: Option<i64> = sqlx::query_scalar(
+                        "SELECT 1 FROM auth_challenges WHERE user_id=? AND purpose=? AND status IN ('pending','verification_pending','rotation_pending','exhausted') LIMIT 1"
+                    )
                     .bind(challenge.user_id.to_string())
                     .bind(challenge.purpose.as_str())
                     .fetch_optional(&mut *transaction)
@@ -321,9 +319,9 @@ impl Database {
                     transaction.commit().await?;
                     None
                 } else {
-                    let open: Option<i64> = sqlx::query_scalar(&format!(
-                        "SELECT 1::BIGINT FROM auth_challenges WHERE user_id=$1 AND purpose=$2 AND status IN ({OPEN_STATUSES_SQL}) LIMIT 1"
-                    ))
+                    let open: Option<i64> = sqlx::query_scalar(
+                        "SELECT 1::BIGINT FROM auth_challenges WHERE user_id=$1 AND purpose=$2 AND status IN ('pending','verification_pending','rotation_pending','exhausted') LIMIT 1"
+                    )
                     .bind(challenge.user_id.into_uuid())
                     .bind(challenge.purpose.as_str())
                     .fetch_optional(&mut *transaction)
@@ -365,9 +363,9 @@ impl Database {
             .map(database_key_version)
             .transpose()?;
         let row = match self {
-            Self::Sqlite(pool) => sqlx::query_as::<_, TokenDigestRow>(&format!(
-                "SELECT token_key_version,token_hmac FROM auth_challenges WHERE id=? AND context_key_version IS ? AND client_network_hmac IS ? AND user_agent_hash IS ? AND status IN ({OPEN_STATUSES_SQL}) AND created_at_ms<=? AND expires_at_ms>? AND EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) AND (session_id IS NULL OR EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>?))"
-            ))
+            Self::Sqlite(pool) => sqlx::query_as::<_, TokenDigestRow>(
+                "SELECT token_key_version,token_hmac FROM auth_challenges WHERE id=? AND context_key_version IS ? AND client_network_hmac IS ? AND user_agent_hash IS ? AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=? AND expires_at_ms>? AND EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) AND (session_id IS NULL OR EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>?))"
+            )
             .bind(lookup.id.to_string())
             .bind(context_key_version)
             .bind(
@@ -391,9 +389,9 @@ impl Database {
             .bind(lookup.now_ms)
             .fetch_optional(pool)
             .await?,
-            Self::Postgres(pool) => sqlx::query_as::<_, TokenDigestRow>(&format!(
-                "SELECT token_key_version,token_hmac FROM auth_challenges WHERE id=$1 AND context_key_version IS NOT DISTINCT FROM $2 AND client_network_hmac IS NOT DISTINCT FROM $3 AND user_agent_hash IS NOT DISTINCT FROM $4 AND status IN ({OPEN_STATUSES_SQL}) AND created_at_ms<=$5 AND expires_at_ms>$6 AND EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) AND (session_id IS NULL OR EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=$7 AND s.idle_expires_at_ms>$8 AND s.absolute_expires_at_ms>$9))"
-            ))
+            Self::Postgres(pool) => sqlx::query_as::<_, TokenDigestRow>(
+                "SELECT token_key_version,token_hmac FROM auth_challenges WHERE id=$1 AND context_key_version IS NOT DISTINCT FROM $2 AND client_network_hmac IS NOT DISTINCT FROM $3 AND user_agent_hash IS NOT DISTINCT FROM $4 AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=$5 AND expires_at_ms>$6 AND EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) AND (session_id IS NULL OR EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=$7 AND s.idle_expires_at_ms>$8 AND s.absolute_expires_at_ms>$9))"
+            )
             .bind(lookup.id.into_uuid())
             .bind(context_key_version)
             .bind(
@@ -1361,13 +1359,14 @@ async fn set_auth_revision(database: &Database, user_id: EntityId, revision: Rev
     let Ok(value) = value else {
         return;
     };
-    let result = match database {
+    let result: Result<u64, sqlx::Error> = match database {
         Database::Sqlite(pool) => {
             sqlx::query("UPDATE user_auth_state SET auth_revision=? WHERE user_id=?")
                 .bind(value)
                 .bind(user_id.to_string())
                 .execute(pool)
                 .await
+                .map(|changed| changed.rows_affected())
         }
         Database::Postgres(pool) => {
             sqlx::query("UPDATE user_auth_state SET auth_revision=$1 WHERE user_id=$2")
@@ -1375,9 +1374,10 @@ async fn set_auth_revision(database: &Database, user_id: EntityId, revision: Rev
                 .bind(user_id.into_uuid())
                 .execute(pool)
                 .await
+                .map(|changed| changed.rows_affected())
         }
     };
-    assert!(matches!(result, Ok(ref changed) if changed.rows_affected() == 1));
+    assert!(matches!(result, Ok(1)));
 }
 
 #[cfg(test)]
@@ -1399,7 +1399,7 @@ async fn insert_test_session(
     };
     let token_hmac = [seed; 32];
     let csrf_hmac = [seed.wrapping_add(1); 32];
-    let result = match database {
+    let result: Result<u64, sqlx::Error> = match database {
         Database::Sqlite(pool) => sqlx::query(
             "INSERT INTO auth_sessions (id,user_id,token_key_version,token_hmac,csrf_key_version,csrf_hmac,auth_revision,auth_level,status,created_at_ms,authenticated_at_ms,recent_auth_at_ms,last_seen_at_ms,idle_expires_at_ms,absolute_expires_at_ms,ip_prefix_key_version,ip_prefix_hmac,user_agent_hash,revoked_at_ms,revoked_reason,revision) VALUES (?,?,1,?,1,?,?,'password','active',?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL,0)",
         )
@@ -1415,7 +1415,8 @@ async fn insert_test_session(
         .bind(idle_expires_at_ms)
         .bind(absolute_expires_at_ms)
         .execute(pool)
-        .await,
+        .await
+        .map(|changed| changed.rows_affected()),
         Database::Postgres(pool) => sqlx::query(
             "INSERT INTO auth_sessions (id,user_id,token_key_version,token_hmac,csrf_key_version,csrf_hmac,auth_revision,auth_level,status,created_at_ms,authenticated_at_ms,recent_auth_at_ms,last_seen_at_ms,idle_expires_at_ms,absolute_expires_at_ms,ip_prefix_key_version,ip_prefix_hmac,user_agent_hash,revoked_at_ms,revoked_reason,revision) VALUES ($1,$2,1,$3,1,$4,$5,'password','active',$6,$7,$8,$9,$10,$11,NULL,NULL,NULL,NULL,NULL,0)",
         )
@@ -1431,30 +1432,33 @@ async fn insert_test_session(
         .bind(idle_expires_at_ms)
         .bind(absolute_expires_at_ms)
         .execute(pool)
-        .await,
+        .await
+        .map(|changed| changed.rows_affected()),
     };
-    assert!(matches!(result, Ok(ref changed) if changed.rows_affected() == 1));
+    assert!(matches!(result, Ok(1)));
 }
 
 #[cfg(test)]
 async fn revoke_test_session(database: &Database, session_id: EntityId, revoked_at_ms: i64) {
-    let result = match database {
+    let result: Result<u64, sqlx::Error> = match database {
         Database::Sqlite(pool) => sqlx::query(
             "UPDATE auth_sessions SET status='revoked',revoked_at_ms=?,revoked_reason='administrator',revision=revision+1 WHERE id=?",
         )
         .bind(revoked_at_ms)
         .bind(session_id.to_string())
         .execute(pool)
-        .await,
+        .await
+        .map(|changed| changed.rows_affected()),
         Database::Postgres(pool) => sqlx::query(
             "UPDATE auth_sessions SET status='revoked',revoked_at_ms=$1,revoked_reason='administrator',revision=revision+1 WHERE id=$2",
         )
         .bind(revoked_at_ms)
         .bind(session_id.into_uuid())
         .execute(pool)
-        .await,
+        .await
+        .map(|changed| changed.rows_affected()),
     };
-    assert!(matches!(result, Ok(ref changed) if changed.rows_affected() == 1));
+    assert!(matches!(result, Ok(1)));
 }
 
 #[cfg(test)]
@@ -1684,9 +1688,9 @@ async fn refresh_access_sqlite(
         .user_agent_hash
         .as_ref()
         .map(|value| value.as_slice());
-    sqlx::query(&format!(
-        "UPDATE auth_challenges SET status='expired',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE id=? AND token_key_version=? AND token_hmac=? AND context_key_version IS ? AND client_network_hmac IS ? AND user_agent_hash IS ? AND status IN ({OPEN_STATUSES_SQL}) AND created_at_ms<=? AND expires_at_ms<=?"
-    ))
+    sqlx::query(
+        "UPDATE auth_challenges SET status='expired',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE id=? AND token_key_version=? AND token_hmac=? AND context_key_version IS ? AND client_network_hmac IS ? AND user_agent_hash IS ? AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=? AND expires_at_ms<=?"
+    )
     .bind(access.now_ms)
     .bind(access.id.to_string())
     .bind(token_key_version)
@@ -1698,9 +1702,9 @@ async fn refresh_access_sqlite(
     .bind(access.now_ms)
     .execute(&mut **transaction)
     .await?;
-    sqlx::query(&format!(
-        "UPDATE auth_challenges SET status='invalidated',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE id=? AND token_key_version=? AND token_hmac=? AND context_key_version IS ? AND client_network_hmac IS ? AND user_agent_hash IS ? AND status IN ({OPEN_STATUSES_SQL}) AND created_at_ms<=? AND expires_at_ms>? AND (NOT EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) OR (session_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>?)))"
-    ))
+    sqlx::query(
+        "UPDATE auth_challenges SET status='invalidated',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE id=? AND token_key_version=? AND token_hmac=? AND context_key_version IS ? AND client_network_hmac IS ? AND user_agent_hash IS ? AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=? AND expires_at_ms>? AND (NOT EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) OR (session_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>?)))"
+    )
     .bind(access.now_ms)
     .bind(access.id.to_string())
     .bind(token_key_version)
@@ -1768,9 +1772,9 @@ async fn refresh_access_postgres(
         .user_agent_hash
         .as_ref()
         .map(|value| value.as_slice());
-    sqlx::query(&format!(
-        "UPDATE auth_challenges SET status='expired',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE id=$2 AND token_key_version=$3 AND token_hmac=$4 AND context_key_version IS NOT DISTINCT FROM $5 AND client_network_hmac IS NOT DISTINCT FROM $6 AND user_agent_hash IS NOT DISTINCT FROM $7 AND status IN ({OPEN_STATUSES_SQL}) AND created_at_ms<=$8 AND expires_at_ms<=$9"
-    ))
+    sqlx::query(
+        "UPDATE auth_challenges SET status='expired',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE id=$2 AND token_key_version=$3 AND token_hmac=$4 AND context_key_version IS NOT DISTINCT FROM $5 AND client_network_hmac IS NOT DISTINCT FROM $6 AND user_agent_hash IS NOT DISTINCT FROM $7 AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=$8 AND expires_at_ms<=$9"
+    )
     .bind(access.now_ms)
     .bind(access.id.into_uuid())
     .bind(token_key_version)
@@ -1782,9 +1786,9 @@ async fn refresh_access_postgres(
     .bind(access.now_ms)
     .execute(&mut **transaction)
     .await?;
-    sqlx::query(&format!(
-        "UPDATE auth_challenges SET status='invalidated',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE id=$2 AND token_key_version=$3 AND token_hmac=$4 AND context_key_version IS NOT DISTINCT FROM $5 AND client_network_hmac IS NOT DISTINCT FROM $6 AND user_agent_hash IS NOT DISTINCT FROM $7 AND status IN ({OPEN_STATUSES_SQL}) AND created_at_ms<=$8 AND expires_at_ms>$9 AND (NOT EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) OR (session_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=$10 AND s.idle_expires_at_ms>$11 AND s.absolute_expires_at_ms>$12)))"
-    ))
+    sqlx::query(
+        "UPDATE auth_challenges SET status='invalidated',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE id=$2 AND token_key_version=$3 AND token_hmac=$4 AND context_key_version IS NOT DISTINCT FROM $5 AND client_network_hmac IS NOT DISTINCT FROM $6 AND user_agent_hash IS NOT DISTINCT FROM $7 AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=$8 AND expires_at_ms>$9 AND (NOT EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) OR (session_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=$10 AND s.idle_expires_at_ms>$11 AND s.absolute_expires_at_ms>$12)))"
+    )
     .bind(access.now_ms)
     .bind(access.id.into_uuid())
     .bind(token_key_version)
@@ -1838,9 +1842,9 @@ async fn refresh_user_purpose_sqlite(
     purpose: AuthChallengePurpose,
     now_ms: i64,
 ) -> Result<(), PersistenceError> {
-    sqlx::query(&format!(
-        "UPDATE auth_challenges SET status='expired',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE user_id=? AND purpose=? AND status IN ({OPEN_STATUSES_SQL}) AND created_at_ms<=? AND expires_at_ms<=?"
-    ))
+    sqlx::query(
+        "UPDATE auth_challenges SET status='expired',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE user_id=? AND purpose=? AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=? AND expires_at_ms<=?"
+    )
     .bind(now_ms)
     .bind(user_id.to_string())
     .bind(purpose.as_str())
@@ -1848,9 +1852,9 @@ async fn refresh_user_purpose_sqlite(
     .bind(now_ms)
     .execute(&mut **transaction)
     .await?;
-    sqlx::query(&format!(
-        "UPDATE auth_challenges SET status='invalidated',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE user_id=? AND purpose=? AND status IN ({OPEN_STATUSES_SQL}) AND created_at_ms<=? AND expires_at_ms>? AND (NOT EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) OR (session_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>?)))"
-    ))
+    sqlx::query(
+        "UPDATE auth_challenges SET status='invalidated',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=? WHERE user_id=? AND purpose=? AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=? AND expires_at_ms>? AND (NOT EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) OR (session_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>?)))"
+    )
     .bind(now_ms)
     .bind(user_id.to_string())
     .bind(purpose.as_str())
@@ -1892,9 +1896,9 @@ async fn refresh_user_purpose_postgres(
     purpose: AuthChallengePurpose,
     now_ms: i64,
 ) -> Result<(), PersistenceError> {
-    sqlx::query(&format!(
-        "UPDATE auth_challenges SET status='expired',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE user_id=$2 AND purpose=$3 AND status IN ({OPEN_STATUSES_SQL}) AND created_at_ms<=$4 AND expires_at_ms<=$5"
-    ))
+    sqlx::query(
+        "UPDATE auth_challenges SET status='expired',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE user_id=$2 AND purpose=$3 AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=$4 AND expires_at_ms<=$5"
+    )
     .bind(now_ms)
     .bind(user_id.into_uuid())
     .bind(purpose.as_str())
@@ -1902,9 +1906,9 @@ async fn refresh_user_purpose_postgres(
     .bind(now_ms)
     .execute(&mut **transaction)
     .await?;
-    sqlx::query(&format!(
-        "UPDATE auth_challenges SET status='invalidated',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE user_id=$2 AND purpose=$3 AND status IN ({OPEN_STATUSES_SQL}) AND created_at_ms<=$4 AND expires_at_ms>$5 AND (NOT EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) OR (session_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=$6 AND s.idle_expires_at_ms>$7 AND s.absolute_expires_at_ms>$8)))"
-    ))
+    sqlx::query(
+        "UPDATE auth_challenges SET status='invalidated',attempt_claim_id=NULL,attempted_method=NULL,attempt_started_at_ms=NULL,attempt_expires_at_ms=NULL,revision=revision+1,updated_at_ms=$1 WHERE user_id=$2 AND purpose=$3 AND status IN ('pending','verification_pending','rotation_pending','exhausted') AND created_at_ms<=$4 AND expires_at_ms>$5 AND (NOT EXISTS(SELECT 1 FROM users AS u JOIN user_auth_state AS uas ON uas.user_id=u.id WHERE u.id=auth_challenges.user_id AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=auth_challenges.auth_revision) OR (session_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM auth_sessions AS s WHERE s.id=auth_challenges.session_id AND s.user_id=auth_challenges.user_id AND s.status='active' AND s.auth_revision=auth_challenges.auth_revision AND s.last_seen_at_ms<=$6 AND s.idle_expires_at_ms>$7 AND s.absolute_expires_at_ms>$8)))"
+    )
     .bind(now_ms)
     .bind(user_id.into_uuid())
     .bind(purpose.as_str())
