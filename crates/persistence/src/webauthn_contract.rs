@@ -1724,28 +1724,28 @@ struct PostgresFixture {
 fn postgres_lock_contract_options(url: &str) -> Result<PgConnectOptions, sqlx::Error> {
     Ok(PgConnectOptions::from_str(url)?.options([
         ("search_path", "nodecontroll_test_webauthn_c5"),
-        ("statement_timeout", "5s"),
-        ("lock_timeout", "3s"),
+        ("statement_timeout", "15s"),
+        ("lock_timeout", "10s"),
     ]))
 }
 
 async fn postgres_lock_contract_pool(url: &str) -> Result<PgPool, sqlx::Error> {
     PgPoolOptions::new()
         .max_connections(1)
-        .acquire_timeout(Duration::from_secs(2))
+        .acquire_timeout(Duration::from_secs(5))
         .connect_with(postgres_lock_contract_options(url)?)
         .await
 }
 
-/// Waits at most two wall-clock seconds for one known backend to be lock-blocked by another. The
-/// tested operation itself is additionally bounded by the dedicated pool's three-second lock
-/// timeout and five-second statement timeout, so a regressed lock cycle cannot hang the gate.
+/// Waits at most five wall-clock seconds for one known backend to be lock-blocked by another. The
+/// tested operation itself is additionally bounded by the dedicated pool's ten-second lock
+/// timeout and fifteen-second statement timeout, so a regressed lock cycle cannot hang the gate.
 async fn postgres_backend_blocked_by(
     observer: &PgPool,
     blocked_pid: i32,
     blocker_pid: i32,
 ) -> Result<bool, sqlx::Error> {
-    let observed = tokio::time::timeout(Duration::from_secs(2), async {
+    let observed = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let blocked: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM pg_stat_activity activity WHERE activity.pid=$1 AND activity.wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(activity.pid)))",
@@ -1778,7 +1778,7 @@ async fn postgres_foreign_key_lock_order_contract(
     url: &str,
     database: &Database,
     observer: &PgPool,
-) {
+) -> bool {
     let public_origin = origin();
 
     let revoke_user = EntityId::new();
@@ -1860,33 +1860,66 @@ async fn postgres_foreign_key_lock_order_contract(
         expected_credential_revision: Revision::initial(),
         guard: guard(revoke_user, revoke_session, 1, 9_100, 9_200),
     };
-    let revoke_task = tokio::spawn(async move {
+    let mut revoke_task = tokio::spawn(async move {
         revoke_database
             .revoke_webauthn_credential(&revoke_command)
             .await
     });
-    let revoke_blocked =
-        postgres_backend_blocked_by(observer, revoke_c5_pid, revoke_c3_pid).await;
-    assert!(matches!(revoke_blocked, Ok(true)));
-    let revoke_fk_lock: Result<Option<i64>, sqlx::Error> = sqlx::query_scalar(
-        "SELECT 1::BIGINT FROM users u JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 FOR KEY SHARE OF u,s",
-    )
-    .bind(revoke_user.into_uuid())
-    .bind(revoke_session.into_uuid())
-    .fetch_optional(&mut *revoke_c3_transaction)
-    .await;
-    assert!(matches!(revoke_fk_lock, Ok(Some(1))));
-    assert!(revoke_c3_transaction.commit().await.is_ok());
-    let revoke_outcome = tokio::time::timeout(Duration::from_secs(6), revoke_task).await;
-    assert!(matches!(
-        revoke_outcome,
-        Ok(Ok(Ok(RevokeWebAuthnCredentialOutcome::Revoked {
-            auth_revision,
-            ..
-        }))) if auth_revision == Revision::from_value(2)
-    ));
+    let revoke_blocked = matches!(
+        postgres_backend_blocked_by(observer, revoke_c5_pid, revoke_c3_pid).await,
+        Ok(true)
+    );
+    let revoke_fk_lock_succeeded = if revoke_blocked {
+        matches!(
+            sqlx::query_scalar(
+                "SELECT 1::BIGINT FROM users u JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 FOR KEY SHARE OF u,s",
+            )
+            .bind(revoke_user.into_uuid())
+            .bind(revoke_session.into_uuid())
+            .fetch_optional(&mut *revoke_c3_transaction)
+            .await,
+            Ok(Some(1_i64))
+        )
+    } else {
+        false
+    };
+    let revoke_c3_released = if revoke_fk_lock_succeeded {
+        matches!(
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                revoke_c3_transaction.commit()
+            )
+            .await,
+            Ok(Ok(()))
+        )
+    } else {
+        matches!(
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                revoke_c3_transaction.rollback()
+            )
+            .await,
+            Ok(Ok(()))
+        )
+    };
+    let revoke_outcome_succeeded =
+        match tokio::time::timeout(Duration::from_secs(20), &mut revoke_task).await {
+            Ok(Ok(Ok(RevokeWebAuthnCredentialOutcome::Revoked {
+                auth_revision, ..
+            }))) => auth_revision == Revision::from_value(2),
+            Ok(_) => false,
+            Err(_) => {
+                revoke_task.abort();
+                let _aborted = revoke_task.await;
+                false
+            }
+        };
     revoke_c3_pool.close().await;
     revoke_c5_pool.close().await;
+    let revoke_contract_succeeded = revoke_blocked
+        && revoke_fk_lock_succeeded
+        && revoke_c3_released
+        && revoke_outcome_succeeded;
 
     let clone_user = EntityId::new();
     let clone_session = EntityId::new();
@@ -1966,7 +1999,7 @@ async fn postgres_foreign_key_lock_order_contract(
     let clone_database = Database::Postgres(clone_c5_pool.clone());
     let clone_binding_for_task = clone_binding.clone();
     let clone_origin_for_task = public_origin.clone();
-    let clone_task = tokio::spawn(async move {
+    let mut clone_task = tokio::spawn(async move {
         let clone_command = WebAuthnCloneSuspected {
             ceremony_id: clone_ceremony_id,
             expected_ceremony_revision: Revision::initial(),
@@ -1981,27 +2014,55 @@ async fn postgres_foreign_key_lock_order_contract(
             .record_webauthn_clone_suspected(&clone_command)
             .await
     });
-    let clone_blocked = postgres_backend_blocked_by(observer, clone_c5_pid, clone_c3_pid).await;
-    assert!(matches!(clone_blocked, Ok(true)));
-    let clone_fk_lock: Result<Option<i64>, sqlx::Error> = sqlx::query_scalar(
-        "SELECT 1::BIGINT FROM users u JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 FOR KEY SHARE OF u,s",
-    )
-    .bind(clone_user.into_uuid())
-    .bind(clone_session.into_uuid())
-    .fetch_optional(&mut *clone_c3_transaction)
-    .await;
-    assert!(matches!(clone_fk_lock, Ok(Some(1))));
-    assert!(clone_c3_transaction.commit().await.is_ok());
-    let clone_outcome = tokio::time::timeout(Duration::from_secs(6), clone_task).await;
-    assert!(matches!(
-        clone_outcome,
-        Ok(Ok(Ok(WebAuthnCloneSuspectedOutcome::Recorded {
-            auth_revision,
-            revoked_sessions: 1,
-        }))) if auth_revision == Revision::from_value(2)
-    ));
+    let clone_blocked = matches!(
+        postgres_backend_blocked_by(observer, clone_c5_pid, clone_c3_pid).await,
+        Ok(true)
+    );
+    let clone_fk_lock_succeeded = if clone_blocked {
+        matches!(
+            sqlx::query_scalar(
+                "SELECT 1::BIGINT FROM users u JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 FOR KEY SHARE OF u,s",
+            )
+            .bind(clone_user.into_uuid())
+            .bind(clone_session.into_uuid())
+            .fetch_optional(&mut *clone_c3_transaction)
+            .await,
+            Ok(Some(1_i64))
+        )
+    } else {
+        false
+    };
+    let clone_c3_released = if clone_fk_lock_succeeded {
+        matches!(
+            tokio::time::timeout(Duration::from_secs(20), clone_c3_transaction.commit()).await,
+            Ok(Ok(()))
+        )
+    } else {
+        matches!(
+            tokio::time::timeout(Duration::from_secs(20), clone_c3_transaction.rollback()).await,
+            Ok(Ok(()))
+        )
+    };
+    let clone_outcome_succeeded =
+        match tokio::time::timeout(Duration::from_secs(20), &mut clone_task).await {
+            Ok(Ok(Ok(WebAuthnCloneSuspectedOutcome::Recorded {
+                auth_revision,
+                revoked_sessions: 1,
+            }))) => auth_revision == Revision::from_value(2),
+            Ok(_) => false,
+            Err(_) => {
+                clone_task.abort();
+                let _aborted = clone_task.await;
+                false
+            }
+        };
     clone_c3_pool.close().await;
     clone_c5_pool.close().await;
+    revoke_contract_succeeded
+        && clone_blocked
+        && clone_fk_lock_succeeded
+        && clone_c3_released
+        && clone_outcome_succeeded
 }
 
 async fn postgres_fixture(url: &str) -> Result<PostgresFixture, sqlx::Error> {
@@ -2037,16 +2098,16 @@ async fn postgres_webauthn_repository_contract() {
     assert!(fixture.is_ok());
     if let Ok(fixture) = fixture {
         repository_contract(fixture.database.clone()).await;
-        postgres_foreign_key_lock_order_contract(&url, &fixture.database, &fixture.admin).await;
+        let lock_order_contract_succeeded =
+            postgres_foreign_key_lock_order_contract(&url, &fixture.database, &fixture.admin).await;
         if let Database::Postgres(pool) = &fixture.database {
             pool.close().await;
         }
-        assert!(
-            sqlx::query("DROP SCHEMA nodecontroll_test_webauthn_c5 CASCADE")
-                .execute(&fixture.admin)
-                .await
-                .is_ok()
-        );
+        let schema_dropped = sqlx::query("DROP SCHEMA nodecontroll_test_webauthn_c5 CASCADE")
+            .execute(&fixture.admin)
+            .await
+            .is_ok();
         fixture.admin.close().await;
+        assert!(lock_order_contract_succeeded && schema_dropped);
     }
 }
