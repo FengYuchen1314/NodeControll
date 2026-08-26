@@ -5,7 +5,11 @@ use nodecontroll_domain::{
     EntityId, Revision, WebAuthnCredential, WebAuthnCredentialId, WebAuthnCredentialStatus,
     WebAuthnNickname, WebAuthnOrigin, WebAuthnTransport, WebAuthnUserHandle,
 };
-use nodecontroll_secrets::SecretEnvelope;
+use nodecontroll_secrets::{
+    SecretBinding, SecretEnvelope, SecretOwnerKind, SecretPurpose,
+    WEBAUTHN_AUTHENTICATION_STATE_SCHEMA_VERSION, WEBAUTHN_CREDENTIAL_MATERIAL_SCHEMA_VERSION,
+    WEBAUTHN_REGISTRATION_STATE_SCHEMA_VERSION,
+};
 use sqlx::{PgPool, Row, postgres::PgConnectOptions, postgres::PgPoolOptions};
 
 use crate::{
@@ -15,9 +19,10 @@ use crate::{
     AuthChallengeConsumptionOutcome,
     BeginWebAuthnAuthenticationOutcome, BeginWebAuthnRegistrationOutcome,
     CompleteWebAuthnRegistration, CompleteWebAuthnRegistrationOutcome, ConnectionSettings,
-    CreateAuthChallengeOutcome, Database, NewAuthChallenge, NewWebAuthnAuthenticationCeremony,
-    NewWebAuthnCredential, NewWebAuthnRegistrationCeremony, RenameWebAuthnCredential,
-    PersistenceError, RevokeWebAuthnCredential, RevokeWebAuthnCredentialOutcome,
+    CreateAuthChallengeOutcome, Database, NewAuthChallenge, NewSecretRecord,
+    NewWebAuthnAuthenticationCeremony, NewWebAuthnCredential, NewWebAuthnRegistrationCeremony,
+    PersistenceError, RenameWebAuthnCredential, RevokeWebAuthnCredential,
+    RevokeWebAuthnCredentialOutcome, StoredSecretRecord,
     WebAuthnAuthenticationCommit, WebAuthnAuthenticationCommitOutcome,
     WebAuthnAuthenticationHandoff, WebAuthnChallengeBinding, WebAuthnCloneSuspected,
     WebAuthnCloneSuspectedOutcome, WebAuthnSessionGuard,
@@ -525,9 +530,135 @@ async fn schema_contract(database: &Database) {
     assert!(!columns.iter().any(|column| forbidden.contains(&column.as_str())));
 }
 
+async fn secret_record_counts(database: &Database) -> Result<(i64, i64), sqlx::Error> {
+    let query = "SELECT COUNT(*),SUM(CASE WHEN purpose IN ('webauthn_registration_state','webauthn_authentication_state','webauthn_credential_material') THEN 1 ELSE 0 END) FROM secret_records";
+    match database {
+        Database::Sqlite(pool) => sqlx::query_as(query).fetch_one(pool).await,
+        Database::Postgres(pool) => sqlx::query_as(query).fetch_one(pool).await,
+    }
+}
+
+async fn generic_secret_singleton_boundary_contract(database: &Database) {
+    let original_candidate = NewSecretRecord {
+        id: EntityId::new(),
+        binding: SecretBinding::root_key_canary(),
+        envelope: envelope(30),
+        created_at_ms: 900,
+        rotated_from: None,
+    };
+    let original = database.ensure_secret_record(&original_candidate).await;
+    assert!(original.is_ok());
+    let Ok(original) = original else {
+        return;
+    };
+    assert!(matches!(secret_record_counts(database).await, Ok((1, 0))));
+
+    let cases = [
+        (
+            SecretPurpose::WebAuthnRegistrationState,
+            SecretOwnerKind::WebAuthnCeremony,
+            WEBAUTHN_REGISTRATION_STATE_SCHEMA_VERSION,
+            40_u8,
+        ),
+        (
+            SecretPurpose::WebAuthnAuthenticationState,
+            SecretOwnerKind::WebAuthnCeremony,
+            WEBAUTHN_AUTHENTICATION_STATE_SCHEMA_VERSION,
+            50_u8,
+        ),
+        (
+            SecretPurpose::WebAuthnCredentialMaterial,
+            SecretOwnerKind::WebAuthnCredential,
+            WEBAUTHN_CREDENTIAL_MATERIAL_SCHEMA_VERSION,
+            60_u8,
+        ),
+    ];
+
+    for (purpose, owner_kind, schema_version, marker) in cases {
+        let binding = SecretBinding::new(
+            purpose,
+            owner_kind,
+            EntityId::new().into_uuid(),
+            schema_version,
+        );
+        assert!(binding.is_ok());
+        let Ok(binding) = binding else {
+            continue;
+        };
+        let transaction_owned = NewSecretRecord {
+            id: EntityId::new(),
+            binding,
+            envelope: envelope(marker),
+            created_at_ms: 1_000 + i64::from(marker),
+            rotated_from: None,
+        };
+        assert!(matches!(
+            database.ensure_secret_record(&transaction_owned).await,
+            Err(PersistenceError::InvalidSecretRecord)
+        ));
+        assert!(matches!(
+            database.active_secret_record(binding).await,
+            Err(PersistenceError::InvalidSecretRecord)
+        ));
+
+        let transaction_owned_expected = StoredSecretRecord {
+            id: transaction_owned.id,
+            binding,
+            envelope: transaction_owned.envelope.clone(),
+            created_at_ms: transaction_owned.created_at_ms,
+            rotated_from: None,
+            revision: Revision::initial(),
+        };
+        let transaction_owned_successor = NewSecretRecord {
+            id: EntityId::new(),
+            binding,
+            envelope: envelope(marker.wrapping_add(1)),
+            created_at_ms: transaction_owned.created_at_ms + 1,
+            rotated_from: Some(transaction_owned_expected.id),
+        };
+        assert!(matches!(
+            database
+                .rotate_secret_record(
+                    &transaction_owned_expected,
+                    &transaction_owned_successor,
+                    transaction_owned_successor.created_at_ms,
+                )
+                .await,
+            Err(PersistenceError::InvalidSecretRecord)
+        ));
+
+        let transaction_owned_replacement = NewSecretRecord {
+            id: EntityId::new(),
+            binding,
+            envelope: envelope(marker.wrapping_add(2)),
+            created_at_ms: transaction_owned.created_at_ms + 2,
+            rotated_from: Some(original.id),
+        };
+        assert!(matches!(
+            database
+                .rotate_secret_record(
+                    &original,
+                    &transaction_owned_replacement,
+                    transaction_owned_replacement.created_at_ms,
+                )
+                .await,
+            Err(PersistenceError::InvalidSecretRecord)
+        ));
+    }
+
+    assert!(matches!(secret_record_counts(database).await, Ok((1, 0))));
+    assert!(matches!(
+        database
+            .active_secret_record(SecretBinding::root_key_canary())
+            .await,
+        Ok(Some(found)) if found == original
+    ));
+}
+
 async fn repository_contract(database: Database) {
     assert!(database.migrate().await.is_ok());
     schema_contract(&database).await;
+    generic_secret_singleton_boundary_contract(&database).await;
 
     let user_id = EntityId::new();
     let actor_session_id = EntityId::new();
