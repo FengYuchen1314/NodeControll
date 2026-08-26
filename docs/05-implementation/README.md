@@ -11,5 +11,6 @@
 - [WP-02/P5.3 密码登录与服务端会话纵切](./WP02_AUTH_SESSION_SLICE.md)：共享登录限流、全路径并发闸门、HMAC 会话、idle/absolute 期限、Origin/Host/CSRF、可信代理、登录/恢复/退出前端状态机；公开 SHA 已通过 Actions + fresh-checkout VPS 正式门。MFA、token、完整 RBAC 与用户生命周期尚未进入本纵切。
 - [WP-02-C 认证安全合同](./WP02_C_AUTHENTICATION_SECURITY_CONTRACT.md)：冻结近期认证、透明 rehash、自助改密码、两类 session rotation、恢复码、TOTP 和 WebAuthn 的状态机与双数据库验收门。该文档是后续纵切的约束，不是完成声明。
 - [WP-02-C1 密码近期认证、改密与会话管理实现](./WP02_C1_PASSWORD_RECENT_AUTH_SESSION_IMPLEMENTATION.md)：逐模块记录 recent-auth、透明 Argon2 rehash、改密、session rotation/管理、API、Vue 状态机、双库事务与测试证据。公开 `3f1bcb49…`、Actions run `32976849583`/artifact `9609917545` 与 fresh-checkout VPS run `20260826T135902729109375Z-p5` 已完成正式验收。
+- [WP-02-C2 持久密钥 canary 与恢复码实现](./WP02_C2_SECRET_RECOVERY_IMPLEMENTATION.md)：typed secret record、有限旧 root-key ring、启动时持久 canary、bootstrap 原子恢复码、只回显一次的管理 API、用途隔离 HMAC、set version 与并发单次消费。代码和测试源码已进入候选，尚未取得同 SHA Actions/VPS 证据。
 
 功能只有在 [需求追踪矩阵](../04-rebuild/REQUIREMENTS_TRACEABILITY.md) 填入实现路径、VPS run 并标记 `verified` 后才算完成。当前工程纵切用于建立质量门，不代表 358 项产品能力已经实现。

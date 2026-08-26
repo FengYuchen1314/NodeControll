@@ -532,6 +532,14 @@
         "responses": {
           "201": {
             "description": "Control-plane bootstrap completed atomically",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always no-store because recovery codes are returned once"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -795,6 +803,141 @@
                 "description": "Bounded delay in seconds"
               }
             },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication dependencies are unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/recovery-codes": {
+      "get": {
+        "tags": [
+          "authentication"
+        ],
+        "operationId": "getCurrentRecoveryCodes",
+        "responses": {
+          "200": {
+            "description": "Secret-free summary of the active recovery-code set",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodeSummaryEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The current session is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request host is invalid or password change is required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No active recovery-code set exists",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication dependencies are unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "authentication"
+        ],
+        "operationId": "regenerateCurrentRecoveryCodes",
+        "responses": {
+          "200": {
+            "description": "The old set was atomically invalidated and eight replacement codes are returned once",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always no-store because recovery codes are returned once"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodesCreatedEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The current session is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin, CSRF, recent-auth, or password-change policy rejected the request",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1098,11 +1241,20 @@
         "type": "object",
         "required": [
           "instance_id",
-          "owner_id"
+          "owner_id",
+          "one_time_recovery_codes"
         ],
         "properties": {
           "instance_id": {
             "type": "string"
+          },
+          "one_time_recovery_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 8
           },
           "owner_id": {
             "type": "string"
@@ -1451,6 +1603,93 @@
         "enum": [
           "password"
         ]
+      },
+      "RecoveryCodeSummaryData": {
+        "type": "object",
+        "required": [
+          "set_version",
+          "total_count",
+          "remaining_count",
+          "created_at_ms"
+        ],
+        "properties": {
+          "created_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "remaining_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "set_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "total_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "RecoveryCodeSummaryEnvelope": {
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/RecoveryCodeSummaryData"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ResponseMeta"
+          }
+        }
+      },
+      "RecoveryCodesCreatedData": {
+        "type": "object",
+        "required": [
+          "set_version",
+          "one_time_recovery_codes",
+          "created_at_ms"
+        ],
+        "properties": {
+          "created_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "one_time_recovery_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 8
+          },
+          "set_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "RecoveryCodesCreatedEnvelope": {
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/RecoveryCodesCreatedData"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ResponseMeta"
+          }
+        }
       },
       "ResponseMeta": {
         "type": "object",

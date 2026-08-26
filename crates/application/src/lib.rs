@@ -22,11 +22,14 @@ use nodecontroll_identity::{
 };
 use nodecontroll_persistence::{
     AuthLevel, AuthSessionSummary, AuthenticatedSession, Database, LoginAttemptReservation,
-    LoginRateDecision, LoginSecurityReason, NewAuthSession, NewLoginSecurityEvent,
-    PasswordChangeRotation, PersistenceError, SessionAuthentication, SessionAuthenticationOutcome,
-    SessionRevocationReason, UserSessionRevocation,
+    LoginRateDecision, LoginSecurityReason, NewAuthSession, NewLoginSecurityEvent, NewRecoveryCode,
+    NewRecoveryCodeSet, NewSecretRecord, PasswordChangeRotation, PersistenceError,
+    RecoveryCodeConsumption, RecoveryCodeReplacement, SessionAuthentication,
+    SessionAuthenticationOutcome, SessionRevocationReason, UserSessionRevocation,
 };
-use nodecontroll_secrets::{EnvelopeCipher, KeyedDigestPurpose};
+use nodecontroll_secrets::{
+    KeyedDigestPurpose, Keyring, RecoveryCode, SecretBinding, SecretError, generate_recovery_codes,
+};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use tokio::sync::{Mutex, Semaphore};
@@ -178,10 +181,10 @@ pub struct BootstrapCommand {
     pub setup_token: Zeroizing<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BootstrapOutcome {
     pub instance_id: String,
     pub owner_id: String,
+    pub one_time_recovery_codes: Vec<Zeroizing<String>>,
 }
 
 pub struct LoginCommand {
@@ -261,6 +264,7 @@ pub enum AuthServiceError {
     SessionInvalid,
     CsrfInvalid,
     NotInitialized,
+    RecoveryCodesUnavailable,
     Unavailable,
 }
 
@@ -273,6 +277,7 @@ pub enum AuthenticatedAction {
     Reauthenticate,
     ChangePassword,
     ManageOwnSessions,
+    ManageRecoveryCodes,
     SignOut,
     ProductAccess,
 }
@@ -332,6 +337,24 @@ pub struct RevokeSessionCommand {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryCodeSummary {
+    pub set_version: u64,
+    pub total_count: u8,
+    pub remaining_count: u8,
+    pub created_at_ms: i64,
+}
+
+pub struct RegenerateRecoveryCodesCommand {
+    pub credential: MutatingSessionCredential,
+}
+
+pub struct RecoveryCodesCreated {
+    pub set_version: u64,
+    pub one_time_recovery_codes: Vec<Zeroizing<String>>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RevokeSessionOutcome {
     pub revoked_current: bool,
 }
@@ -371,17 +394,79 @@ pub trait ControlPlane: Send + Sync {
         &self,
         command: RevokeSessionCommand,
     ) -> Result<RevokeSessionOutcome, AuthServiceError>;
+    async fn recovery_code_summary(
+        &self,
+        credential: SessionCredential,
+    ) -> Result<RecoveryCodeSummary, AuthServiceError>;
+    async fn regenerate_recovery_codes(
+        &self,
+        command: RegenerateRecoveryCodesCommand,
+    ) -> Result<RecoveryCodesCreated, AuthServiceError>;
 }
 
 pub struct ControlPlaneApplication {
     database: Database,
-    cipher: EnvelopeCipher,
+    keyring: Keyring,
     password_service: PasswordService,
     dummy_password_hash: PasswordHash,
     setup_capability: Option<SetupCapability>,
     last_bootstrap_attempt: Mutex<Option<std::time::Instant>>,
     auth_policy: AuthPolicy,
     password_hash_slots: Arc<Semaphore>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RootKeyCanaryError {
+    #[error("persistent root-key canary storage failed: {0}")]
+    Persistence(#[from] PersistenceError),
+    #[error("persistent root-key canary verification failed: {0}")]
+    Secret(#[from] SecretError),
+    #[error("system clock is outside the supported timestamp range")]
+    Clock,
+}
+
+/// Creates or verifies the persisted root-key canary before HTTP bind. If the canary is encrypted
+/// by a configured old key, it is atomically rotated to the current key so the old key can later be
+/// removed from the finite keyring.
+pub async fn initialize_root_key_canary(
+    database: &Database,
+    keyring: &Keyring,
+) -> Result<(), RootKeyCanaryError> {
+    let now_ms = unix_time_ms().map_err(|_| RootKeyCanaryError::Clock)?;
+    let candidate = NewSecretRecord {
+        id: EntityId::new(),
+        binding: SecretBinding::root_key_canary(),
+        envelope: keyring.new_canary_envelope()?,
+        created_at_ms: now_ms,
+        rotated_from: None,
+    };
+    let stored = database.ensure_secret_record(&candidate).await?;
+    keyring.verify_canary(&stored.envelope)?;
+    if stored.envelope.key_version == keyring.key_version() {
+        return Ok(());
+    }
+    let replacement = NewSecretRecord {
+        id: EntityId::new(),
+        binding: stored.binding,
+        envelope: keyring.new_canary_envelope()?,
+        created_at_ms: now_ms,
+        rotated_from: Some(stored.id),
+    };
+    match database
+        .rotate_secret_record(&stored, &replacement, now_ms)
+        .await
+    {
+        Ok(rotated) => keyring.verify_canary(&rotated.envelope)?,
+        Err(PersistenceError::SecretRecordConflict) => {
+            let winner = database
+                .active_secret_record(SecretBinding::root_key_canary())
+                .await?
+                .ok_or(PersistenceError::InvalidStoredSecretRecord)?;
+            keyring.verify_canary(&winner.envelope)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 struct PasswordAttemptDigests {
@@ -415,7 +500,7 @@ struct PreparedSessionRotation {
 impl ControlPlaneApplication {
     pub fn new(
         database: Database,
-        cipher: EnvelopeCipher,
+        keyring: Keyring,
         password_service: PasswordService,
         dummy_password_hash: PasswordHash,
         setup_capability: Option<SetupCapability>,
@@ -431,7 +516,7 @@ impl ControlPlaneApplication {
         let password_hash_slots = Arc::new(Semaphore::new(auth_policy.password_hash_concurrency));
         Ok(Arc::new(Self {
             database,
-            cipher,
+            keyring,
             password_service,
             dummy_password_hash,
             setup_capability,
@@ -449,6 +534,70 @@ impl ControlPlaneApplication {
             capabilities: actor_capabilities(session.role, session.force_password_change),
             force_password_change: session.force_password_change,
         }
+    }
+
+    fn prepare_recovery_code_set(
+        &self,
+        created_at_ms: i64,
+    ) -> Result<(NewRecoveryCodeSet, Vec<Zeroizing<String>>), AuthServiceError> {
+        let generated = generate_recovery_codes().map_err(|_| AuthServiceError::Unavailable)?;
+        let mut records = Vec::with_capacity(generated.len());
+        let mut presented = Vec::with_capacity(generated.len());
+        for code in generated {
+            let digest = self
+                .keyring
+                .keyed_digest(KeyedDigestPurpose::RecoveryCode, code.normalized_bytes())
+                .map_err(|_| AuthServiceError::Unavailable)?;
+            records.push(NewRecoveryCode {
+                id: EntityId::new(),
+                digest_key_version: digest.key_version,
+                code_hmac: digest.digest,
+            });
+            presented.push(Zeroizing::new(code.presented().to_owned()));
+        }
+        Ok((
+            NewRecoveryCodeSet {
+                created_at_ms,
+                codes: records,
+            },
+            presented,
+        ))
+    }
+
+    /// Application boundary used by the later password-recovery flow. The repository performs the
+    /// conditional consume, so two concurrent submissions of the same code cannot both succeed.
+    pub async fn consume_recovery_code(
+        &self,
+        user_id: EntityId,
+        presented: &str,
+    ) -> Result<bool, AuthServiceError> {
+        let code =
+            RecoveryCode::parse_presented(presented).map_err(|_| AuthServiceError::InvalidProof)?;
+        let now_ms = unix_time_ms().map_err(|_| AuthServiceError::Unavailable)?;
+        for key_version in self.keyring.key_versions() {
+            let digest = self
+                .keyring
+                .keyed_digest_for_version(
+                    key_version,
+                    KeyedDigestPurpose::RecoveryCode,
+                    code.normalized_bytes(),
+                )
+                .map_err(|_| AuthServiceError::Unavailable)?;
+            if self
+                .database
+                .consume_recovery_code(&RecoveryCodeConsumption {
+                    user_id,
+                    digest_key_version: digest.key_version,
+                    code_hmac: digest.digest,
+                    now_ms,
+                })
+                .await
+                .map_err(|_| AuthServiceError::Unavailable)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn session_projection(&self, session: &AuthSessionSummary) -> SessionProjection {
@@ -500,21 +649,21 @@ impl ControlPlaneApplication {
         now_ms: i64,
     ) -> Result<PasswordAttemptDigests, AuthServiceError> {
         let account_digest = self
-            .cipher
+            .keyring
             .keyed_digest(
                 KeyedDigestPurpose::LoginAccount,
                 normalized_subject.as_bytes(),
             )
             .map_err(|_| AuthServiceError::Unavailable)?;
         let ip_digest = self
-            .cipher
+            .keyring
             .keyed_digest(
                 KeyedDigestPurpose::LoginIp,
                 &context.client.canonical_bytes(),
             )
             .map_err(|_| AuthServiceError::Unavailable)?;
         let global_digest = self
-            .cipher
+            .keyring
             .keyed_digest(KeyedDigestPurpose::LoginGlobal, b"control-plane-login-v1")
             .map_err(|_| AuthServiceError::Unavailable)?;
         let user_agent_hash: [u8; 32] = Sha256::digest(context.user_agent.as_bytes()).into();
@@ -574,15 +723,15 @@ impl ControlPlaneApplication {
     ) -> Result<PreparedSessionRotation, AuthServiceError> {
         let token_pair = SessionTokenPair::generate().map_err(|_| AuthServiceError::Unavailable)?;
         let session_digest = self
-            .cipher
+            .keyring
             .keyed_digest(KeyedDigestPurpose::Session, token_pair.session().as_bytes())
             .map_err(|_| AuthServiceError::Unavailable)?;
         let csrf_digest = self
-            .cipher
+            .keyring
             .keyed_digest(KeyedDigestPurpose::Csrf, token_pair.csrf().as_bytes())
             .map_err(|_| AuthServiceError::Unavailable)?;
         let ip_digest = self
-            .cipher
+            .keyring
             .keyed_digest(
                 KeyedDigestPurpose::LoginIp,
                 &context.client.canonical_bytes(),
@@ -627,14 +776,14 @@ impl ControlPlaneApplication {
         now_ms: i64,
     ) -> Result<NewLoginSecurityEvent, AuthServiceError> {
         let account_digest = self
-            .cipher
+            .keyring
             .keyed_digest(
                 KeyedDigestPurpose::LoginAccount,
                 authenticated.username.normalized().as_bytes(),
             )
             .map_err(|_| AuthServiceError::Unavailable)?;
         let ip_digest = self
-            .cipher
+            .keyring
             .keyed_digest(
                 KeyedDigestPurpose::LoginIp,
                 &context.client.canonical_bytes(),
@@ -679,53 +828,70 @@ impl ControlPlaneApplication {
     ) -> Result<AuthenticatedSession, AuthServiceError> {
         let session_token = SessionToken::parse_presented(credential.session_token.as_str())
             .map_err(|_| AuthServiceError::SessionInvalid)?;
-        let token_hmac = self
-            .cipher
-            .keyed_digest(KeyedDigestPurpose::Session, session_token.as_bytes())
+        let csrf_token = credential
+            .csrf_token
+            .map(|csrf| CsrfToken::parse_presented(csrf.as_str()))
+            .transpose()
+            .map_err(|_| AuthServiceError::CsrfInvalid)?;
+        let now_ms = unix_time_ms().map_err(|_| AuthServiceError::Unavailable)?;
+        let touch_interval_ms = duration_ms(self.auth_policy.session_touch_interval)
             .map_err(|_| AuthServiceError::Unavailable)?;
-        let (csrf_key_version, csrf_hmac) = match credential.csrf_token {
-            Some(csrf) => {
-                let csrf = CsrfToken::parse_presented(csrf.as_str())
-                    .map_err(|_| AuthServiceError::CsrfInvalid)?;
-                let digest = self
-                    .cipher
-                    .keyed_digest(KeyedDigestPurpose::Csrf, csrf.as_bytes())
-                    .map_err(|_| AuthServiceError::Unavailable)?;
-                (Some(digest.key_version), Some(digest.digest))
-            }
-            None => (None, None),
-        };
-        let authentication = SessionAuthentication {
-            token_key_version: token_hmac.key_version,
-            token_hmac: token_hmac.digest,
-            csrf_key_version,
-            csrf_hmac,
-            now_ms: unix_time_ms().map_err(|_| AuthServiceError::Unavailable)?,
-            touch_interval_ms: duration_ms(self.auth_policy.session_touch_interval)
-                .map_err(|_| AuthServiceError::Unavailable)?,
-            idle_timeout_ms: duration_ms(self.auth_policy.session_idle)
-                .map_err(|_| AuthServiceError::Unavailable)?,
-        };
+        let idle_timeout_ms = duration_ms(self.auth_policy.session_idle)
+            .map_err(|_| AuthServiceError::Unavailable)?;
         let touch_session = touch_session && action.allowed_during_forced_password_change();
-        let outcome = if touch_session {
-            self.database.authenticate_session(&authentication).await
-        } else {
-            self.database
-                .authenticate_session_read_only(&authentication)
-                .await
-        }
-        .map_err(|_| AuthServiceError::Unavailable)?;
-        match outcome {
-            SessionAuthenticationOutcome::Authenticated(session) => {
-                if session.force_password_change && !action.allowed_during_forced_password_change()
-                {
-                    return Err(AuthServiceError::PasswordChangeRequired);
-                }
-                Ok(session)
+        for key_version in self.keyring.key_versions() {
+            let token_hmac = self
+                .keyring
+                .keyed_digest_for_version(
+                    key_version,
+                    KeyedDigestPurpose::Session,
+                    session_token.as_bytes(),
+                )
+                .map_err(|_| AuthServiceError::Unavailable)?;
+            let csrf_hmac = csrf_token
+                .as_ref()
+                .map(|csrf| {
+                    self.keyring.keyed_digest_for_version(
+                        key_version,
+                        KeyedDigestPurpose::Csrf,
+                        csrf.as_bytes(),
+                    )
+                })
+                .transpose()
+                .map_err(|_| AuthServiceError::Unavailable)?;
+            let authentication = SessionAuthentication {
+                token_key_version: token_hmac.key_version,
+                token_hmac: token_hmac.digest,
+                csrf_key_version: csrf_hmac.as_ref().map(|digest| digest.key_version),
+                csrf_hmac: csrf_hmac.map(|digest| digest.digest),
+                now_ms,
+                touch_interval_ms,
+                idle_timeout_ms,
+            };
+            let outcome = if touch_session {
+                self.database.authenticate_session(&authentication).await
+            } else {
+                self.database
+                    .authenticate_session_read_only(&authentication)
+                    .await
             }
-            SessionAuthenticationOutcome::InvalidSession => Err(AuthServiceError::SessionInvalid),
-            SessionAuthenticationOutcome::InvalidCsrf => Err(AuthServiceError::CsrfInvalid),
+            .map_err(|_| AuthServiceError::Unavailable)?;
+            match outcome {
+                SessionAuthenticationOutcome::Authenticated(session) => {
+                    if session.force_password_change
+                        && !action.allowed_during_forced_password_change()
+                    {
+                        return Err(AuthServiceError::PasswordChangeRequired);
+                    }
+                    return Ok(session);
+                }
+                SessionAuthenticationOutcome::InvalidSession => {}
+                SessionAuthenticationOutcome::InvalidCsrf => {
+                    return Err(AuthServiceError::CsrfInvalid);
+                }
+            }
         }
+        Err(AuthServiceError::SessionInvalid)
     }
 
     async fn authenticate_mutating_credential(
@@ -757,7 +923,7 @@ impl ControlPlaneApplication {
             occurred_at_ms: unix_time_ms().map_err(|_| AuthServiceError::Unavailable)?,
             request_id: context.request_id.clone(),
             reason,
-            digest_key_version: self.cipher.key_version(),
+            digest_key_version: self.keyring.key_version(),
             account_hmac,
             ip_prefix_hmac,
             user_agent_hash: Some(Sha256::digest(context.user_agent.as_bytes()).into()),
@@ -779,8 +945,14 @@ impl ControlPlane for ControlPlaneApplication {
     }
 
     async fn secret_ready(&self) -> Result<(), ProbeError> {
-        self.cipher
-            .canary()
+        let record = self
+            .database
+            .active_secret_record(SecretBinding::root_key_canary())
+            .await
+            .map_err(|_| ProbeError::SecretUnavailable)?
+            .ok_or(ProbeError::SecretUnavailable)?;
+        self.keyring
+            .verify_canary(&record.envelope)
             .map_err(|_| ProbeError::SecretUnavailable)
     }
 
@@ -859,15 +1031,24 @@ impl ControlPlane for ControlPlaneApplication {
             revision: Revision::initial(),
             created_at_ms,
         };
+        let (recovery_codes, one_time_recovery_codes) = self
+            .prepare_recovery_code_set(created_at_ms)
+            .map_err(|_| BootstrapServiceError::Unavailable)?;
         let persisted_instance_id = self
             .database
-            .bootstrap_control_plane(&instance, &owner, &SubscriptionBehaviorSettings::default())
+            .bootstrap_control_plane_with_recovery(
+                &instance,
+                &owner,
+                &SubscriptionBehaviorSettings::default(),
+                &recovery_codes,
+            )
             .await
             .map_err(map_bootstrap_write_error)?;
         capability.consume();
         Ok(BootstrapOutcome {
             instance_id: persisted_instance_id.to_string(),
             owner_id: owner_id.to_string(),
+            one_time_recovery_codes,
         })
     }
 
@@ -958,11 +1139,11 @@ impl ControlPlane for ControlPlaneApplication {
         let upgraded_hash = password_verification.into_upgraded_hash();
         let token_pair = SessionTokenPair::generate().map_err(|_| AuthServiceError::Unavailable)?;
         let session_digest = self
-            .cipher
+            .keyring
             .keyed_digest(KeyedDigestPurpose::Session, token_pair.session().as_bytes())
             .map_err(|_| AuthServiceError::Unavailable)?;
         let csrf_digest = self
-            .cipher
+            .keyring
             .keyed_digest(KeyedDigestPurpose::Csrf, token_pair.csrf().as_bytes())
             .map_err(|_| AuthServiceError::Unavailable)?;
         let idle_expires_at_ms = checked_add_duration(now_ms, self.auth_policy.session_idle)
@@ -1247,14 +1428,14 @@ impl ControlPlane for ControlPlaneApplication {
         };
         let now_ms = unix_time_ms().map_err(|_| AuthServiceError::Unavailable)?;
         let account_digest = self
-            .cipher
+            .keyring
             .keyed_digest(
                 KeyedDigestPurpose::LoginAccount,
                 authenticated.username.normalized().as_bytes(),
             )
             .map_err(|_| AuthServiceError::Unavailable)?;
         let ip_digest = self
-            .cipher
+            .keyring
             .keyed_digest(
                 KeyedDigestPurpose::LoginIp,
                 &context.client.canonical_bytes(),
@@ -1414,6 +1595,61 @@ impl ControlPlane for ControlPlaneApplication {
             .map_err(map_session_write_error)?;
         Ok(RevokeSessionOutcome {
             revoked_current: command.target_session_id == authenticated.session.id,
+        })
+    }
+
+    async fn recovery_code_summary(
+        &self,
+        credential: SessionCredential,
+    ) -> Result<RecoveryCodeSummary, AuthServiceError> {
+        let authenticated = self
+            .authenticate_credential(credential, AuthenticatedAction::ManageRecoveryCodes, true)
+            .await?;
+        self.database
+            .recovery_code_summary(authenticated.user_id)
+            .await
+            .map_err(|_| AuthServiceError::Unavailable)?
+            .map(|summary| RecoveryCodeSummary {
+                set_version: summary.set_version,
+                total_count: summary.total_count,
+                remaining_count: summary.remaining_count,
+                created_at_ms: summary.created_at_ms,
+            })
+            .ok_or(AuthServiceError::RecoveryCodesUnavailable)
+    }
+
+    async fn regenerate_recovery_codes(
+        &self,
+        command: RegenerateRecoveryCodesCommand,
+    ) -> Result<RecoveryCodesCreated, AuthServiceError> {
+        let authenticated = self
+            .authenticate_mutating_credential(
+                command.credential,
+                AuthenticatedAction::ManageRecoveryCodes,
+            )
+            .await?;
+        let now_ms = unix_time_ms().map_err(|_| AuthServiceError::Unavailable)?;
+        if !self.recent_auth_is_valid(&authenticated.session, now_ms) {
+            return Err(AuthServiceError::RecentAuthRequired);
+        }
+        let (replacement, one_time_recovery_codes) = self.prepare_recovery_code_set(now_ms)?;
+        let summary = self
+            .database
+            .replace_recovery_codes(RecoveryCodeReplacement {
+                user_id: authenticated.user_id,
+                actor_session_id: authenticated.session.id,
+                expected_user_revision: authenticated.user_revision,
+                expected_auth_revision: authenticated.session.auth_revision,
+                expected_recent_auth_at_ms: authenticated.session.recent_auth_at_ms,
+                replacement: &replacement,
+                now_ms,
+            })
+            .await
+            .map_err(map_session_write_error)?;
+        Ok(RecoveryCodesCreated {
+            set_version: summary.set_version,
+            one_time_recovery_codes,
+            created_at_ms: summary.created_at_ms,
         })
     }
 }
@@ -1607,6 +1843,7 @@ mod tests {
             assert!(action.allowed_during_forced_password_change());
         }
         assert!(!AuthenticatedAction::ProductAccess.allowed_during_forced_password_change());
+        assert!(!AuthenticatedAction::ManageRecoveryCodes.allowed_during_forced_password_change());
         let capabilities = actor_capabilities(UserRole::Owner, true);
         assert!(capabilities.allows_scope_name("credentials:manage"));
         assert!(!capabilities.allows_scope_name("users:write"));

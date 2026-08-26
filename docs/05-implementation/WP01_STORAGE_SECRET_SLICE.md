@@ -72,7 +72,7 @@ repository contract 在 SQLite 与真实 PG 18.6 中依次验证：不存在 →
 
 Master 在 bind 前加载 key 并执行一次 canary；`/readyz` 每次再验证 `secret_store`，与 `database` 分开报告。API 只得到 `SECRET_STORE_UNAVAILABLE`，不会收到 cipher/IO 细节。
 
-当前只有 key version 1 单 key；keyring、旧版本 decrypt、后台 rewrap、HSM/KMS/TPM provider 与 `secret_records` repository 尚未实现。非 Unix 平台目前只检查 regular file，不宣称完成 ACL 验证。
+本段记录的是 WP-01 当时的实现边界，现已由 [WP-02-C2 实现](./WP02_C2_SECRET_RECOVERY_IMPLEMENTATION.md) 接续：数据库已有 typed `secret_records` repository、持久化 root-key canary，以及当前 key 加最多 3 枚旧 key 的有限 keyring；启动时可用旧 key 解密并原子 rewrap canary。HSM/KMS/TPM provider 仍未实现。非 Unix 平台目前只检查 regular file，不宣称完成 ACL 验证。
 
 ## 5. VPS 验证
 
@@ -88,4 +88,4 @@ run `20260825T154501Z-p5`：开始 `2026-08-25T15:45:01Z`，完成 `15:45:36Z`�
 
 ## 6. 下一步
 
-完成 WP-01 application service：Owner+instance 原子 bootstrap、settings GET/PATCH/ETag、secret record repository、content metadata/reference transaction、`/instance` projection；再开始 WP-02 password/session/auth middleware。S3 adapter可在资产/备份纵切接入，但 filesystem contract 从现在起必须保持兼容。
+本节也是历史下一步记录；Owner bootstrap、密码/session、C1 与 C2 已有后续实现说明。当前未完成项以 [项目进度](../00-project/PROGRESS.md) 和需求追踪矩阵为准。S3 adapter 可在资产/备份纵切接入，但 filesystem contract 从现在起必须保持兼容。

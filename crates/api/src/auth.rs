@@ -9,8 +9,8 @@ use axum::{
 use nodecontroll_application::{
     ActorProjection, AuthServiceError, ChangePasswordCommand, LoginCommand, LoginOutcome,
     LogoutAllCommand, LogoutAllOutcome, MutatingSessionCredential, PasswordChangeOutcome,
-    ReauthenticateCommand, RequestContext, RevokeSessionCommand, SessionCredential,
-    SessionProjection, UserSessionProjection,
+    ReauthenticateCommand, RegenerateRecoveryCodesCommand, RequestContext, RevokeSessionCommand,
+    SessionCredential, SessionProjection, UserSessionProjection,
 };
 use nodecontroll_domain::EntityId;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -145,6 +145,34 @@ pub struct UserSessionsData {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserSessionsEnvelope {
     pub data: UserSessionsData,
+    pub meta: ResponseMeta,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RecoveryCodeSummaryData {
+    pub set_version: u64,
+    pub total_count: u8,
+    pub remaining_count: u8,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RecoveryCodeSummaryEnvelope {
+    pub data: RecoveryCodeSummaryData,
+    pub meta: ResponseMeta,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RecoveryCodesCreatedData {
+    pub set_version: u64,
+    #[schema(min_items = 8, max_items = 8)]
+    pub one_time_recovery_codes: Vec<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RecoveryCodesCreatedEnvelope {
+    pub data: RecoveryCodesCreatedData,
     pub meta: ResponseMeta,
 }
 
@@ -394,6 +422,104 @@ pub async fn list_sessions(
     let envelope = UserSessionsEnvelope {
         data: UserSessionsData {
             sessions: sessions.into_iter().map(Into::into).collect(),
+        },
+        meta: ResponseMeta {
+            api_version: "v1",
+            request_id: request_id(&headers),
+        },
+    };
+    let mut response = (StatusCode::OK, Json(envelope)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/recovery-codes",
+    operation_id = "getCurrentRecoveryCodes",
+    tag = "authentication",
+    security(("sessionCookie" = [])),
+    responses(
+        (status = 200, description = "Secret-free summary of the active recovery-code set", body = RecoveryCodeSummaryEnvelope, headers(("Cache-Control" = String, description = "Always no-store"))),
+        (status = 401, description = "The current session is invalid", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "The request host is invalid or password change is required", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "No active recovery-code set exists", body = Problem, content_type = "application/problem+json"),
+        (status = 503, description = "Authentication dependencies are unavailable", body = Problem, content_type = "application/problem+json")
+    )
+)]
+pub async fn get_recovery_codes(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, Problem> {
+    state
+        .web_security
+        .validate_request_host(&headers)
+        .map_err(|_| browser_security_problem(&headers))?;
+    let credential = required_session_credential(&state, peer, &headers)?;
+    let summary = state
+        .control_plane
+        .recovery_code_summary(credential)
+        .await
+        .map_err(|error| auth_problem(error, &headers))?;
+    let envelope = RecoveryCodeSummaryEnvelope {
+        data: RecoveryCodeSummaryData {
+            set_version: summary.set_version,
+            total_count: summary.total_count,
+            remaining_count: summary.remaining_count,
+            created_at_ms: summary.created_at_ms,
+        },
+        meta: ResponseMeta {
+            api_version: "v1",
+            request_id: request_id(&headers),
+        },
+    };
+    let mut response = (StatusCode::OK, Json(envelope)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/recovery-codes",
+    operation_id = "regenerateCurrentRecoveryCodes",
+    tag = "authentication",
+    security(("sessionCookie" = [], "csrfHeader" = [])),
+    responses(
+        (status = 200, description = "The old set was atomically invalidated and eight replacement codes are returned once", body = RecoveryCodesCreatedEnvelope, headers(("Cache-Control" = String, description = "Always no-store because recovery codes are returned once"))),
+        (status = 401, description = "The current session is invalid", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "Origin, CSRF, recent-auth, or password-change policy rejected the request", body = Problem, content_type = "application/problem+json"),
+        (status = 503, description = "Authentication dependencies are unavailable", body = Problem, content_type = "application/problem+json")
+    )
+)]
+pub async fn regenerate_recovery_codes(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, Problem> {
+    state
+        .web_security
+        .validate_browser_origin(&headers)
+        .map_err(|_| browser_security_problem(&headers))?;
+    let credential = required_mutating_credential(&state, peer, &headers)?;
+    let created = state
+        .control_plane
+        .regenerate_recovery_codes(RegenerateRecoveryCodesCommand { credential })
+        .await
+        .map_err(|error| auth_problem(error, &headers))?;
+    let envelope = RecoveryCodesCreatedEnvelope {
+        data: RecoveryCodesCreatedData {
+            set_version: created.set_version,
+            one_time_recovery_codes: created
+                .one_time_recovery_codes
+                .into_iter()
+                .map(|code| code.as_str().to_owned())
+                .collect(),
+            created_at_ms: created.created_at_ms,
         },
         meta: ResponseMeta {
             api_version: "v1",
@@ -907,6 +1033,16 @@ fn auth_problem(error: AuthServiceError, headers: &HeaderMap) -> Problem {
             status: StatusCode::CONFLICT.as_u16(),
             code: "CONTROL_PLANE_NOT_INITIALIZED",
             detail: "Complete one-time control-plane initialization before authenticating",
+            request_id,
+            errors: Box::default(),
+            retry_after_seconds: None,
+        },
+        AuthServiceError::RecoveryCodesUnavailable => Problem {
+            type_uri: "urn:nodecontroll:problem:recovery-codes-unavailable",
+            title: "Recovery codes unavailable",
+            status: StatusCode::CONFLICT.as_u16(),
+            code: "RECOVERY_CODES_UNAVAILABLE",
+            detail: "The current user does not have an active recovery-code set",
             request_id,
             errors: Box::default(),
             retry_after_seconds: None,

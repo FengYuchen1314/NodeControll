@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 nodecontroll-domain = { path = "../domain" }
+nodecontroll-secrets = { path = "../secrets" }
 sqlx.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

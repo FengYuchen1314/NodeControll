@@ -135,6 +135,8 @@ Web 平台无法让一个标签页同步修改另一个标签页的 DOM。若后
 
 恢复码以 code set 管理。每次生成 8 个、每个至少 128 bit 随机熵；显示格式允许分组连字符，服务端只做明确的大小写/分隔符规范化。数据库保存用途隔离 HMAC、key version、set version、创建和消费时间，不保存明文。再生成整组时旧组在同一事务失效；同一码并发消费只能一次成功。明文只在 bootstrap 或再生成响应出现一次，响应 `Cache-Control: no-store`，GET 永不恢复。
 
+C2 的候选实现、迁移和精确 API 字段见 [WP02_C2_SECRET_RECOVERY_IMPLEMENTATION.md](./WP02_C2_SECRET_RECOVERY_IMPLEMENTATION.md)。这是一条实现定位链接，不把尚未执行的 Actions/VPS 门记为 verified。
+
 ### 4.2 challenge
 
 C3 的 `auth_challenges` 至少绑定：opaque token HMAC、purpose、用户、可选当前 session、`auth_revision` snapshot、允许方法、过期时间、attempt/max、状态、消费时间、客户端网络/UA 摘要和 revision。密码登录需要 MFA 时不创建 provisional browser session；只有 challenge 最终成功才签发正式 session。challenge 失败不能 touch 旧 session，也不能通过不断新建 challenge 绕过共享 account/IP/global 限流。
@@ -160,6 +162,7 @@ C5 支持一个用户多凭据。credential 记录至少包含 credential ID、C
 | `PASSWORD_POLICY_REJECTED` / `PASSWORD_UNCHANGED` | 422 | mutation 未执行 |
 | `LOGIN_RATE_LIMITED` | 429 | 带 bounded `Retry-After` |
 | `AUTHENTICATION_UNAVAILABLE` | 503 | mutation 客户端不得据此断言未提交；rotation 按结果未知、fail-safe logout 和重新登录处理 |
+| `RECOVERY_CODES_UNAVAILABLE` | 409 | 当前用户没有 active set；GET 不回显或补造任何明文 |
 
 challenge/TOTP/WebAuthn 后续增加 `AUTH_CHALLENGE_INVALID`、`AUTH_CHALLENGE_STALE` 和方法专用的本地可映射错误；响应不带 SQL、密码学库错误或账号存在性信息。
 

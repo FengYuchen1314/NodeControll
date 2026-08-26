@@ -416,6 +416,14 @@ impl DatabaseConfig {
 pub struct SecretsConfig {
     pub root_key_file: std::path::PathBuf,
     pub setup_token_file: std::path::PathBuf,
+    pub previous_root_keys: Vec<PreviousRootKeyConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PreviousRootKeyConfig {
+    pub key_version: u32,
+    pub path: std::path::PathBuf,
 }
 
 impl Default for SecretsConfig {
@@ -423,6 +431,7 @@ impl Default for SecretsConfig {
         Self {
             root_key_file: std::path::PathBuf::from("nodecontroll.key"),
             setup_token_file: std::path::PathBuf::from("nodecontroll.setup-token"),
+            previous_root_keys: Vec::new(),
         }
     }
 }
@@ -507,6 +516,10 @@ pub enum ConfigError {
     InvalidPasswordHashConcurrency,
     #[error("auth.digest_key_version must be between 1 and 65535")]
     InvalidDigestKeyVersion,
+    #[error(
+        "secrets.previous_root_keys must contain at most three unique versions older than auth.digest_key_version"
+    )]
+    InvalidPreviousRootKeys,
 }
 
 pub fn load(path: Option<&Path>) -> Result<MasterConfig, ConfigError> {
@@ -608,6 +621,15 @@ pub fn load(path: Option<&Path>) -> Result<MasterConfig, ConfigError> {
     if !(1..=MAX_DIGEST_KEY_VERSION).contains(&loaded.auth.digest_key_version) {
         return Err(ConfigError::InvalidDigestKeyVersion);
     }
+    let mut previous_versions = std::collections::BTreeSet::new();
+    if loaded.secrets.previous_root_keys.len() > 3
+        || loaded.secrets.previous_root_keys.iter().any(|key| {
+            !(1..loaded.auth.digest_key_version).contains(&key.key_version)
+                || !previous_versions.insert(key.key_version)
+        })
+    {
+        return Err(ConfigError::InvalidPreviousRootKeys);
+    }
 
     Ok(loaded)
 }
@@ -659,6 +681,7 @@ mod tests {
             assert_eq!(loaded.auth.login_global_limit, 10_000);
             assert_eq!(loaded.auth.password_hash_concurrency, 4);
             assert_eq!(loaded.auth.digest_key_version, 1);
+            assert!(loaded.secrets.previous_root_keys.is_empty());
         }
     }
 
@@ -855,6 +878,29 @@ mod tests {
                 "[auth]\npassword_hash_concurrency = 0\n"
             ),
             Err(ConfigError::InvalidPasswordHashConcurrency)
+        ));
+    }
+
+    #[test]
+    fn previous_root_key_ring_is_finite_unique_and_older_than_current() {
+        let valid = load_toml(
+            "previous-root-keys",
+            "[auth]\ndigest_key_version = 3\n[[secrets.previous_root_keys]]\nkey_version = 1\npath = 'old-v1.key'\n[[secrets.previous_root_keys]]\nkey_version = 2\npath = 'old-v2.key'\n",
+        );
+        assert!(valid.is_ok());
+        assert!(matches!(
+            load_toml(
+                "duplicate-previous-root-key",
+                "[auth]\ndigest_key_version = 3\n[[secrets.previous_root_keys]]\nkey_version = 1\npath = 'a.key'\n[[secrets.previous_root_keys]]\nkey_version = 1\npath = 'b.key'\n"
+            ),
+            Err(ConfigError::InvalidPreviousRootKeys)
+        ));
+        assert!(matches!(
+            load_toml(
+                "current-as-previous-root-key",
+                "[auth]\ndigest_key_version = 2\n[[secrets.previous_root_keys]]\nkey_version = 2\npath = 'current.key'\n"
+            ),
+            Err(ConfigError::InvalidPreviousRootKeys)
         ));
     }
 }

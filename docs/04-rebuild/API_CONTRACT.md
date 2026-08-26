@@ -116,6 +116,7 @@ API 前缀为 `/api/v1`，内容类型默认 `application/json; charset=utf-8`�
 | `GET/PATCH /me` | 当前资料、语言、时区 | email/username 变更需重新认证 |
 | `POST /me/password` | 自助修改当前密码 | 要求近期认证；推进 auth revision，撤销全部旧会话，仅给当前浏览器创建 replacement |
 | `GET /me/sessions`、`DELETE /me/sessions/{id}` | 查看活动会话、撤销本人的指定会话 | 删除要求近期认证；只返回 ID、保证级别和粗粒度时间，不返回 token、HMAC、原始 IP/UA |
+| `GET /me/recovery-codes`、`POST /me/recovery-codes` | 查看恢复码摘要、原子废旧生新 | GET 只返回 set version/总数/剩余数/创建时间；POST 要求 CSRF+recent-auth，只在 `no-store` 响应回显一次 8 个新码 |
 | `GET/POST/DELETE /me/totp`、`GET/POST/DELETE /me/webauthn` | MFA 生命周期 | setup secret 只返回一次 |
 | `GET/POST/DELETE /me/tokens` | 个人 token | 创建只回显一次 token |
 | `GET /instance`、`PATCH /instance` | 名称、品牌、locale、公开 URL | 资产上传走 object API |

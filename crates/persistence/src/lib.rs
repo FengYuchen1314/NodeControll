@@ -4,6 +4,7 @@ use nodecontroll_domain::{
     EntityId, Instance, InstanceName, PasswordHash, PrincipalLabel, Revision,
     SubscriptionBehaviorSettings, UserAccount, UserRole, UserStatus, Username,
 };
+use nodecontroll_secrets::{SecretBinding, SecretEnvelope, SecretOwnerKind, SecretPurpose};
 use sqlx::{
     PgPool, Row, SqlitePool,
     migrate::Migrator,
@@ -19,6 +20,65 @@ const SUBSCRIPTION_SETTINGS_SCHEMA: i32 = 1;
 pub const AUTH_HMAC_LENGTH: usize = 32;
 
 pub type AuthHmac = [u8; AUTH_HMAC_LENGTH];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewSecretRecord {
+    pub id: EntityId,
+    pub binding: SecretBinding,
+    pub envelope: SecretEnvelope,
+    pub created_at_ms: i64,
+    pub rotated_from: Option<EntityId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredSecretRecord {
+    pub id: EntityId,
+    pub binding: SecretBinding,
+    pub envelope: SecretEnvelope,
+    pub created_at_ms: i64,
+    pub rotated_from: Option<EntityId>,
+    pub revision: Revision,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewRecoveryCode {
+    pub id: EntityId,
+    pub digest_key_version: u32,
+    pub code_hmac: AuthHmac,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewRecoveryCodeSet {
+    pub created_at_ms: i64,
+    pub codes: Vec<NewRecoveryCode>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryCodeSetSummary {
+    pub set_version: u64,
+    pub total_count: u8,
+    pub remaining_count: u8,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Copy)]
+pub struct RecoveryCodeReplacement<'a> {
+    pub user_id: EntityId,
+    pub actor_session_id: EntityId,
+    pub expected_user_revision: Revision,
+    pub expected_auth_revision: Revision,
+    pub expected_recent_auth_at_ms: i64,
+    pub replacement: &'a NewRecoveryCodeSet,
+    pub now_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryCodeConsumption {
+    pub user_id: EntityId,
+    pub digest_key_version: u32,
+    pub code_hmac: AuthHmac,
+    pub now_ms: i64,
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct UserCredentials {
@@ -459,14 +519,43 @@ impl Database {
         Ok(self.bootstrap_state().await? == BootstrapState::Ready)
     }
 
-    pub async fn bootstrap_control_plane(
+    #[cfg(test)]
+    async fn bootstrap_control_plane(
         &self,
         instance: &Instance,
         owner: &UserAccount,
         settings: &SubscriptionBehaviorSettings,
     ) -> Result<EntityId, PersistenceError> {
+        self.bootstrap_control_plane_inner(instance, owner, settings, None)
+            .await
+    }
+
+    pub async fn bootstrap_control_plane_with_recovery(
+        &self,
+        instance: &Instance,
+        owner: &UserAccount,
+        settings: &SubscriptionBehaviorSettings,
+        recovery_codes: &NewRecoveryCodeSet,
+    ) -> Result<EntityId, PersistenceError> {
+        self.bootstrap_control_plane_inner(instance, owner, settings, Some(recovery_codes))
+            .await
+    }
+
+    async fn bootstrap_control_plane_inner(
+        &self,
+        instance: &Instance,
+        owner: &UserAccount,
+        settings: &SubscriptionBehaviorSettings,
+        recovery_codes: Option<&NewRecoveryCodeSet>,
+    ) -> Result<EntityId, PersistenceError> {
         if instance.created_at_ms < 0 || owner.created_at_ms < 0 {
             return Err(PersistenceError::InvalidTimestamp);
+        }
+        if let Some(recovery_codes) = recovery_codes {
+            validate_recovery_code_set(recovery_codes)?;
+            if recovery_codes.created_at_ms != owner.created_at_ms {
+                return Err(PersistenceError::InvalidRecoveryCodeSet);
+            }
         }
         let instance_revision = i64::try_from(instance.revision.value())
             .map_err(|_| PersistenceError::RevisionOutOfRange)?;
@@ -483,6 +572,7 @@ impl Database {
                     &settings_json,
                     instance_revision,
                     owner_revision,
+                    recovery_codes,
                 )
                 .await
             }
@@ -494,10 +584,147 @@ impl Database {
                     &settings_json,
                     instance_revision,
                     owner_revision,
+                    recovery_codes,
                 )
                 .await
             }
         }
+    }
+
+    /// Creates the typed root-key canary if absent and always returns the persisted winner. The
+    /// unique active-binding index makes concurrent startup safe without overwriting ciphertext.
+    pub async fn ensure_secret_record(
+        &self,
+        record: &NewSecretRecord,
+    ) -> Result<StoredSecretRecord, PersistenceError> {
+        validate_secret_record(record)?;
+        match self {
+            Self::Sqlite(pool) => ensure_secret_record_sqlite(pool, record).await,
+            Self::Postgres(pool) => ensure_secret_record_postgres(pool, record).await,
+        }
+    }
+
+    pub async fn active_secret_record(
+        &self,
+        binding: SecretBinding,
+    ) -> Result<Option<StoredSecretRecord>, PersistenceError> {
+        match self {
+            Self::Sqlite(pool) => {
+                let row = sqlx::query(
+                    "SELECT id,owner_type,owner_id,purpose,schema_version,key_version,nonce,ciphertext,aad_hash,created_at_ms,rotated_from,revision FROM secret_records WHERE owner_type=? AND owner_id=? AND purpose=? AND deleted_at_ms IS NULL",
+                )
+                .bind(binding.owner_kind.as_str())
+                .bind(binding.owner_id.to_string())
+                .bind(binding.purpose.as_str())
+                .fetch_optional(pool)
+                .await?;
+                row.map(decode_sqlite_secret_record).transpose()
+            }
+            Self::Postgres(pool) => {
+                let row = sqlx::query(
+                    "SELECT id,owner_type,owner_id,purpose,schema_version,key_version,nonce,ciphertext,aad_hash,created_at_ms,rotated_from,revision FROM secret_records WHERE owner_type=$1 AND owner_id=$2 AND purpose=$3 AND deleted_at_ms IS NULL",
+                )
+                .bind(binding.owner_kind.as_str())
+                .bind(binding.owner_id)
+                .bind(binding.purpose.as_str())
+                .fetch_optional(pool)
+                .await?;
+                row.map(decode_postgres_secret_record).transpose()
+            }
+        }
+    }
+
+    pub async fn rotate_secret_record(
+        &self,
+        expected: &StoredSecretRecord,
+        replacement: &NewSecretRecord,
+        now_ms: i64,
+    ) -> Result<StoredSecretRecord, PersistenceError> {
+        validate_non_negative_timestamp(now_ms)?;
+        validate_secret_record(replacement)?;
+        if expected.binding != replacement.binding
+            || replacement.rotated_from != Some(expected.id)
+            || replacement.created_at_ms != now_ms
+        {
+            return Err(PersistenceError::InvalidSecretRecord);
+        }
+        match self {
+            Self::Sqlite(pool) => {
+                rotate_secret_record_sqlite(pool, expected, replacement, now_ms).await
+            }
+            Self::Postgres(pool) => {
+                rotate_secret_record_postgres(pool, expected, replacement, now_ms).await
+            }
+        }
+    }
+
+    pub async fn recovery_code_summary(
+        &self,
+        user_id: EntityId,
+    ) -> Result<Option<RecoveryCodeSetSummary>, PersistenceError> {
+        let row: Option<(i64, i64, i64, i64)> = match self {
+            Self::Sqlite(pool) => sqlx::query_as(
+                "SELECT rcs.set_version,rcs.total_count,SUM(CASE WHEN rc.consumed_at_ms IS NULL THEN 1 ELSE 0 END),rcs.created_at_ms FROM recovery_code_sets rcs JOIN recovery_codes rc ON rc.user_id=rcs.user_id AND rc.set_version=rcs.set_version WHERE rcs.user_id=? AND rcs.status='active' GROUP BY rcs.set_version,rcs.total_count,rcs.created_at_ms",
+            )
+            .bind(user_id.to_string())
+            .fetch_optional(pool)
+            .await?,
+            Self::Postgres(pool) => sqlx::query_as(
+                "SELECT rcs.set_version,rcs.total_count::bigint,SUM(CASE WHEN rc.consumed_at_ms IS NULL THEN 1 ELSE 0 END)::bigint,rcs.created_at_ms FROM recovery_code_sets rcs JOIN recovery_codes rc ON rc.user_id=rcs.user_id AND rc.set_version=rcs.set_version WHERE rcs.user_id=$1 AND rcs.status='active' GROUP BY rcs.set_version,rcs.total_count,rcs.created_at_ms",
+            )
+            .bind(user_id.into_uuid())
+            .fetch_optional(pool)
+            .await?,
+        };
+        row.map(decode_recovery_code_summary).transpose()
+    }
+
+    pub async fn replace_recovery_codes(
+        &self,
+        command: RecoveryCodeReplacement<'_>,
+    ) -> Result<RecoveryCodeSetSummary, PersistenceError> {
+        validate_recovery_code_set(command.replacement)?;
+        validate_non_negative_timestamp(command.now_ms)?;
+        if command.replacement.created_at_ms != command.now_ms {
+            return Err(PersistenceError::InvalidRecoveryCodeSet);
+        }
+        match self {
+            Self::Sqlite(pool) => replace_recovery_codes_sqlite(pool, &command).await,
+            Self::Postgres(pool) => replace_recovery_codes_postgres(pool, &command).await,
+        }
+    }
+
+    /// Atomically consumes one active-set code. A concurrent replay observes zero affected rows.
+    pub async fn consume_recovery_code(
+        &self,
+        command: &RecoveryCodeConsumption,
+    ) -> Result<bool, PersistenceError> {
+        validate_non_negative_timestamp(command.now_ms)?;
+        database_key_version(command.digest_key_version)?;
+        let affected = match self {
+            Self::Sqlite(pool) => sqlx::query(
+                "UPDATE recovery_codes SET consumed_at_ms=? WHERE user_id=? AND digest_key_version=? AND code_hmac=? AND created_at_ms<=? AND consumed_at_ms IS NULL AND EXISTS (SELECT 1 FROM recovery_code_sets rcs WHERE rcs.user_id=recovery_codes.user_id AND rcs.set_version=recovery_codes.set_version AND rcs.status='active')",
+            )
+            .bind(command.now_ms)
+            .bind(command.user_id.to_string())
+            .bind(i64::from(command.digest_key_version))
+            .bind(command.code_hmac.as_slice())
+            .bind(command.now_ms)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+            Self::Postgres(pool) => sqlx::query(
+                "UPDATE recovery_codes rc SET consumed_at_ms=$1 FROM recovery_code_sets rcs WHERE rc.user_id=$2 AND rc.digest_key_version=$3 AND rc.code_hmac=$4 AND rc.created_at_ms<=$1 AND rc.consumed_at_ms IS NULL AND rcs.user_id=rc.user_id AND rcs.set_version=rc.set_version AND rcs.status='active'",
+            )
+            .bind(command.now_ms)
+            .bind(command.user_id.into_uuid())
+            .bind(i32::try_from(command.digest_key_version).map_err(|_| PersistenceError::InvalidKeyVersion)?)
+            .bind(command.code_hmac.as_slice())
+            .execute(pool)
+            .await?
+            .rows_affected(),
+        };
+        Ok(affected == 1)
     }
 
     pub async fn active_owner_count(&self) -> Result<i64, PersistenceError> {
@@ -4000,6 +4227,553 @@ fn rate_bucket_outcome(
     }
 }
 
+fn validate_secret_record(record: &NewSecretRecord) -> Result<(), PersistenceError> {
+    validate_non_negative_timestamp(record.created_at_ms)?;
+    database_key_version(record.envelope.key_version)?;
+    if record.binding.schema_version == 0
+        || record.envelope.nonce.len() != 24
+        || record.envelope.ciphertext.is_empty()
+        || (record.binding.purpose == SecretPurpose::RootKeyCanary
+            && record.binding != SecretBinding::root_key_canary())
+    {
+        return Err(PersistenceError::InvalidSecretRecord);
+    }
+    Ok(())
+}
+
+fn validate_recovery_code_set(set: &NewRecoveryCodeSet) -> Result<(), PersistenceError> {
+    validate_non_negative_timestamp(set.created_at_ms)?;
+    if set.codes.len() != 8 {
+        return Err(PersistenceError::InvalidRecoveryCodeSet);
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut digests = std::collections::HashSet::new();
+    for code in &set.codes {
+        database_key_version(code.digest_key_version)?;
+        if !ids.insert(code.id) || !digests.insert((code.digest_key_version, code.code_hmac)) {
+            return Err(PersistenceError::InvalidRecoveryCodeSet);
+        }
+    }
+    Ok(())
+}
+
+fn decode_recovery_code_summary(
+    row: (i64, i64, i64, i64),
+) -> Result<RecoveryCodeSetSummary, PersistenceError> {
+    let set_version = u64::try_from(row.0).map_err(|_| PersistenceError::InvalidRecoveryCodeSet)?;
+    let total_count = u8::try_from(row.1).map_err(|_| PersistenceError::InvalidRecoveryCodeSet)?;
+    let remaining_count =
+        u8::try_from(row.2).map_err(|_| PersistenceError::InvalidRecoveryCodeSet)?;
+    if total_count != 8 || remaining_count > total_count || row.3 < 0 {
+        return Err(PersistenceError::InvalidRecoveryCodeSet);
+    }
+    Ok(RecoveryCodeSetSummary {
+        set_version,
+        total_count,
+        remaining_count,
+        created_at_ms: row.3,
+    })
+}
+
+async fn ensure_secret_record_sqlite(
+    pool: &SqlitePool,
+    record: &NewSecretRecord,
+) -> Result<StoredSecretRecord, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO secret_records (id,owner_type,owner_id,purpose,schema_version,key_version,nonce,ciphertext,aad_hash,created_at_ms,rotated_from,deleted_at_ms,revision) VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,0) ON CONFLICT DO NOTHING",
+    )
+    .bind(record.id.to_string())
+    .bind(record.binding.owner_kind.as_str())
+    .bind(record.binding.owner_id.to_string())
+    .bind(record.binding.purpose.as_str())
+    .bind(i64::from(record.binding.schema_version))
+    .bind(i64::from(record.envelope.key_version))
+    .bind(record.envelope.nonce.as_slice())
+    .bind(record.envelope.ciphertext.as_slice())
+    .bind(record.envelope.aad_hash.as_slice())
+    .bind(record.created_at_ms)
+    .bind(record.rotated_from.map(|id| id.to_string()))
+    .execute(&mut *transaction)
+    .await?;
+    let row = sqlx::query(
+        "SELECT id,owner_type,owner_id,purpose,schema_version,key_version,nonce,ciphertext,aad_hash,created_at_ms,rotated_from,revision FROM secret_records WHERE owner_type=? AND owner_id=? AND purpose=? AND deleted_at_ms IS NULL",
+    )
+    .bind(record.binding.owner_kind.as_str())
+    .bind(record.binding.owner_id.to_string())
+    .bind(record.binding.purpose.as_str())
+    .fetch_one(&mut *transaction)
+    .await?;
+    let stored = decode_secret_record_row(
+        uuid::Uuid::parse_str(row.try_get::<&str, _>("id")?)?,
+        row.try_get("owner_type")?,
+        uuid::Uuid::parse_str(row.try_get::<&str, _>("owner_id")?)?,
+        row.try_get("purpose")?,
+        row.try_get("schema_version")?,
+        row.try_get("key_version")?,
+        row.try_get("nonce")?,
+        row.try_get("ciphertext")?,
+        row.try_get("aad_hash")?,
+        row.try_get("created_at_ms")?,
+        row.try_get::<Option<&str>, _>("rotated_from")?
+            .map(uuid::Uuid::parse_str)
+            .transpose()?,
+        row.try_get("revision")?,
+    )?;
+    transaction.commit().await?;
+    Ok(stored)
+}
+
+async fn ensure_secret_record_postgres(
+    pool: &PgPool,
+    record: &NewSecretRecord,
+) -> Result<StoredSecretRecord, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO secret_records (id,owner_type,owner_id,purpose,schema_version,key_version,nonce,ciphertext,aad_hash,created_at_ms,rotated_from,deleted_at_ms,revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,0) ON CONFLICT DO NOTHING",
+    )
+    .bind(record.id.into_uuid())
+    .bind(record.binding.owner_kind.as_str())
+    .bind(record.binding.owner_id)
+    .bind(record.binding.purpose.as_str())
+    .bind(i32::try_from(record.binding.schema_version).map_err(|_| PersistenceError::InvalidSecretRecord)?)
+    .bind(i32::try_from(record.envelope.key_version).map_err(|_| PersistenceError::InvalidKeyVersion)?)
+    .bind(record.envelope.nonce.as_slice())
+    .bind(record.envelope.ciphertext.as_slice())
+    .bind(record.envelope.aad_hash.as_slice())
+    .bind(record.created_at_ms)
+    .bind(record.rotated_from.map(EntityId::into_uuid))
+    .execute(&mut *transaction)
+    .await?;
+    let row = sqlx::query(
+        "SELECT id,owner_type,owner_id,purpose,schema_version,key_version,nonce,ciphertext,aad_hash,created_at_ms,rotated_from,revision FROM secret_records WHERE owner_type=$1 AND owner_id=$2 AND purpose=$3 AND deleted_at_ms IS NULL FOR UPDATE",
+    )
+    .bind(record.binding.owner_kind.as_str())
+    .bind(record.binding.owner_id)
+    .bind(record.binding.purpose.as_str())
+    .fetch_one(&mut *transaction)
+    .await?;
+    let stored = decode_secret_record_row(
+        row.try_get("id")?,
+        row.try_get("owner_type")?,
+        row.try_get("owner_id")?,
+        row.try_get("purpose")?,
+        row.try_get("schema_version")?,
+        row.try_get("key_version")?,
+        row.try_get("nonce")?,
+        row.try_get("ciphertext")?,
+        row.try_get("aad_hash")?,
+        row.try_get("created_at_ms")?,
+        row.try_get("rotated_from")?,
+        row.try_get("revision")?,
+    )?;
+    transaction.commit().await?;
+    Ok(stored)
+}
+
+fn decode_sqlite_secret_record(
+    row: sqlx::sqlite::SqliteRow,
+) -> Result<StoredSecretRecord, PersistenceError> {
+    decode_secret_record_row(
+        uuid::Uuid::parse_str(row.try_get::<&str, _>("id")?)?,
+        row.try_get("owner_type")?,
+        uuid::Uuid::parse_str(row.try_get::<&str, _>("owner_id")?)?,
+        row.try_get("purpose")?,
+        row.try_get("schema_version")?,
+        row.try_get("key_version")?,
+        row.try_get("nonce")?,
+        row.try_get("ciphertext")?,
+        row.try_get("aad_hash")?,
+        row.try_get("created_at_ms")?,
+        row.try_get::<Option<&str>, _>("rotated_from")?
+            .map(uuid::Uuid::parse_str)
+            .transpose()?,
+        row.try_get("revision")?,
+    )
+}
+
+fn decode_postgres_secret_record(
+    row: sqlx::postgres::PgRow,
+) -> Result<StoredSecretRecord, PersistenceError> {
+    decode_secret_record_row(
+        row.try_get("id")?,
+        row.try_get("owner_type")?,
+        row.try_get("owner_id")?,
+        row.try_get("purpose")?,
+        row.try_get("schema_version")?,
+        row.try_get("key_version")?,
+        row.try_get("nonce")?,
+        row.try_get("ciphertext")?,
+        row.try_get("aad_hash")?,
+        row.try_get("created_at_ms")?,
+        row.try_get("rotated_from")?,
+        row.try_get("revision")?,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_secret_record_row(
+    id: uuid::Uuid,
+    owner_type: String,
+    owner_id: uuid::Uuid,
+    purpose: String,
+    schema_version: i32,
+    key_version: i32,
+    nonce: Vec<u8>,
+    ciphertext: Vec<u8>,
+    aad_hash: Vec<u8>,
+    created_at_ms: i64,
+    rotated_from: Option<uuid::Uuid>,
+    revision: i64,
+) -> Result<StoredSecretRecord, PersistenceError> {
+    let owner_kind = SecretOwnerKind::parse(&owner_type)
+        .map_err(|_| PersistenceError::InvalidStoredSecretRecord)?;
+    let purpose =
+        SecretPurpose::parse(&purpose).map_err(|_| PersistenceError::InvalidStoredSecretRecord)?;
+    let schema_version =
+        u32::try_from(schema_version).map_err(|_| PersistenceError::InvalidStoredSecretRecord)?;
+    let key_version =
+        u32::try_from(key_version).map_err(|_| PersistenceError::InvalidStoredSecretRecord)?;
+    let binding = SecretBinding::new(purpose, owner_kind, owner_id, schema_version)
+        .map_err(|_| PersistenceError::InvalidStoredSecretRecord)?;
+    let nonce = nonce
+        .try_into()
+        .map_err(|_| PersistenceError::InvalidStoredSecretRecord)?;
+    let aad_hash = aad_hash
+        .try_into()
+        .map_err(|_| PersistenceError::InvalidStoredSecretRecord)?;
+    let revision =
+        u64::try_from(revision).map_err(|_| PersistenceError::InvalidStoredSecretRecord)?;
+    if created_at_ms < 0 || ciphertext.is_empty() || key_version == 0 {
+        return Err(PersistenceError::InvalidStoredSecretRecord);
+    }
+    Ok(StoredSecretRecord {
+        id: EntityId::from_uuid(id),
+        binding,
+        envelope: SecretEnvelope {
+            key_version,
+            nonce,
+            ciphertext,
+            aad_hash,
+        },
+        created_at_ms,
+        rotated_from: rotated_from.map(EntityId::from_uuid),
+        revision: Revision::from_value(revision),
+    })
+}
+
+async fn rotate_secret_record_sqlite(
+    pool: &SqlitePool,
+    expected: &StoredSecretRecord,
+    replacement: &NewSecretRecord,
+    now_ms: i64,
+) -> Result<StoredSecretRecord, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    let affected = sqlx::query(
+        "UPDATE secret_records SET deleted_at_ms=?,revision=revision+1 WHERE id=? AND owner_type=? AND owner_id=? AND purpose=? AND schema_version=? AND key_version=? AND revision=? AND deleted_at_ms IS NULL",
+    )
+    .bind(now_ms)
+    .bind(expected.id.to_string())
+    .bind(expected.binding.owner_kind.as_str())
+    .bind(expected.binding.owner_id.to_string())
+    .bind(expected.binding.purpose.as_str())
+    .bind(i64::from(expected.binding.schema_version))
+    .bind(i64::from(expected.envelope.key_version))
+    .bind(i64::try_from(expected.revision.value()).map_err(|_| PersistenceError::RevisionOutOfRange)?)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if affected != 1 {
+        return Err(PersistenceError::SecretRecordConflict);
+    }
+    insert_secret_record_sqlite(&mut transaction, replacement).await?;
+    transaction.commit().await?;
+    Ok(StoredSecretRecord {
+        id: replacement.id,
+        binding: replacement.binding,
+        envelope: replacement.envelope.clone(),
+        created_at_ms: replacement.created_at_ms,
+        rotated_from: replacement.rotated_from,
+        revision: Revision::initial(),
+    })
+}
+
+async fn rotate_secret_record_postgres(
+    pool: &PgPool,
+    expected: &StoredSecretRecord,
+    replacement: &NewSecretRecord,
+    now_ms: i64,
+) -> Result<StoredSecretRecord, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    let affected = sqlx::query(
+        "UPDATE secret_records SET deleted_at_ms=$1,revision=revision+1 WHERE id=$2 AND owner_type=$3 AND owner_id=$4 AND purpose=$5 AND schema_version=$6 AND key_version=$7 AND revision=$8 AND deleted_at_ms IS NULL",
+    )
+    .bind(now_ms)
+    .bind(expected.id.into_uuid())
+    .bind(expected.binding.owner_kind.as_str())
+    .bind(expected.binding.owner_id)
+    .bind(expected.binding.purpose.as_str())
+    .bind(
+        i32::try_from(expected.binding.schema_version)
+            .map_err(|_| PersistenceError::InvalidSecretRecord)?,
+    )
+    .bind(
+        i32::try_from(expected.envelope.key_version)
+            .map_err(|_| PersistenceError::InvalidKeyVersion)?,
+    )
+    .bind(i64::try_from(expected.revision.value()).map_err(|_| PersistenceError::RevisionOutOfRange)?)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if affected != 1 {
+        return Err(PersistenceError::SecretRecordConflict);
+    }
+    insert_secret_record_postgres(&mut transaction, replacement).await?;
+    transaction.commit().await?;
+    Ok(StoredSecretRecord {
+        id: replacement.id,
+        binding: replacement.binding,
+        envelope: replacement.envelope.clone(),
+        created_at_ms: replacement.created_at_ms,
+        rotated_from: replacement.rotated_from,
+        revision: Revision::initial(),
+    })
+}
+
+async fn insert_secret_record_sqlite(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    record: &NewSecretRecord,
+) -> Result<(), PersistenceError> {
+    sqlx::query(
+        "INSERT INTO secret_records (id,owner_type,owner_id,purpose,schema_version,key_version,nonce,ciphertext,aad_hash,created_at_ms,rotated_from,deleted_at_ms,revision) VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,0)",
+    )
+    .bind(record.id.to_string())
+    .bind(record.binding.owner_kind.as_str())
+    .bind(record.binding.owner_id.to_string())
+    .bind(record.binding.purpose.as_str())
+    .bind(i64::from(record.binding.schema_version))
+    .bind(i64::from(record.envelope.key_version))
+    .bind(record.envelope.nonce.as_slice())
+    .bind(record.envelope.ciphertext.as_slice())
+    .bind(record.envelope.aad_hash.as_slice())
+    .bind(record.created_at_ms)
+    .bind(record.rotated_from.map(|id| id.to_string()))
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn insert_secret_record_postgres(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    record: &NewSecretRecord,
+) -> Result<(), PersistenceError> {
+    sqlx::query(
+        "INSERT INTO secret_records (id,owner_type,owner_id,purpose,schema_version,key_version,nonce,ciphertext,aad_hash,created_at_ms,rotated_from,deleted_at_ms,revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,0)",
+    )
+    .bind(record.id.into_uuid())
+    .bind(record.binding.owner_kind.as_str())
+    .bind(record.binding.owner_id)
+    .bind(record.binding.purpose.as_str())
+    .bind(i32::try_from(record.binding.schema_version).map_err(|_| PersistenceError::InvalidSecretRecord)?)
+    .bind(i32::try_from(record.envelope.key_version).map_err(|_| PersistenceError::InvalidKeyVersion)?)
+    .bind(record.envelope.nonce.as_slice())
+    .bind(record.envelope.ciphertext.as_slice())
+    .bind(record.envelope.aad_hash.as_slice())
+    .bind(record.created_at_ms)
+    .bind(record.rotated_from.map(EntityId::into_uuid))
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn insert_recovery_code_set_sqlite(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    user_id: EntityId,
+    set_version: i64,
+    set: &NewRecoveryCodeSet,
+) -> Result<(), PersistenceError> {
+    sqlx::query(
+        "INSERT INTO recovery_code_sets (user_id,set_version,status,total_count,created_at_ms,replaced_at_ms) VALUES (?,?,'active',8,?,NULL)",
+    )
+    .bind(user_id.to_string())
+    .bind(set_version)
+    .bind(set.created_at_ms)
+    .execute(&mut **transaction)
+    .await?;
+    for (index, code) in set.codes.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO recovery_codes (id,user_id,set_version,position,digest_key_version,code_hmac,created_at_ms,consumed_at_ms) VALUES (?,?,?,?,?,?,?,NULL)",
+        )
+        .bind(code.id.to_string())
+        .bind(user_id.to_string())
+        .bind(set_version)
+        .bind(i64::try_from(index + 1).map_err(|_| PersistenceError::InvalidRecoveryCodeSet)?)
+        .bind(i64::from(code.digest_key_version))
+        .bind(code.code_hmac.as_slice())
+        .bind(set.created_at_ms)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn insert_recovery_code_set_postgres(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: EntityId,
+    set_version: i64,
+    set: &NewRecoveryCodeSet,
+) -> Result<(), PersistenceError> {
+    sqlx::query(
+        "INSERT INTO recovery_code_sets (user_id,set_version,status,total_count,created_at_ms,replaced_at_ms) VALUES ($1,$2,'active',8,$3,NULL)",
+    )
+    .bind(user_id.into_uuid())
+    .bind(set_version)
+    .bind(set.created_at_ms)
+    .execute(&mut **transaction)
+    .await?;
+    for (index, code) in set.codes.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO recovery_codes (id,user_id,set_version,position,digest_key_version,code_hmac,created_at_ms,consumed_at_ms) VALUES ($1,$2,$3,$4,$5,$6,$7,NULL)",
+        )
+        .bind(code.id.into_uuid())
+        .bind(user_id.into_uuid())
+        .bind(set_version)
+        .bind(i16::try_from(index + 1).map_err(|_| PersistenceError::InvalidRecoveryCodeSet)?)
+        .bind(i32::try_from(code.digest_key_version).map_err(|_| PersistenceError::InvalidKeyVersion)?)
+        .bind(code.code_hmac.as_slice())
+        .bind(set.created_at_ms)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn replace_recovery_codes_sqlite(
+    pool: &SqlitePool,
+    command: &RecoveryCodeReplacement<'_>,
+) -> Result<RecoveryCodeSetSummary, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    let expected_auth_revision = i64::try_from(command.expected_auth_revision.value())
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    let locked = sqlx::query(
+        "UPDATE user_auth_state SET updated_at_ms=updated_at_ms WHERE user_id=? AND auth_revision=?",
+    )
+    .bind(command.user_id.to_string())
+    .bind(expected_auth_revision)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if locked != 1 {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let snapshot: Option<(i64, i64, i64, String, Option<i64>, i64, i64, i64)> = sqlx::query_as(
+        "SELECT u.revision,uas.auth_revision,s.auth_revision,s.status,s.revoked_at_ms,s.recent_auth_at_ms,s.idle_expires_at_ms,s.absolute_expires_at_ms FROM users u JOIN user_auth_state uas ON uas.user_id=u.id JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=? AND s.id=? AND u.status='active' AND u.deleted_at_ms IS NULL",
+    )
+    .bind(command.user_id.to_string())
+    .bind(command.actor_session_id.to_string())
+    .fetch_optional(&mut *transaction)
+    .await?;
+    validate_recovery_replacement_snapshot(snapshot, command)?;
+    let next_version: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(set_version),0)+1 FROM recovery_code_sets WHERE user_id=?",
+    )
+    .bind(command.user_id.to_string())
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE recovery_code_sets SET status='replaced',replaced_at_ms=? WHERE user_id=? AND status='active' AND created_at_ms<=?",
+    )
+    .bind(command.now_ms)
+    .bind(command.user_id.to_string())
+    .bind(command.now_ms)
+    .execute(&mut *transaction)
+    .await?;
+    insert_recovery_code_set_sqlite(
+        &mut transaction,
+        command.user_id,
+        next_version,
+        command.replacement,
+    )
+    .await?;
+    transaction.commit().await?;
+    decode_recovery_code_summary((next_version, 8, 8, command.now_ms))
+}
+
+async fn replace_recovery_codes_postgres(
+    pool: &PgPool,
+    command: &RecoveryCodeReplacement<'_>,
+) -> Result<RecoveryCodeSetSummary, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    let expected_auth_revision = i64::try_from(command.expected_auth_revision.value())
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    let snapshot: Option<(i64, i64, i64, String, Option<i64>, i64, i64, i64)> = sqlx::query_as(
+        "SELECT u.revision,uas.auth_revision,s.auth_revision,s.status,s.revoked_at_ms,s.recent_auth_at_ms,s.idle_expires_at_ms,s.absolute_expires_at_ms FROM users u JOIN user_auth_state uas ON uas.user_id=u.id JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=$3 FOR UPDATE OF u,uas,s",
+    )
+    .bind(command.user_id.into_uuid())
+    .bind(command.actor_session_id.into_uuid())
+    .bind(expected_auth_revision)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    validate_recovery_replacement_snapshot(snapshot, command)?;
+    let next_version: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(set_version),0)+1 FROM recovery_code_sets WHERE user_id=$1",
+    )
+    .bind(command.user_id.into_uuid())
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE recovery_code_sets SET status='replaced',replaced_at_ms=$1 WHERE user_id=$2 AND status='active' AND created_at_ms<=$1",
+    )
+    .bind(command.now_ms)
+    .bind(command.user_id.into_uuid())
+    .execute(&mut *transaction)
+    .await?;
+    insert_recovery_code_set_postgres(
+        &mut transaction,
+        command.user_id,
+        next_version,
+        command.replacement,
+    )
+    .await?;
+    transaction.commit().await?;
+    decode_recovery_code_summary((next_version, 8, 8, command.now_ms))
+}
+
+fn validate_recovery_replacement_snapshot(
+    snapshot: Option<(i64, i64, i64, String, Option<i64>, i64, i64, i64)>,
+    command: &RecoveryCodeReplacement<'_>,
+) -> Result<(), PersistenceError> {
+    let Some((
+        user_revision,
+        auth_revision,
+        session_auth_revision,
+        status,
+        revoked_at,
+        recent_auth_at,
+        idle_expires_at,
+        absolute_expires_at,
+    )) = snapshot
+    else {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    };
+    let expected_user_revision = i64::try_from(command.expected_user_revision.value())
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    let expected_auth_revision = i64::try_from(command.expected_auth_revision.value())
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    if user_revision != expected_user_revision
+        || auth_revision != expected_auth_revision
+        || session_auth_revision != expected_auth_revision
+        || recent_auth_at != command.expected_recent_auth_at_ms
+        || status != "active"
+        || revoked_at.is_some()
+        || idle_expires_at <= command.now_ms
+        || absolute_expires_at <= command.now_ms
+    {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    Ok(())
+}
+
 async fn bootstrap_sqlite(
     pool: &SqlitePool,
     instance: &Instance,
@@ -4007,6 +4781,7 @@ async fn bootstrap_sqlite(
     settings_json: &str,
     instance_revision: i64,
     owner_revision: i64,
+    recovery_codes: Option<&NewRecoveryCodeSet>,
 ) -> Result<EntityId, PersistenceError> {
     let mut transaction = pool.begin().await?;
     let claimed = sqlx::query(
@@ -4095,6 +4870,9 @@ async fn bootstrap_sqlite(
     .bind(owner.created_at_ms)
     .execute(&mut *transaction)
     .await?;
+    if let Some(recovery_codes) = recovery_codes {
+        insert_recovery_code_set_sqlite(&mut transaction, owner.id, 1, recovery_codes).await?;
+    }
     if needs_default_settings {
         sqlx::query(
             "INSERT INTO instance_settings (instance_id,key,schema_version,value_json,revision,updated_by,updated_at_ms) VALUES (?,?,?,?,0,?,?)",
@@ -4129,6 +4907,7 @@ async fn bootstrap_postgres(
     settings_json: &str,
     instance_revision: i64,
     owner_revision: i64,
+    recovery_codes: Option<&NewRecoveryCodeSet>,
 ) -> Result<EntityId, PersistenceError> {
     let mut transaction = pool.begin().await?;
     let claimed = sqlx::query(
@@ -4215,6 +4994,9 @@ async fn bootstrap_postgres(
     .bind(owner.created_at_ms)
     .execute(&mut *transaction)
     .await?;
+    if let Some(recovery_codes) = recovery_codes {
+        insert_recovery_code_set_postgres(&mut transaction, owner.id, 1, recovery_codes).await?;
+    }
     if needs_default_settings {
         sqlx::query(
             "INSERT INTO instance_settings (instance_id,key,schema_version,value_json,revision,updated_by,updated_at_ms) VALUES ($1,$2,$3,$4::jsonb,0,$5,$6)",
@@ -4334,6 +5116,14 @@ pub enum PersistenceError {
     InconsistentBootstrapState,
     #[error("the requested owner identity conflicts with an existing identity")]
     IdentityConflict,
+    #[error("the encrypted secret record violates its typed binding or envelope contract")]
+    InvalidSecretRecord,
+    #[error("the stored encrypted secret record violates its typed binding or envelope contract")]
+    InvalidStoredSecretRecord,
+    #[error("the active encrypted secret record changed concurrently")]
+    SecretRecordConflict,
+    #[error("a recovery-code set must contain exactly eight distinct, versioned HMAC records")]
+    InvalidRecoveryCodeSet,
     #[error("the setting revision does not match the stored revision")]
     RevisionConflict,
     #[error("the username lookup key is not normalized")]
@@ -4405,6 +5195,7 @@ mod tests {
         PasswordHash, PrincipalLabel, Revision, SubscriptionBehaviorSettings, UserAccount,
         UserRole, Username,
     };
+    use nodecontroll_secrets::{EnvelopeCipher, Keyring, SecretBinding};
     use sqlx::{
         PgPool, SqlitePool,
         postgres::{PgConnectOptions, PgPoolOptions},
@@ -4413,9 +5204,10 @@ mod tests {
     use super::{
         AuthLevel, AuthSessionStatus, BootstrapState, ConnectionSettings, Database, DatabaseEngine,
         LoginAttemptReservation, LoginRateDecision, LoginSecurityReason, NewAuthSession,
-        NewLoginSecurityEvent, PasswordChangeRotation, PersistenceError, SessionAuthentication,
-        SessionAuthenticationOutcome, SessionRevocationReason, UserCredentials,
-        UserSessionRevocation,
+        NewLoginSecurityEvent, NewRecoveryCode, NewRecoveryCodeSet, NewSecretRecord,
+        PasswordChangeRotation, PersistenceError, RecoveryCodeConsumption, RecoveryCodeReplacement,
+        SessionAuthentication, SessionAuthenticationOutcome, SessionRevocationReason,
+        UserCredentials, UserSessionRevocation,
     };
 
     fn settings() -> ConnectionSettings {
@@ -4642,6 +5434,19 @@ mod tests {
             force_password_change: false,
             revision: Revision::initial(),
             created_at_ms: 1_777_777_777_000,
+        }
+    }
+
+    fn recovery_set_fixture(created_at_ms: i64, marker: u8) -> NewRecoveryCodeSet {
+        NewRecoveryCodeSet {
+            created_at_ms,
+            codes: (0_u8..8)
+                .map(|index| NewRecoveryCode {
+                    id: EntityId::new(),
+                    digest_key_version: 1,
+                    code_hmac: [marker.saturating_add(index); 32],
+                })
+                .collect(),
         }
     }
 
@@ -5156,6 +5961,14 @@ mod tests {
         let result = match database {
             Database::Sqlite(pool) => super::SQLITE_MIGRATOR.run_to(4, pool).await,
             Database::Postgres(pool) => super::POSTGRES_MIGRATOR.run_to(4, pool).await,
+        };
+        assert!(result.is_ok());
+    }
+
+    async fn migrate_to_0005(database: &Database) {
+        let result = match database {
+            Database::Sqlite(pool) => super::SQLITE_MIGRATOR.run_to(5, pool).await,
+            Database::Postgres(pool) => super::POSTGRES_MIGRATOR.run_to(5, pool).await,
         };
         assert!(result.is_ok());
     }
@@ -10135,9 +10948,185 @@ mod tests {
         }
     }
 
+    async fn sqlite_secret_record_migration_guard_contract(database: Database) {
+        migrate_to_0005(&database).await;
+        let Database::Sqlite(pool) = &database else {
+            return;
+        };
+        let inserted = sqlx::query(
+            "INSERT INTO secret_records (id,purpose,key_version,nonce,ciphertext,aad_hash,created_at_ms,rotated_from,deleted_at_ms) VALUES (?,'legacy.untyped',1,?,?,?,1,NULL,NULL)",
+        )
+        .bind(EntityId::new().to_string())
+        .bind([1_u8; 24].as_slice())
+        .bind([2_u8; 16].as_slice())
+        .bind([3_u8; 32].as_slice())
+        .execute(pool)
+        .await;
+        assert!(inserted.is_ok());
+        assert!(database.migrate().await.is_err());
+        assert!(matches!(migration_version(&database).await, Ok(Some(5))));
+        let legacy_rows: Result<i64, _> = sqlx::query_scalar("SELECT COUNT(*) FROM secret_records")
+            .fetch_one(pool)
+            .await;
+        assert!(matches!(legacy_rows, Ok(1)));
+        assert!(
+            sqlx::query("DELETE FROM secret_records")
+                .execute(pool)
+                .await
+                .is_ok()
+        );
+        assert!(database.migrate().await.is_ok());
+        assert!(matches!(migration_version(&database).await, Ok(Some(6))));
+        let typed_owner_column: Result<i64, _> = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('secret_records') WHERE name='owner_type'",
+        )
+        .fetch_one(pool)
+        .await;
+        assert!(matches!(typed_owner_column, Ok(1)));
+    }
+
+    async fn secret_record_contract(database: &Database) {
+        const KEY: &str = "f97c2563b4609f964f83ecf3c874f545698b8e360bbca06316547d2af8928f62";
+        const WRONG_KEY: &str = "097c2563b4609f964f83ecf3c874f545698b8e360bbca06316547d2af8928f62";
+        let cipher = EnvelopeCipher::from_hex(KEY, 1);
+        assert!(cipher.is_ok());
+        let wrong_cipher = EnvelopeCipher::from_hex(WRONG_KEY, 1);
+        assert!(wrong_cipher.is_ok());
+        let (Ok(cipher), Ok(wrong_cipher)) = (cipher, wrong_cipher) else {
+            return;
+        };
+        let keyring = Keyring::from_ciphers(cipher, Vec::new());
+        let wrong_keyring = Keyring::from_ciphers(wrong_cipher, Vec::new());
+        assert!(keyring.is_ok());
+        assert!(wrong_keyring.is_ok());
+        let (Ok(keyring), Ok(wrong_keyring)) = (keyring, wrong_keyring) else {
+            return;
+        };
+        let envelope = keyring.new_canary_envelope();
+        assert!(envelope.is_ok());
+        let Ok(envelope) = envelope else {
+            return;
+        };
+        let candidate = NewSecretRecord {
+            id: EntityId::new(),
+            binding: SecretBinding::root_key_canary(),
+            envelope,
+            created_at_ms: 1_777_777_776_000,
+            rotated_from: None,
+        };
+        let first = database.ensure_secret_record(&candidate).await;
+        assert!(first.is_ok());
+        let duplicate_candidate = NewSecretRecord {
+            id: EntityId::new(),
+            binding: SecretBinding::root_key_canary(),
+            envelope: keyring
+                .new_canary_envelope()
+                .unwrap_or_else(|_| unreachable!("keyring was already exercised")),
+            created_at_ms: candidate.created_at_ms + 1,
+            rotated_from: None,
+        };
+        let second = database.ensure_secret_record(&duplicate_candidate).await;
+        assert!(matches!(
+            (&first, &second),
+            (Ok(first), Ok(second)) if first.id == candidate.id && second.id == first.id
+        ));
+        if let Ok(first) = first {
+            assert!(keyring.verify_canary(&first.envelope).is_ok());
+            assert!(wrong_keyring.verify_canary(&first.envelope).is_err());
+        }
+    }
+
+    async fn recovery_code_contract(database: &Database, owner: &UserAccount) {
+        assert!(matches!(
+            database.recovery_code_summary(owner.id).await,
+            Ok(Some(summary))
+                if summary.set_version == 1
+                    && summary.total_count == 8
+                    && summary.remaining_count == 8
+                    && summary.created_at_ms == owner.created_at_ms
+        ));
+        let session = auth_session_fixture(
+            owner.id,
+            90,
+            Revision::initial(),
+            owner.created_at_ms + 10,
+            owner.created_at_ms + 10_000,
+        );
+        assert!(
+            database
+                .create_auth_session(
+                    &session,
+                    &login_security_event(
+                        90,
+                        session.created_at_ms,
+                        LoginSecurityReason::LoginSucceeded,
+                    ),
+                )
+                .await
+                .is_ok()
+        );
+        let replacement = recovery_set_fixture(owner.created_at_ms + 100, 50);
+        let replaced = database
+            .replace_recovery_codes(RecoveryCodeReplacement {
+                user_id: owner.id,
+                actor_session_id: session.id,
+                expected_user_revision: Revision::initial(),
+                expected_auth_revision: Revision::initial(),
+                expected_recent_auth_at_ms: session.recent_auth_at_ms,
+                replacement: &replacement,
+                now_ms: replacement.created_at_ms,
+            })
+            .await;
+        assert!(matches!(
+            replaced,
+            Ok(summary)
+                if summary.set_version == 2
+                    && summary.total_count == 8
+                    && summary.remaining_count == 8
+        ));
+        let obsolete = RecoveryCodeConsumption {
+            user_id: owner.id,
+            digest_key_version: 1,
+            code_hmac: [10; 32],
+            now_ms: replacement.created_at_ms + 1,
+        };
+        assert!(matches!(
+            database.consume_recovery_code(&obsolete).await,
+            Ok(false)
+        ));
+        let one_time = RecoveryCodeConsumption {
+            code_hmac: [50; 32],
+            ..obsolete
+        };
+        let (first, second) = tokio::join!(
+            database.consume_recovery_code(&one_time),
+            database.consume_recovery_code(&one_time),
+        );
+        assert!(matches!(
+            (first, second),
+            (Ok(true), Ok(false)) | (Ok(false), Ok(true))
+        ));
+        assert!(matches!(
+            database.recovery_code_summary(owner.id).await,
+            Ok(Some(summary)) if summary.set_version == 2 && summary.remaining_count == 7
+        ));
+        assert!(matches!(
+            database
+                .revoke_current_session(
+                    owner.id,
+                    session.id,
+                    replacement.created_at_ms + 2,
+                    SessionRevocationReason::Logout,
+                )
+                .await,
+            Ok(true)
+        ));
+    }
+
     async fn repository_contract(database: Database) {
         let migration = database.migrate().await;
         assert!(migration.is_ok(), "fresh migration failed: {migration:?}");
+        secret_record_contract(&database).await;
         assert!(matches!(
             database.bootstrap_state().await,
             Ok(BootstrapState::Uninitialized)
@@ -10167,12 +11156,20 @@ mod tests {
         let second_owner = owner_fixture();
         let initial_settings = SubscriptionBehaviorSettings::default();
         let second_initial_settings = SubscriptionBehaviorSettings::default();
+        let first_recovery = recovery_set_fixture(first_owner.created_at_ms, 10);
+        let second_recovery = recovery_set_fixture(second_owner.created_at_ms, 10);
         let (first_result, second_result) = tokio::join!(
-            database.bootstrap_control_plane(&first_instance, &first_owner, &initial_settings),
-            database.bootstrap_control_plane(
+            database.bootstrap_control_plane_with_recovery(
+                &first_instance,
+                &first_owner,
+                &initial_settings,
+                &first_recovery,
+            ),
+            database.bootstrap_control_plane_with_recovery(
                 &second_instance,
                 &second_owner,
-                &second_initial_settings
+                &second_initial_settings,
+                &second_recovery,
             )
         );
         let (instance, owner) = match (first_result, second_result) {
@@ -10256,6 +11253,7 @@ mod tests {
             settings_actor(&database, instance.id).await,
             Ok(Some(found)) if found == owner.id.to_string()
         ));
+        recovery_code_contract(&database, &owner).await;
         auth_core_contract(&database, &owner).await;
         actor_aware_session_revocation_contract(&database).await;
         let restart_session = auth_session_fixture(
@@ -10339,6 +11337,12 @@ mod tests {
         assert!(session_timeline_migration_rollback_database.is_ok());
         if let Ok(database) = session_timeline_migration_rollback_database {
             sqlite_session_timeline_migration_rollback_contract(database).await;
+        }
+        let secret_record_migration_guard_database =
+            Database::connect("sqlite::memory:", settings()).await;
+        assert!(secret_record_migration_guard_database.is_ok());
+        if let Ok(database) = secret_record_migration_guard_database {
+            sqlite_secret_record_migration_guard_contract(database).await;
         }
     }
 

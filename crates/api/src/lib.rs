@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, State, rejection::JsonRejection},
-    http::{HeaderMap, HeaderName, Request, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -123,13 +123,15 @@ where
     String::deserialize(deserializer).map(Zeroizing::new)
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Serialize, ToSchema)]
 pub struct BootstrapCreated {
     pub instance_id: String,
     pub owner_id: String,
+    #[schema(min_items = 8, max_items = 8)]
+    pub one_time_recovery_codes: Vec<String>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Serialize, ToSchema)]
 pub struct BootstrapCreatedEnvelope {
     pub data: BootstrapCreated,
     pub meta: ResponseMeta,
@@ -315,7 +317,7 @@ pub async fn get_bootstrap(
         ("x-nodecontroll-setup-token" = String, Header, description = "Short-lived setup capability read from the deployment token file")
     ),
     responses(
-        (status = 201, description = "Control-plane bootstrap completed atomically", body = BootstrapCreatedEnvelope),
+        (status = 201, description = "Control-plane bootstrap completed atomically", body = BootstrapCreatedEnvelope, headers(("Cache-Control" = String, description = "Always no-store because recovery codes are returned once"))),
         (status = 400, description = "A bootstrap field is invalid or the JSON syntax is malformed", body = Problem, content_type = "application/problem+json"),
         (status = 403, description = "The setup capability is missing, invalid, expired, or consumed", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "The control plane is already initialized or the requested owner conflicts with stored identity data", body = Problem, content_type = "application/problem+json"),
@@ -330,7 +332,7 @@ pub async fn initialize_control_plane(
     State(state): State<AppState>,
     headers: HeaderMap,
     request: Result<Json<BootstrapRequest>, JsonRejection>,
-) -> Result<(StatusCode, Json<BootstrapCreatedEnvelope>), Problem> {
+) -> Result<Response, Problem> {
     state
         .web_security
         .validate_browser_origin(&headers)
@@ -353,19 +355,29 @@ pub async fn initialize_control_plane(
         .initialize(command)
         .await
         .map_err(|error| bootstrap_problem(error, &headers))?;
-    Ok((
+    let mut response = (
         StatusCode::CREATED,
         Json(BootstrapCreatedEnvelope {
             data: BootstrapCreated {
                 instance_id: outcome.instance_id,
                 owner_id: outcome.owner_id,
+                one_time_recovery_codes: outcome
+                    .one_time_recovery_codes
+                    .into_iter()
+                    .map(|code| code.as_str().to_owned())
+                    .collect(),
             },
             meta: ResponseMeta {
                 api_version: "v1",
                 request_id: request_id(&headers),
             },
         }),
-    ))
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
 }
 
 fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Problem {
@@ -548,7 +560,8 @@ pub async fn system_version(
     paths(
         healthz, readyz, get_bootstrap, initialize_control_plane, system_version,
         auth::login, auth::reauthenticate, auth::current_actor, auth::change_password,
-        auth::list_sessions, auth::logout, auth::logout_all, auth::revoke_session
+        auth::list_sessions, auth::logout, auth::logout_all, auth::revoke_session,
+        auth::get_recovery_codes, auth::regenerate_recovery_codes
     ),
     components(schemas(
         HealthResponse, DependencyCheck, ReadinessResponse, ResponseMeta, VersionInfo,
@@ -558,7 +571,9 @@ pub async fn system_version(
         auth::ReauthenticationMethod, auth::ReauthenticateRequest, auth::ChangePasswordRequest,
         auth::PasswordChangedData, auth::PasswordChangedEnvelope, auth::LogoutAllRequest,
         auth::LogoutAllRetainedData, auth::LogoutAllRetainedEnvelope, auth::UserSessionResponse,
-        auth::UserSessionsData, auth::UserSessionsEnvelope
+        auth::UserSessionsData, auth::UserSessionsEnvelope, auth::RecoveryCodeSummaryData,
+        auth::RecoveryCodeSummaryEnvelope, auth::RecoveryCodesCreatedData,
+        auth::RecoveryCodesCreatedEnvelope
     )),
     modifiers(&SecurityAddon),
     tags(
@@ -645,6 +660,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/reauth", post(auth::reauthenticate))
         .route("/api/v1/me", get(auth::current_actor))
         .route("/api/v1/me/password", post(auth::change_password))
+        .route(
+            "/api/v1/me/recovery-codes",
+            get(auth::get_recovery_codes).post(auth::regenerate_recovery_codes),
+        )
         .route("/api/v1/me/sessions", get(auth::list_sessions))
         .route(
             "/api/v1/me/sessions/{session_id}",
@@ -685,7 +704,8 @@ mod tests {
     use nodecontroll_application::{
         AuthServiceError, BootstrapOutcome, ChangePasswordCommand, ControlPlane, LoginCommand,
         LoginOutcome, LogoutAllCommand, LogoutAllOutcome, MutatingSessionCredential,
-        PasswordChangeOutcome, ReauthenticateCommand, RevokeSessionCommand, RevokeSessionOutcome,
+        PasswordChangeOutcome, ReauthenticateCommand, RecoveryCodeSummary, RecoveryCodesCreated,
+        RegenerateRecoveryCodesCommand, RevokeSessionCommand, RevokeSessionOutcome,
         SessionCredential, UserSessionProjection,
     };
     use nodecontroll_config::PublicOrigin;
@@ -730,6 +750,13 @@ mod tests {
                 Ok(BootstrapOutcome {
                     instance_id: "01900000-0000-7000-8000-000000000001".to_owned(),
                     owner_id: "01900000-0000-7000-8000-000000000002".to_owned(),
+                    one_time_recovery_codes: (1..=8)
+                        .map(|index| {
+                            Zeroizing::new(format!(
+                                "0000-0000-0000-0000-0000-0000-0000-{index:04x}"
+                            ))
+                        })
+                        .collect(),
                 })
             }
         }
@@ -790,6 +817,20 @@ mod tests {
             &self,
             _command: RevokeSessionCommand,
         ) -> Result<RevokeSessionOutcome, AuthServiceError> {
+            Err(AuthServiceError::SessionInvalid)
+        }
+
+        async fn recovery_code_summary(
+            &self,
+            _credential: SessionCredential,
+        ) -> Result<RecoveryCodeSummary, AuthServiceError> {
+            Err(AuthServiceError::SessionInvalid)
+        }
+
+        async fn regenerate_recovery_codes(
+            &self,
+            _command: RegenerateRecoveryCodesCommand,
+        ) -> Result<RecoveryCodesCreated, AuthServiceError> {
             Err(AuthServiceError::SessionInvalid)
         }
     }
@@ -859,11 +900,25 @@ mod tests {
             })),
         )
         .await;
-        assert!(matches!(
-            response,
-            Ok((axum::http::StatusCode::CREATED, envelope))
-                if envelope.0.data.owner_id.ends_with("0002")
-        ));
+        assert!(response.is_ok());
+        if let Ok(response) = response {
+            assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL),
+                Some(&HeaderValue::from_static("no-store"))
+            );
+            let body = axum::body::to_bytes(response.into_body(), 16 * 1024).await;
+            assert!(body.is_ok());
+            if let Ok(body) = body {
+                let value = serde_json::from_slice::<serde_json::Value>(&body);
+                assert!(matches!(
+                    value,
+                    Ok(ref value)
+                        if value.pointer("/data/owner_id").and_then(serde_json::Value::as_str).is_some_and(|id| id.ends_with("0002"))
+                            && value.pointer("/data/one_time_recovery_codes").and_then(serde_json::Value::as_array).is_some_and(|codes| codes.len() == 8)
+                ));
+            }
+        }
     }
 
     #[tokio::test]
@@ -886,6 +941,7 @@ mod tests {
         assert!(paths.contains_key("/api/v1/auth/reauth"));
         assert!(paths.contains_key("/api/v1/me"));
         assert!(paths.contains_key("/api/v1/me/password"));
+        assert!(paths.contains_key("/api/v1/me/recovery-codes"));
         assert!(paths.contains_key("/api/v1/me/sessions"));
         assert!(paths.contains_key("/api/v1/me/sessions/{session_id}"));
         assert!(paths.contains_key("/api/v1/auth/logout"));

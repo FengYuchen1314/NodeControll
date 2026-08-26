@@ -27,13 +27,13 @@ NodeControll 同时支持 SQLite 和 PostgreSQL。两套 migration 语义一致�
 | `instances` | `id,name,public_id,created_at_ms,revision` | 单实例当前只有一行；public_id用于联合身份而非许可证 |
 | `instance_settings` | `instance_id,key,schema_version,value_json,revision,updated_by` | PK(instance,key)；sensitive key禁止落此表 |
 | `instance_assets` | `id,kind,object_id,alt_text,revision` | logo/favicon/background等；kind唯一 current |
-| `secret_records` | `id,purpose,key_version,nonce,ciphertext,aad_hash,created_at,rotated_from,deleted_at` | AEAD envelope；purpose/aad绑定业务 owner，密文不可搜索 |
+| `secret_records` | `id,owner_type,owner_id,purpose,schema_version,key_version,nonce,ciphertext,aad_hash,created_at_ms,rotated_from,deleted_at_ms,revision` | typed AEAD envelope；AAD 绑定 purpose、owner type/id、schema/key version；active(owner,purpose) 唯一，密文不可搜索 |
 | `content_objects` | `id,sha256,size,mime,storage_backend,storage_key,created_at,ref_count` | 内容寻址；`sha256` 唯一；storage_key只由 backend生成 |
 | `content_references` | `object_id,owner_type,owner_id,purpose,created_at` | 唯一(owner,purpose)；ref_count可重建 |
 | `resource_versions` | `id,resource_type,resource_id,revision,object_id,metadata_json,created_by,created_at` | 模板/配置/站点等不可变快照 |
 | `system_leases` | `lease_key,owner_id,fencing_token,leased_until_ms,updated_at` | scheduler/migration/singleton；token单调 |
 
-Master encryption root 不在数据库：默认 root-only key file，支持 env/TPM/KMS provider。`secret_records.key_version` 允许后台 rewrap；轮换不修改业务引用。
+Master encryption root 不在数据库：默认 root-only key file；当前实现加载一枚 current key 和最多 3 枚版本更旧的 key。数据库持久化 system-owned canary，Master 在 HTTP bind 前解密验证；canary 使用旧版本时立即原子 rewrap 到 current key。env/TPM/KMS provider 仍是后续边界。
 
 ## 3. 用户、身份、会话与 token
 
@@ -44,7 +44,8 @@ Master encryption root 不在数据库：默认 root-only key file，支持 env/
 | `user_profiles` | `user_id,display_name,email,email_norm,avatar_object_id,notes,timezone,locale,revision` | email可选唯一策略；notes仅管理员可见 |
 | `auth_sessions` | `id,user_id,token_key_version,token_hmac,csrf_key_version,csrf_hmac,auth_revision,auth_level,status,created_at_ms,authenticated_at_ms,recent_auth_at_ms,last_seen_at_ms,idle_expires_at_ms,absolute_expires_at_ms,ip_prefix_key_version,ip_prefix_hmac,user_agent_hash,revoked_at_ms,revoked_reason,revision` | 两类 token 只存用途隔离 HMAC；`auth_level=password/mfa/phishing_resistant/recovery`；rotation 可继承早于新 row 的证明时间，但不得延长 absolute expiry |
 | `totp_credentials` | `user_id,secret_id,status,last_accepted_step,enrolled_at,revision` | 每用户一行；pending/active/disabled |
-| `recovery_codes` | `id,user_id,code_hash,created_at,used_at` | hash唯一于用户；consume条件 `used_at IS NULL` |
+| `recovery_code_sets` | `user_id,set_version,status,total_count,created_at_ms,replaced_at_ms` | 每用户至多一个 active set；版本单调；整组替换在同一事务失效旧组 |
+| `recovery_codes` | `id,user_id,set_version,position,digest_key_version,code_hmac,created_at_ms,consumed_at_ms` | 每组固定 8 个；只存 recovery-code 专用 HMAC；条件 consume 保证并发只成功一次 |
 | `api_tokens` | `id,subject_type,subject_id,token_hmac,name,audience,scopes_json,expires_at,last_used_at,revoked_at,created_by` | token唯一；MCP/Cert webhook/automation使用明确audience |
 | `subscription_credentials` | `id,user_id,package_instance_id,file_id,kind,token_hmac,short_code,status,expires_at,max_uses,use_count,grace_until,revision` | token_hmac/short_code分别唯一；绑定 audience/subject |
 | `login_security_events` | `id,occurred_at_ms,request_id,reason,digest_key_version,account_hmac,ip_prefix_hmac,user_agent_hash` | 账号/IP 只存用途隔离的不可逆摘要，无明文账号、地址或错误密码；限时保留 |

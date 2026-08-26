@@ -2,11 +2,11 @@ use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
 use nodecontroll_api::{AppState, web_security::WebSecurityPolicy};
-use nodecontroll_application::{AuthPolicy, ControlPlaneApplication};
+use nodecontroll_application::{AuthPolicy, ControlPlaneApplication, initialize_root_key_canary};
 use nodecontroll_config::{AuthConfig, MasterConfig};
 use nodecontroll_identity::{PasswordService, SetupCapability};
 use nodecontroll_persistence::{ConnectionSettings, Database};
-use nodecontroll_secrets::EnvelopeCipher;
+use nodecontroll_secrets::Keyring;
 use tokio::{net::TcpListener, signal};
 use tracing_subscriber::EnvFilter;
 
@@ -40,14 +40,21 @@ async fn main() -> Result<()> {
         .migrate()
         .await
         .context("database migration failed")?;
-    let cipher = EnvelopeCipher::from_key_file(
+    let previous_root_keys = config
+        .secrets
+        .previous_root_keys
+        .iter()
+        .map(|key| (key.key_version, key.path.clone()))
+        .collect::<Vec<_>>();
+    let keyring = Keyring::from_key_files(
         &config.secrets.root_key_file,
         config.auth.digest_key_version,
+        &previous_root_keys,
     )
-    .context("secret root key could not be loaded")?;
-    cipher
-        .canary()
-        .context("secret root key canary failed before HTTP startup")?;
+    .context("secret root-key ring could not be loaded")?;
+    initialize_root_key_canary(&database, &keyring)
+        .await
+        .context("persistent root-key canary failed before HTTP startup")?;
     let password_service =
         PasswordService::recommended().context("Argon2id password parameters are invalid")?;
     let dummy_password_service = password_service.clone();
@@ -76,7 +83,7 @@ async fn main() -> Result<()> {
     let database_engine = database.engine();
     let control_plane = ControlPlaneApplication::new(
         database,
-        cipher,
+        keyring,
         password_service,
         dummy_password_hash,
         setup_capability,

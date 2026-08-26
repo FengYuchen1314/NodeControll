@@ -111,6 +111,10 @@ lock_timeout_ms = 5000
 root_key_file = "/etc/nodecontroll/credentials/master.root-key"
 setup_token_file = "/etc/nodecontroll/credentials/master.setup-token"
 
+[[secrets.previous_root_keys]]
+key_version = 1
+path = "/etc/nodecontroll/credentials/master.root-key.v1"
+
 [bootstrap]
 setup_token_ttl_seconds = 1800
 
@@ -124,10 +128,10 @@ login_account_limit = 5
 login_ip_limit = 50
 login_global_limit = 10000
 password_hash_concurrency = 4
-digest_key_version = 1
+digest_key_version = 2
 ```
 
-`recent_auth_seconds` 的有效范围是 60～3600 秒，并且不得长于 absolute session lifetime。`login_block_seconds` 必须大于或等于 `login_window_seconds`；否则固定窗口尚未结束，封禁却先失效，计数和 `Retry-After` 会出现矛盾，Master 因此在启动前拒绝该配置。`password_hash_concurrency` 的有效范围是 1～64。
+`recent_auth_seconds` 的有效范围是 60～3600 秒，并且不得长于 absolute session lifetime。`login_block_seconds` 必须大于或等于 `login_window_seconds`；否则固定窗口尚未结束，封禁却先失效，计数和 `Retry-After` 会出现矛盾，Master 因此在启动前拒绝该配置。`password_hash_concurrency` 的有效范围是 1～64。`digest_key_version` 同时是当前 root/HMAC key version；`previous_root_keys` 最多 3 项，版本必须唯一、正数且严格小于 current。轮换时先保留旧 key 并以更高版本启动；持久 canary 成功解密后会 rewrap 到 current。确认旧版本 session/恢复码均已自然失效或完成替换后，才可从配置和 credential mount 删除旧 key。
 
 首次启动前，安装器或操作者分别生成两个独立的 32-byte 随机值，以 64 位小写十六进制写入 owner-only regular file。root key 是长期数据密钥；setup token 只用于夺取首个 Owner，不能复用同一值。未初始化或 0001 legacy 数据库若不能安全读取 setup-token 文件，Master 在 bind HTTP 前失败；已经 Ready 的数据库不再要求该文件。浏览器通过 `x-nodecontroll-setup-token` header 提交，不放 URL、query、日志或 shell 参数。默认窗口是进程启动后 30 分钟、最大 60 分钟；过期且数据库仍未初始化时需要重启 Master。成功后数据库 latch 永久关闭 bootstrap，操作者应删除 setup-token 文件；Master 不自动删除部署者的 credential mount。反向代理必须使用 TLS，且不得记录该 header。
 

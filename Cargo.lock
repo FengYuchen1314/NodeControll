@@ -1081,6 +1081,7 @@ name = "nodecontroll-persistence"
 version = "0.1.0"
 dependencies = [
  "nodecontroll-domain",
+ "nodecontroll-secrets",
  "serde_json",
  "sqlx",
  "thiserror",
@@ -1101,6 +1102,7 @@ dependencies = [
  "sha2 0.11.0",
  "subtle",
  "thiserror",
+ "uuid",
  "zeroize",
 ]
 
