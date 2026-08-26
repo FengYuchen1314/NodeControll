@@ -984,7 +984,7 @@ mod tests {
     #[test]
     fn openapi_constrains_recovery_code_wire_values_and_metadata() {
         const CANONICAL_PATTERN: &str = "^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$";
-        const MAX_SIGNED_64: u64 = 9_223_372_036_854_775_807;
+        const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
         let document = serde_json::to_value(openapi());
         assert!(document.is_ok());
@@ -1026,10 +1026,10 @@ mod tests {
             }
 
             for (property, minimum, maximum) in [
-                ("set_version", 1, MAX_SIGNED_64),
+                ("set_version", 1, MAX_SAFE_INTEGER),
                 ("total_count", 8, 8),
                 ("remaining_count", 0, 8),
-                ("created_at_ms", 0, MAX_SIGNED_64),
+                ("created_at_ms", 0, MAX_SAFE_INTEGER),
             ] {
                 let base =
                     format!("/components/schemas/RecoveryCodeSummaryData/properties/{property}");
@@ -1061,7 +1061,7 @@ mod tests {
                     document
                         .pointer(&format!("{base}/maximum"))
                         .and_then(serde_json::Value::as_u64),
-                    Some(MAX_SIGNED_64)
+                    Some(MAX_SAFE_INTEGER)
                 );
             }
         }
