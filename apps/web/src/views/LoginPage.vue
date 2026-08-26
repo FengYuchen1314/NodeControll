@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { isNavigationFailure, useRoute, useRouter } from 'vue-router'
 
 import { safeRedirectPath } from '../router'
 import { LoginFailure, type LoginFailureReason, useSessionStore } from '../stores/session'
@@ -50,15 +50,15 @@ const submit = async () => {
   try {
     await session.login(form.username.trim(), password)
   } catch (error) {
-    const loginFailure =
-      error instanceof LoginFailure ? error : new LoginFailure('unavailable')
+    const loginFailure = error instanceof LoginFailure ? error : new LoginFailure('unavailable')
     failure.value = {
       reason: loginFailure.reason,
       retryAfterSeconds: loginFailure.retryAfterSeconds,
     }
     if (loginFailure.reason === 'setup-required') {
       try {
-        await router.replace({ name: 'setup' })
+        const result = await router.replace({ name: 'setup' })
+        if (isNavigationFailure(result)) navigationFailed.value = true
       } catch {
         navigationFailed.value = true
       }
@@ -69,7 +69,8 @@ const submit = async () => {
   }
 
   try {
-    await router.replace(safeRedirectPath(route.query.redirect))
+    const result = await router.replace(safeRedirectPath(route.query.redirect))
+    if (isNavigationFailure(result)) navigationFailed.value = true
   } catch {
     navigationFailed.value = true
   }
@@ -78,7 +79,8 @@ const submit = async () => {
 const retryAuthenticatedNavigation = async () => {
   navigationFailed.value = false
   try {
-    await router.replace(safeRedirectPath(route.query.redirect))
+    const result = await router.replace(safeRedirectPath(route.query.redirect))
+    if (isNavigationFailure(result)) navigationFailed.value = true
   } catch {
     navigationFailed.value = true
   }

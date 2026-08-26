@@ -39,16 +39,19 @@ Master encryption root 不在数据库：默认 root-only key file，支持 env/
 
 | 表 | 关键列 | 约束/用途 |
 |---|---|---|
-| `users` | `id,username,username_norm,password_hash,role,status,principal_label,force_password_change,revision,created_at,deleted_at` | username_norm唯一（未删除）；principal_label不可变且全局唯一 |
+| `users` | `id,username,username_norm,password_hash,role,status,principal_label,force_password_change,revision,created_at_ms,deleted_at_ms` | username_norm唯一（未删除）；principal_label不可变且全局唯一 |
+| `user_auth_state` | `user_id,auth_revision,password_changed_at_ms,updated_at_ms` | 密码/高危凭据变化推进 auth revision；session snapshot 不匹配即失效 |
 | `user_profiles` | `user_id,display_name,email,email_norm,avatar_object_id,notes,timezone,locale,revision` | email可选唯一策略；notes仅管理员可见 |
-| `sessions` | `id,user_id,token_hmac,status,created_at,last_seen,access_expires,absolute_expires,ip_prefix,ua_hash,revoked_at,reason` | token_hmac唯一；用户禁用/密码重置可批量 revoke |
+| `auth_sessions` | `id,user_id,token_key_version,token_hmac,csrf_key_version,csrf_hmac,auth_revision,auth_level,status,created_at_ms,authenticated_at_ms,recent_auth_at_ms,last_seen_at_ms,idle_expires_at_ms,absolute_expires_at_ms,ip_prefix_key_version,ip_prefix_hmac,user_agent_hash,revoked_at_ms,revoked_reason,revision` | 两类 token 只存用途隔离 HMAC；`auth_level=password/mfa/phishing_resistant/recovery`；rotation 可继承早于新 row 的证明时间，但不得延长 absolute expiry |
 | `totp_credentials` | `user_id,secret_id,status,last_accepted_step,enrolled_at,revision` | 每用户一行；pending/active/disabled |
 | `recovery_codes` | `id,user_id,code_hash,created_at,used_at` | hash唯一于用户；consume条件 `used_at IS NULL` |
 | `api_tokens` | `id,subject_type,subject_id,token_hmac,name,audience,scopes_json,expires_at,last_used_at,revoked_at,created_by` | token唯一；MCP/Cert webhook/automation使用明确audience |
 | `subscription_credentials` | `id,user_id,package_instance_id,file_id,kind,token_hmac,short_code,status,expires_at,max_uses,use_count,grace_until,revision` | token_hmac/short_code分别唯一；绑定 audience/subject |
-| `login_security_events` | `id,username_hash,ip_prefix,event,result,reason,occurred_at,request_id` | 无明文错误密码；限时保留 |
+| `login_security_events` | `id,occurred_at_ms,request_id,reason,digest_key_version,account_hmac,ip_prefix_hmac,user_agent_hash` | 账号/IP 只存用途隔离的不可逆摘要，无明文账号、地址或错误密码；限时保留 |
 | `idempotency_records` | `actor_key,route_key,idempotency_key,request_hash,response_status,response_headers_json,response_object_id,expires_at` | 组合 PK；相同 key不同 request hash冲突 |
 | `turnstile_configs` | `instance_id,site_key,secret_id,enabled,fail_mode,revision` | secret独立加密；仅一配置 |
+
+活动会话列表是时间相关查询：除 `status='active'` 外，还要检查 idle/absolute deadline 和当前 `user_auth_state.auth_revision`。`expired` 是撤销原因，不是 session status；清理任务可异步把惰性过期的 active row 转成 `status='revoked', revoked_reason='expired'`，但 API 在清理前也不能把它继续称为活动会话。重新认证只替换当前会话；改密、logout-all 与用户主动撤销 session 都要在事务内复核各自的稳定安全快照。普通 touch 会推进 session revision，因此全量退出和 actor 有效性复核不能把易变 revision 当作授权 CAS。
 
 ## 4. 服务器、设备、连接与 capability
 

@@ -8,18 +8,19 @@ P5 当前的 `tools/vps_verify.sh` 实际写入以下内容：
 
 ```text
 /opt/nodecontroll/artifacts/test-runs/<run-id>/
-  manifest.json       # schema v2、source SHA、一次性 checkout/ignored 标记、builder/lock/artifact/run attempt、host、started_at
+  manifest.json       # schema v3、source SHA、一次性 checkout/ignored 标记、builder/lock/artifact/run attempt、browser gate、host、started_at
   commands.tsv        # 每个已执行 stage 的开始命令与结束状态
   logs/               # 每个 stage 的 stdout/stderr；Master 容器日志单独保存
   provenance/         # GitHub run/artifact API 原始 JSON，以及本轮 0444 raw-tar 快照
   compiled/           # 本轮从已核验 raw tar 解出，并以只读 mount 消费的制品
+  browser/            # C1 HTTPS rotation/logout 的冻结 DB/dump/log/TLS 证书、握手与无秘密 evidence
   checksums.txt
   COMPLETED_AT        # 全部当前阶段通过后才出现
   FAILED_STAGE        # 某个 run_stage 失败时出现
   SECRET_SCAN_FAILED  # 仅失败清理路径无法证明最终 runtime log 无 secret 时出现
 ```
 
-`manifest.json` 启动时写入 `status=running`；正常收尾原子更新为 `completed`，异常退出更新为 `failed`。成功还必须同时存在 `COMPLETED_AT`，某个 `run_stage` 失败时另有 `FAILED_STAGE`；直接前置检查失败不伪造阶段名。JUnit、coverage、HTML reports、Playwright screenshots/traces 是后续工作包的目标产物，只有对应 runner 真正落盘并纳入 checksum 后才加入目录合同。P5 不能预建空目录或在进度中声称这些报告已经存在。
+`manifest.json` 启动时写入 `status=running`；正常收尾原子更新为 `completed`，异常退出更新为 `failed`。成功还必须同时存在 `COMPLETED_AT`，某个 `run_stage` 失败时另有 `FAILED_STAGE`；直接前置检查失败不伪造阶段名。C1 已加入真实 Playwright HTTPS 行为与冻结 evidence，但没有把通用 screenshots/traces 冒充现有报告。JUnit、coverage、HTML reports 和完整 Playwright trace/video/screenshot 矩阵仍是后续工作包目标，只有 runner 真正落盘并纳入 checksum 后才加入目录合同。
 
 成功 run 的 ID、commit、GitHub run/artifact ID、raw tar SHA 和实际覆盖的 requirements IDs 才能写入 `docs/00-project/PROGRESS.md`。失败记录保留完整 stage 日志、fixture/seed 和固定 image digest，不得只摘录最后一行。
 
@@ -35,7 +36,7 @@ P5 当前的 `tools/vps_verify.sh` 实际写入以下内容：
 6. Master 与 Agent 必须是可执行的 x86-64 ELF；动态库只能来自 allowlist，`readelf` 报告的最高 GLIBC version 不得超过 2.36。制品名称中的 glibc 基线是部署约束，不代表任意 Linux 发行版都兼容。
 7. 通过上述 provenance 门后，VPS 才运行 fmt/clippy、Rust tests、双数据库合同、OpenAPI/docs/Web 静态与单元检查，以及直接消费 Actions Master/Agent/OpenAPI/Web 的 artifact smoke。Master 停止后先冻结最终容器日志，再扫描 setup token、root key、已知密码和 PHC 前缀；失败 cleanup 无法完成同等扫描时必须留下 `SECRET_SCAN_FAILED`。任何本地或其他 commit 的 binary/dist 都不能补充为正式结果。
 
-P5 verifier 已实现上述最小链路，但只有实际 main push、成功 Actions run 和对应 VPS `COMPLETED_AT` 出现后，才能登记为提交级证据。Compose/native、Agent handshake、sing-box/Nginx/tc、Playwright、安全、备份、升级回滚和性能报告仍由后续工作包补齐。
+P5 verifier 已实现上述最小链路，并已有较早公开基线的成功提交级证据；每个新 SHA 仍必须重新取得 main push、Actions run 和对应 VPS `COMPLETED_AT`，不能沿用旧 run。C1 已加入最小 HTTPS Playwright rotation/logout 门；完整浏览器矩阵、Compose/native、Agent handshake、sing-box/Nginx/tc、安全、备份、升级回滚和性能报告仍由后续工作包补齐。
 
 ## 2. 测试金字塔与门
 

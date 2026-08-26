@@ -6,10 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { vuetify } from '../../plugins/vuetify'
 
 const sdk = vi.hoisted(() => ({
+  changeCurrentPassword: vi.fn(),
   getBootstrapState: vi.fn(),
   getCurrentActor: vi.fn(),
+  listCurrentSessions: vi.fn(),
   login: vi.fn(),
   logout: vi.fn(),
+  logoutAll: vi.fn(),
+  reauthenticate: vi.fn(),
+  revokeCurrentUserSession: vi.fn(),
 }))
 
 vi.mock('../../api/generated/sdk.gen', () => sdk)
@@ -29,10 +34,12 @@ const authenticatedResult = () => ({
       },
       session: {
         absolute_expires_at_ms: 2_000,
+        auth_level: 'password',
         created_at_ms: 1_000,
         id: '01900000-0000-7000-8000-000000000002',
         idle_expires_at_ms: 1_500,
         last_seen_at_ms: 1_000,
+        recent_auth_expires_at_ms: 1_800,
       },
     },
     meta: { api_version: 'v1', request_id: 'login-request' },
@@ -98,6 +105,7 @@ describe('LoginPage', () => {
     expect(sdk.login).toHaveBeenCalledWith({
       credentials: 'same-origin',
       body: { username: 'owner', password },
+      signal: expect.anything(),
     })
   })
 
@@ -116,7 +124,9 @@ describe('LoginPage', () => {
   it('clears the password and prevents another login when authenticated navigation fails', async () => {
     sdk.login.mockResolvedValue(authenticatedResult())
     const { router } = await renderLogin('/login?redirect=/system')
-    const replace = vi.spyOn(router, 'replace').mockRejectedValueOnce(new Error('navigation failed'))
+    const replace = vi
+      .spyOn(router, 'replace')
+      .mockRejectedValueOnce(new Error('navigation failed'))
 
     await fireEvent.update(screen.getByLabelText('用户名'), 'owner')
     await fireEvent.update(screen.getByLabelText('密码'), 'owner-password-2026')

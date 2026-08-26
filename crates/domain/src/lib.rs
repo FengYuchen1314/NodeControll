@@ -284,14 +284,16 @@ impl PasswordHash {
             .decode_b64(&mut decoded_salt)
             .map_err(|_| PasswordHashError::InvalidEncoding)?
             .len();
-        if parsed.algorithm.as_str() != "argon2id"
-            || parsed.version != Some(19)
+        if !matches!(
+            parsed.algorithm.as_str(),
+            "argon2id" | "argon2i" | "argon2d"
+        ) || !matches!(parsed.version, Some(16) | Some(19))
             || parsed.params.iter().count() != 3
-            || !(8_192..=262_144).contains(&memory_cost)
-            || !(1..=10).contains(&time_cost)
-            || !(1..=8).contains(&parallelism)
-            || decoded_salt_len < 8
-            || output.len() != 32
+            || !(8_192..=19_456).contains(&memory_cost)
+            || !(1..=2).contains(&time_cost)
+            || parallelism != 1
+            || !(8..=16).contains(&decoded_salt_len)
+            || !(16..=32).contains(&output.len())
         {
             return Err(PasswordHashError::InvalidEncoding);
         }
@@ -306,7 +308,7 @@ impl PasswordHash {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PasswordHashError {
-    #[error("password hash is not a complete, resource-bounded Argon2id v19 PHC string")]
+    #[error("password hash is not a complete, resource-bounded supported Argon2 PHC string")]
     InvalidEncoding,
 }
 
@@ -506,6 +508,12 @@ const SELF_SERVICE_SCOPES: &[CapabilityScope] = &[
     CapabilityScope::SessionsRevoke,
     CapabilityScope::CredentialsManage,
 ];
+const FORCED_PASSWORD_CHANGE_SCOPES: &[CapabilityScope] = &[
+    CapabilityScope::ProfileRead,
+    CapabilityScope::SessionsRead,
+    CapabilityScope::SessionsRevoke,
+    CapabilityScope::CredentialsManage,
+];
 const OWNER_SCOPES: &[CapabilityScope] = &[
     CapabilityScope::ProfileRead,
     CapabilityScope::ProfileWrite,
@@ -580,6 +588,15 @@ impl BaselineCapabilities {
             UserRole::Member => SELF_SERVICE_SCOPES,
         };
         Self { scopes }
+    }
+
+    /// Returns the only scopes projected while the principal must replace a reset or
+    /// administrator-issued password.
+    #[must_use]
+    pub const fn for_forced_password_change() -> Self {
+        Self {
+            scopes: FORCED_PASSWORD_CHANGE_SCOPES,
+        }
     }
 
     #[must_use]
@@ -659,13 +676,19 @@ mod tests {
     }
 
     #[test]
-    fn password_hash_requires_complete_bounded_argon2id_phc() {
+    fn password_hash_accepts_bounded_legacy_argon2_but_rejects_unsafe_phc() {
         let valid = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
         assert!(PasswordHash::parse(valid).is_ok());
+        let legacy = "$argon2i$v=16$m=8192,t=1,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAA";
+        assert!(PasswordHash::parse(legacy).is_ok());
         for invalid in [
             "$argon2id$fixture",
-            "$argon2i$v=19$m=19456,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "$argon2id$v=19$m=1048576,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "$scrypt$v=19$m=19456,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "$argon2id$v=19$m=19457,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "$argon2id$v=19$m=19456,t=3,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "$argon2id$v=19$m=19456,t=2,p=2$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "$argon2id$v=19$m=19456,t=2,p=1$MDEyMzQ1Njc4OWFiY2RlZmc$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA",
         ] {
             assert!(matches!(
@@ -810,6 +833,15 @@ mod tests {
         assert!(!denied.allows(CapabilityScope::ProfileRead));
         assert!(!denied.allows_scope_name("profile:read"));
         assert!(!BaselineCapabilities::for_role(UserRole::Owner).allows_scope_name("users:purge"));
+        let forced = BaselineCapabilities::for_forced_password_change();
+        assert!(forced.allows_scope_name("profile:read"));
+        assert!(forced.allows_scope_name("sessions:read"));
+        assert!(forced.allows_scope_name("sessions:revoke"));
+        assert!(forced.allows_scope_name("credentials:manage"));
+        assert!(!forced.allows_scope_name("profile:write"));
+        assert!(!forced.allows_scope_name("users:read"));
+        assert!(!forced.allows_scope_name("system:read"));
+        assert!(!forced.allows_scope_name("instance:manage"));
         assert_eq!(
             CapabilityScope::parse("users:purge"),
             Err(CapabilityScopeParseError)

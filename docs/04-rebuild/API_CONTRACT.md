@@ -110,10 +110,12 @@ API 前缀为 `/api/v1`，内容类型默认 `application/json; charset=utf-8`�
 | `GET /bootstrap` | 是否已初始化、公开品牌、受支持登录方式 | 不泄露管理员/数据库信息 |
 | `POST /bootstrap` | 首位 owner、实例和恢复码 | 仅空实例；一次性原子事务 |
 | `POST /auth/login` | 密码第一阶段 | 可能返回 `challenge_id`，响应恒定化防枚举 |
+| `POST /auth/reauth` | 对当前会话补做近期认证 | C1 支持密码；成功只轮换当前 session/CSRF，不延长 absolute expiry，不影响 sibling |
 | `POST /auth/challenges/{id}/verify` | TOTP/WebAuthn/恢复码 | 成功 rotation session |
 | `POST /auth/logout` / `POST /auth/logout-all` | 撤销当前/全部 session | logout-all 保留当前与否须显式字段 |
 | `GET/PATCH /me` | 当前资料、语言、时区 | email/username 变更需重新认证 |
-| `GET/POST /me/sessions`、`DELETE /me/sessions/{id}` | 会话查看/撤销 | IP 仅显示粗粒度或按权限 |
+| `POST /me/password` | 自助修改当前密码 | 要求近期认证；推进 auth revision，撤销全部旧会话，仅给当前浏览器创建 replacement |
+| `GET /me/sessions`、`DELETE /me/sessions/{id}` | 查看活动会话、撤销本人的指定会话 | 删除要求近期认证；只返回 ID、保证级别和粗粒度时间，不返回 token、HMAC、原始 IP/UA |
 | `GET/POST/DELETE /me/totp`、`GET/POST/DELETE /me/webauthn` | MFA 生命周期 | setup secret 只返回一次 |
 | `GET/POST/DELETE /me/tokens` | 个人 token | 创建只回显一次 token |
 | `GET /instance`、`PATCH /instance` | 名称、品牌、locale、公开 URL | 资产上传走 object API |
@@ -124,6 +126,8 @@ API 前缀为 `/api/v1`，内容类型默认 `application/json; charset=utf-8`�
 | `POST /users/{id}/reset-password` | 管理员触发一次性重置 | 不返回新密码；用户下次登录设置 |
 | `GET/POST/DELETE /users/{id}/tokens` | 管理用户 API token | 明文只创建时返回 |
 | `GET /users/{id}/effective-policy` | 解释最终套餐/策略/限制 | 返回来源链和冲突解决结果 |
+
+C1 的近期认证、改密和 logout-all 精确 rotation 语义以 [WP02-C 认证安全合同](../05-implementation/WP02_C_AUTHENTICATION_SECURITY_CONTRACT.md) 为准。认证方法与保证级别不能混用：方法是 `password/totp/webauthn/recovery_code`，会话保证级别是 `password/mfa/phishing_resistant/recovery`。`force_password_change=true` 时，后端 use case、router guard 和 App DOM gate 使用同一白名单；角色 projection 不能继续暴露普通产品 scope。
 
 ## 5. 套餐、entitlement 与流量账本
 

@@ -2,7 +2,7 @@
 
 NodeControll 是一个正在重构中的、完全自托管的代理基础设施与订阅管理平台。目标是以 Rust 后端、Vue 3 + Vuetify 前端和 sing-box 标准内核，实现妙妙屋与妙妙屋 X（包括原 PRO 功能）的完整能力，不依赖商业激活、license key、PRO entitlement、官方授权服务、官方域名数据或闭源服务。
 
-P0～P4 的源码研究、功能差异和重构设计已经完成，当前正在 P5 构建工程骨架。Rust Master/Agent、OpenAPI 3.1、Vue/Vuetify SaaS 壳、typed config、SQLite/PostgreSQL 18 repository、typed settings/filesystem object/AEAD canary，以及带部署者 setup capability 的 Owner 原子初始化纵切已经在 VPS 通过当前预检；正式 Actions 制品验收、密码登录/session/MFA/RBAC、Agent enrollment 和业务功能仍未完成，不能视为可发布产品。权威进度见 [`docs/00-project/PROGRESS.md`](docs/00-project/PROGRESS.md)。
+P0～P4 的源码研究、功能差异和重构设计已经完成，当前正在 P5 构建工程骨架。Rust Master/Agent、OpenAPI 3.1、Vue/Vuetify SaaS 壳、typed config、SQLite/PostgreSQL 18 repository、typed settings/filesystem object/AEAD canary，以及 Owner 初始化、密码登录、服务端 session、近期认证、自助改密和自身会话管理纵切已经实现；较早的密码登录/session 基线通过了公开 Actions 与正式 VPS 制品门，当前 C1 扩展已通过增量候选验证，仍待同 SHA Actions 制品和 fresh-clone 正式验收。MFA、RBAC、Agent enrollment 和业务功能尚未完成，项目不能视为可发布产品。权威进度见 [`docs/00-project/PROGRESS.md`](docs/00-project/PROGRESS.md)。
 
 ## 文档结构
 
@@ -14,7 +14,7 @@ P0～P4 的源码研究、功能差异和重构设计已经完成，当前正在
 - `docs/05-implementation`：新代码的模块说明、测试和运维手册。
 - `apps`：Rust Master/Agent 与 Vue 3/Vuetify Web 应用。
 - `crates`：无框架 domain 与后续 API、持久化、任务、协议适配模块。
-- `deploy/build`：固定官方 digest 派生的 VPS builder。
+- `deploy/build`：固定官方 digest 派生的 VPS 测试/验收镜像。
 - `openapi`：由 Rust `utoipa` 导出的 API 3.1 合同。
 - `third_party/dependency-license-overrides`：依赖归档缺少许可证文件时使用的精确版本、来源 revision 与 hash 审阅证据。
 - `upstream`：本地/远端上游研究快照，不作为新系统实现代码，也不纳入本仓库提交。

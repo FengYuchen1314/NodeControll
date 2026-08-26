@@ -44,7 +44,7 @@ pub enum AuthSessionStatus {
 pub enum AuthLevel {
     Password,
     Mfa,
-    Webauthn,
+    PhishingResistant,
     Recovery,
 }
 
@@ -54,7 +54,7 @@ impl AuthLevel {
         match self {
             Self::Password => "password",
             Self::Mfa => "mfa",
-            Self::Webauthn => "webauthn",
+            Self::PhishingResistant => "phishing_resistant",
             Self::Recovery => "recovery",
         }
     }
@@ -63,7 +63,7 @@ impl AuthLevel {
         match value {
             "password" => Ok(Self::Password),
             "mfa" => Ok(Self::Mfa),
-            "webauthn" => Ok(Self::Webauthn),
+            "phishing_resistant" => Ok(Self::PhishingResistant),
             "recovery" => Ok(Self::Recovery),
             _ => Err(PersistenceError::InvalidStoredAuthLevel),
         }
@@ -86,6 +86,7 @@ pub enum SessionRevocationReason {
     LogoutAll,
     PasswordChanged,
     UserDisabled,
+    UserRevoked,
     Administrator,
     Rotation,
     Expired,
@@ -100,6 +101,7 @@ impl SessionRevocationReason {
             Self::LogoutAll => "logout_all",
             Self::PasswordChanged => "password_changed",
             Self::UserDisabled => "user_disabled",
+            Self::UserRevoked => "user_revoked",
             Self::Administrator => "administrator",
             Self::Rotation => "rotation",
             Self::Expired => "expired",
@@ -113,6 +115,7 @@ impl SessionRevocationReason {
             "logout_all" => Ok(Self::LogoutAll),
             "password_changed" => Ok(Self::PasswordChanged),
             "user_disabled" => Ok(Self::UserDisabled),
+            "user_revoked" => Ok(Self::UserRevoked),
             "administrator" => Ok(Self::Administrator),
             "rotation" => Ok(Self::Rotation),
             "expired" => Ok(Self::Expired),
@@ -199,6 +202,36 @@ pub struct LogoutAllResult {
     pub kept_current: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PasswordChangeResult {
+    pub session: AuthSessionSummary,
+    pub revoked_sessions: u64,
+    pub auth_revision: Revision,
+}
+
+#[derive(Clone, Copy)]
+pub struct PasswordChangeRotation<'a> {
+    pub user_id: EntityId,
+    pub current_session_id: EntityId,
+    pub expected_user_revision: Revision,
+    pub new_hash: &'a PasswordHash,
+    pub replacement: &'a NewAuthSession,
+    pub event: &'a NewLoginSecurityEvent,
+    pub now_ms: i64,
+}
+
+#[derive(Clone, Copy)]
+pub struct UserSessionRevocation<'a> {
+    pub user_id: EntityId,
+    pub actor_session_id: EntityId,
+    pub target_session_id: EntityId,
+    pub expected_user_revision: Revision,
+    pub expected_auth_revision: Revision,
+    pub expected_recent_auth_at_ms: i64,
+    pub event: &'a NewLoginSecurityEvent,
+    pub now_ms: i64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoginSecurityReason {
     LoginSucceeded,
@@ -211,6 +244,8 @@ pub enum LoginSecurityReason {
     Logout,
     LogoutAll,
     AuthRevisionChanged,
+    ReauthenticationSucceeded,
+    PasswordChanged,
 }
 
 impl LoginSecurityReason {
@@ -227,6 +262,8 @@ impl LoginSecurityReason {
             Self::Logout => "logout",
             Self::LogoutAll => "logout_all",
             Self::AuthRevisionChanged => "auth_revision_changed",
+            Self::ReauthenticationSucceeded => "reauthentication_succeeded",
+            Self::PasswordChanged => "password_changed",
         }
     }
 }
@@ -249,6 +286,8 @@ pub struct LoginAttemptReservation {
     pub account_hmac: AuthHmac,
     pub ip_prefix_hmac: AuthHmac,
     pub global_hmac: AuthHmac,
+    pub user_agent_hash: AuthHmac,
+    pub request_id: String,
     pub now_ms: i64,
     pub window_ms: i64,
     pub account_max_attempts: u32,
@@ -650,7 +689,8 @@ impl Database {
         }
     }
 
-    pub async fn create_auth_session(
+    #[cfg(test)]
+    async fn create_auth_session(
         &self,
         session: &NewAuthSession,
         success_event: &NewLoginSecurityEvent,
@@ -672,18 +712,198 @@ impl Database {
         }
     }
 
+    pub async fn create_auth_session_with_optional_password_upgrade(
+        &self,
+        session: &NewAuthSession,
+        success_event: &NewLoginSecurityEvent,
+        expected: &UserCredentials,
+        replacement_password_hash: Option<&PasswordHash>,
+    ) -> Result<AuthSessionSummary, PersistenceError> {
+        validate_new_session(session)?;
+        validate_security_event(success_event)?;
+        validate_non_negative_timestamp(expected.password_changed_at_ms)?;
+        database_revision(expected.user_revision)?;
+        database_revision(expected.auth_revision)?;
+        if success_event.reason != LoginSecurityReason::LoginSucceeded
+            || success_event.occurred_at_ms != session.created_at_ms
+            || success_event.account_hmac.is_none()
+            || success_event.ip_prefix_hmac != session.ip_prefix_hmac
+            || success_event.user_agent_hash != session.user_agent_hash
+            || session.ip_prefix_key_version != Some(success_event.digest_key_version)
+        {
+            return Err(PersistenceError::SessionEventMustRecordLoginSuccess);
+        }
+        if session.user_id != expected.user_id
+            || session.auth_revision != expected.auth_revision
+            || expected.status != UserStatus::Active
+        {
+            return Err(PersistenceError::SessionPrincipalUnavailable);
+        }
+        match self {
+            Self::Sqlite(pool) => {
+                create_session_with_password_upgrade_sqlite(
+                    pool,
+                    session,
+                    success_event,
+                    expected,
+                    replacement_password_hash,
+                )
+                .await
+            }
+            Self::Postgres(pool) => {
+                create_session_with_password_upgrade_postgres(
+                    pool,
+                    session,
+                    success_event,
+                    expected,
+                    replacement_password_hash,
+                )
+                .await
+            }
+        }
+    }
+
+    #[cfg(test)]
+    async fn upgrade_password_hash_if_current(
+        &self,
+        user_id: EntityId,
+        expected_user_revision: Revision,
+        expected_hash: &PasswordHash,
+        replacement_hash: &PasswordHash,
+        now_ms: i64,
+    ) -> Result<bool, PersistenceError> {
+        validate_non_negative_timestamp(now_ms)?;
+        if expected_hash == replacement_hash {
+            return Ok(false);
+        }
+        let next_user_revision = expected_user_revision
+            .next()
+            .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+        match self {
+            Self::Sqlite(pool) => {
+                upgrade_password_hash_sqlite(
+                    pool,
+                    user_id,
+                    expected_user_revision,
+                    next_user_revision,
+                    expected_hash,
+                    replacement_hash,
+                    now_ms,
+                )
+                .await
+            }
+            Self::Postgres(pool) => {
+                upgrade_password_hash_postgres(
+                    pool,
+                    user_id,
+                    expected_user_revision,
+                    next_user_revision,
+                    expected_hash,
+                    replacement_hash,
+                    now_ms,
+                )
+                .await
+            }
+        }
+    }
+
+    pub async fn rotate_current_session(
+        &self,
+        user_id: EntityId,
+        current_session_id: EntityId,
+        expected_user_revision: Revision,
+        replacement: &NewAuthSession,
+        event: &NewLoginSecurityEvent,
+        now_ms: i64,
+    ) -> Result<AuthSessionSummary, PersistenceError> {
+        database_revision(expected_user_revision)?;
+        validate_session_rotation_request(
+            user_id,
+            current_session_id,
+            replacement,
+            event,
+            now_ms,
+            LoginSecurityReason::ReauthenticationSucceeded,
+        )?;
+        match self {
+            Self::Sqlite(pool) => {
+                rotate_current_session_sqlite(
+                    pool,
+                    user_id,
+                    current_session_id,
+                    expected_user_revision,
+                    replacement,
+                    event,
+                    now_ms,
+                )
+                .await
+            }
+            Self::Postgres(pool) => {
+                rotate_current_session_postgres(
+                    pool,
+                    user_id,
+                    current_session_id,
+                    expected_user_revision,
+                    replacement,
+                    event,
+                    now_ms,
+                )
+                .await
+            }
+        }
+    }
+
+    pub async fn change_password_and_rotate(
+        &self,
+        rotation: PasswordChangeRotation<'_>,
+    ) -> Result<PasswordChangeResult, PersistenceError> {
+        database_revision(rotation.expected_user_revision)?;
+        validate_session_rotation_request(
+            rotation.user_id,
+            rotation.current_session_id,
+            rotation.replacement,
+            rotation.event,
+            rotation.now_ms,
+            LoginSecurityReason::PasswordChanged,
+        )?;
+        match self {
+            Self::Sqlite(pool) => change_password_and_rotate_sqlite(pool, &rotation).await,
+            Self::Postgres(pool) => change_password_and_rotate_postgres(pool, &rotation).await,
+        }
+    }
+
     pub async fn authenticate_session(
         &self,
         authentication: &SessionAuthentication,
     ) -> Result<SessionAuthenticationOutcome, PersistenceError> {
+        self.authenticate_session_inner(authentication, true).await
+    }
+
+    pub async fn authenticate_session_read_only(
+        &self,
+        authentication: &SessionAuthentication,
+    ) -> Result<SessionAuthenticationOutcome, PersistenceError> {
+        self.authenticate_session_inner(authentication, false).await
+    }
+
+    async fn authenticate_session_inner(
+        &self,
+        authentication: &SessionAuthentication,
+        touch_session: bool,
+    ) -> Result<SessionAuthenticationOutcome, PersistenceError> {
         validate_session_authentication(authentication)?;
         match self {
-            Self::Sqlite(pool) => authenticate_session_sqlite(pool, authentication).await,
-            Self::Postgres(pool) => authenticate_session_postgres(pool, authentication).await,
+            Self::Sqlite(pool) => {
+                authenticate_session_sqlite(pool, authentication, touch_session).await
+            }
+            Self::Postgres(pool) => {
+                authenticate_session_postgres(pool, authentication, touch_session).await
+            }
         }
     }
 
-    pub async fn revoke_current_session(
+    #[cfg(test)]
+    async fn revoke_current_session(
         &self,
         user_id: EntityId,
         session_id: EntityId,
@@ -693,18 +913,17 @@ impl Database {
         validate_non_negative_timestamp(now_ms)?;
         let affected = match self {
             Self::Sqlite(pool) => sqlx::query(
-                "UPDATE auth_sessions SET status='revoked',revoked_at_ms=?,revoked_reason=?,revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END WHERE id=? AND user_id=? AND status='active' AND created_at_ms<=?",
+                "UPDATE auth_sessions SET status='revoked',revoked_at_ms=MAX(created_at_ms,?),revoked_reason=?,revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END WHERE id=? AND user_id=? AND status='active'",
             )
             .bind(now_ms)
             .bind(reason.as_str())
             .bind(session_id.to_string())
             .bind(user_id.to_string())
-            .bind(now_ms)
             .execute(pool)
             .await?
             .rows_affected(),
             Self::Postgres(pool) => sqlx::query(
-                "UPDATE auth_sessions SET status='revoked',revoked_at_ms=$1,revoked_reason=$2,revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END WHERE id=$3 AND user_id=$4 AND status='active' AND created_at_ms<=$1",
+                "UPDATE auth_sessions SET status='revoked',revoked_at_ms=GREATEST(created_at_ms,$1),revoked_reason=$2,revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END WHERE id=$3 AND user_id=$4 AND status='active'",
             )
             .bind(now_ms)
             .bind(reason.as_str())
@@ -727,8 +946,15 @@ impl Database {
     ) -> Result<bool, PersistenceError> {
         validate_non_negative_timestamp(now_ms)?;
         validate_security_event(event)?;
-        if reason != SessionRevocationReason::Logout
-            || event.reason != LoginSecurityReason::Logout
+        let reason_matches_event = matches!(
+            (reason, event.reason),
+            (SessionRevocationReason::Logout, LoginSecurityReason::Logout)
+                | (
+                    SessionRevocationReason::UserRevoked,
+                    LoginSecurityReason::SessionRevoked
+                )
+        );
+        if !reason_matches_event
             || event.occurred_at_ms != now_ms
             || event.account_hmac.is_none()
             || event.ip_prefix_hmac.is_none()
@@ -751,7 +977,32 @@ impl Database {
         }
     }
 
-    pub async fn logout_all_sessions(
+    pub async fn revoke_user_session_with_event(
+        &self,
+        revocation: UserSessionRevocation<'_>,
+    ) -> Result<bool, PersistenceError> {
+        validate_non_negative_timestamp(revocation.now_ms)?;
+        validate_non_negative_timestamp(revocation.expected_recent_auth_at_ms)?;
+        database_revision(revocation.expected_user_revision)?;
+        database_revision(revocation.expected_auth_revision)?;
+        validate_security_event(revocation.event)?;
+        if revocation.event.reason != LoginSecurityReason::SessionRevoked
+            || revocation.event.occurred_at_ms != revocation.now_ms
+            || revocation.event.account_hmac.is_none()
+            || revocation.event.ip_prefix_hmac.is_none()
+        {
+            return Err(PersistenceError::InvalidSessionRevocationEvent);
+        }
+        match self {
+            Self::Sqlite(pool) => revoke_user_session_with_event_sqlite(pool, &revocation).await,
+            Self::Postgres(pool) => {
+                revoke_user_session_with_event_postgres(pool, &revocation).await
+            }
+        }
+    }
+
+    #[cfg(test)]
+    async fn logout_all_sessions(
         &self,
         user_id: EntityId,
         now_ms: i64,
@@ -760,21 +1011,68 @@ impl Database {
             .await
     }
 
+    pub async fn logout_all_sessions_with_event(
+        &self,
+        user_id: EntityId,
+        current_session_id: EntityId,
+        expected_recent_auth_at_ms: i64,
+        event: &NewLoginSecurityEvent,
+        now_ms: i64,
+    ) -> Result<LogoutAllResult, PersistenceError> {
+        validate_non_negative_timestamp(now_ms)?;
+        validate_non_negative_timestamp(expected_recent_auth_at_ms)?;
+        validate_security_event(event)?;
+        if event.reason != LoginSecurityReason::LogoutAll
+            || event.occurred_at_ms != now_ms
+            || event.account_hmac.is_none()
+            || event.ip_prefix_hmac.is_none()
+        {
+            return Err(PersistenceError::InvalidSessionRevocationEvent);
+        }
+        match self {
+            Self::Sqlite(pool) => {
+                logout_all_sessions_with_event_sqlite(
+                    pool,
+                    user_id,
+                    current_session_id,
+                    expected_recent_auth_at_ms,
+                    event,
+                    now_ms,
+                )
+                .await
+            }
+            Self::Postgres(pool) => {
+                logout_all_sessions_with_event_postgres(
+                    pool,
+                    user_id,
+                    current_session_id,
+                    expected_recent_auth_at_ms,
+                    event,
+                    now_ms,
+                )
+                .await
+            }
+        }
+    }
+
     pub async fn logout_all_sessions_and_rotate(
         &self,
         user_id: EntityId,
         current_session_id: EntityId,
+        expected_user_revision: Revision,
         replacement: &NewAuthSession,
         event: &NewLoginSecurityEvent,
         now_ms: i64,
     ) -> Result<LogoutAllResult, PersistenceError> {
         validate_non_negative_timestamp(now_ms)?;
+        database_revision(expected_user_revision)?;
         validate_new_session(replacement)?;
         validate_security_event(event)?;
         if replacement.user_id != user_id
             || replacement.id == current_session_id
             || event.reason != LoginSecurityReason::LogoutAll
             || event.occurred_at_ms != now_ms
+            || event.account_hmac.is_none()
             || event.ip_prefix_hmac != replacement.ip_prefix_hmac
             || event.user_agent_hash != replacement.user_agent_hash
             || replacement.ip_prefix_key_version != Some(event.digest_key_version)
@@ -787,6 +1085,7 @@ impl Database {
                     pool,
                     user_id,
                     current_session_id,
+                    expected_user_revision,
                     replacement,
                     event,
                     now_ms,
@@ -798,6 +1097,7 @@ impl Database {
                     pool,
                     user_id,
                     current_session_id,
+                    expected_user_revision,
                     replacement,
                     event,
                     now_ms,
@@ -807,16 +1107,7 @@ impl Database {
         }
     }
 
-    pub async fn advance_auth_revision_and_revoke_sessions(
-        &self,
-        user_id: EntityId,
-        now_ms: i64,
-        reason: SessionRevocationReason,
-    ) -> Result<LogoutAllResult, PersistenceError> {
-        self.revoke_all_sessions_inner(user_id, now_ms, reason)
-            .await
-    }
-
+    #[cfg(test)]
     async fn revoke_all_sessions_inner(
         &self,
         user_id: EntityId,
@@ -862,18 +1153,57 @@ impl Database {
         }
     }
 
-    pub async fn reserve_login_attempt(
+    pub async fn list_active_user_sessions(
         &self,
-        reservation: &LoginAttemptReservation,
-    ) -> Result<LoginRateDecision, PersistenceError> {
-        validate_login_attempt_reservation(reservation)?;
+        user_id: EntityId,
+        now_ms: i64,
+    ) -> Result<Vec<AuthSessionSummary>, PersistenceError> {
+        validate_non_negative_timestamp(now_ms)?;
         match self {
-            Self::Sqlite(pool) => reserve_login_attempt_sqlite(pool, reservation).await,
-            Self::Postgres(pool) => reserve_login_attempt_postgres(pool, reservation).await,
+            Self::Sqlite(pool) => {
+                let rows = sqlx::query(
+                    "SELECT s.id,s.status,s.auth_revision,s.auth_level,s.created_at_ms,s.authenticated_at_ms,s.recent_auth_at_ms,s.last_seen_at_ms,s.idle_expires_at_ms,s.absolute_expires_at_ms,s.ip_prefix_hmac IS NOT NULL AS has_ip_context,s.user_agent_hash IS NOT NULL AS has_user_agent_context,s.revoked_at_ms,s.revoked_reason,s.revision FROM auth_sessions AS s JOIN user_auth_state AS a ON a.user_id=s.user_id AND a.auth_revision=s.auth_revision WHERE s.user_id=? AND s.status='active' AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>? ORDER BY s.created_at_ms DESC,s.id DESC",
+                )
+                .bind(user_id.to_string())
+                .bind(now_ms)
+                .bind(now_ms)
+                .bind(now_ms)
+                .fetch_all(pool)
+                .await?;
+                rows.into_iter()
+                    .map(decode_sqlite_session_summary)
+                    .collect()
+            }
+            Self::Postgres(pool) => {
+                let rows = sqlx::query(
+                    "SELECT s.id,s.status,s.auth_revision,s.auth_level,s.created_at_ms,s.authenticated_at_ms,s.recent_auth_at_ms,s.last_seen_at_ms,s.idle_expires_at_ms,s.absolute_expires_at_ms,s.ip_prefix_hmac IS NOT NULL AS has_ip_context,s.user_agent_hash IS NOT NULL AS has_user_agent_context,s.revoked_at_ms,s.revoked_reason,s.revision FROM auth_sessions AS s JOIN user_auth_state AS a ON a.user_id=s.user_id AND a.auth_revision=s.auth_revision WHERE s.user_id=$1 AND s.status='active' AND s.last_seen_at_ms<=$2 AND s.idle_expires_at_ms>$2 AND s.absolute_expires_at_ms>$2 ORDER BY s.created_at_ms DESC,s.id DESC",
+                )
+                .bind(user_id.into_uuid())
+                .bind(now_ms)
+                .fetch_all(pool)
+                .await?;
+                rows.into_iter()
+                    .map(decode_postgres_session_summary)
+                    .collect()
+            }
         }
     }
 
-    pub async fn clear_login_account_bucket(
+    pub async fn reserve_login_attempt(
+        &self,
+        reservation: &LoginAttemptReservation,
+        event: &NewLoginSecurityEvent,
+    ) -> Result<LoginRateDecision, PersistenceError> {
+        validate_login_attempt_reservation(reservation)?;
+        validate_rate_limited_event(reservation, event)?;
+        match self {
+            Self::Sqlite(pool) => reserve_login_attempt_sqlite(pool, reservation, event).await,
+            Self::Postgres(pool) => reserve_login_attempt_postgres(pool, reservation, event).await,
+        }
+    }
+
+    #[cfg(test)]
+    async fn clear_login_account_bucket(
         &self,
         key_version: u32,
         account_hmac: &AuthHmac,
@@ -904,6 +1234,9 @@ impl Database {
         &self,
         event: &NewLoginSecurityEvent,
     ) -> Result<(), PersistenceError> {
+        if event.reason == LoginSecurityReason::RateLimited {
+            return Err(PersistenceError::RateLimitedEventMustBeAtomic);
+        }
         validate_security_event(event)?;
         match self {
             Self::Sqlite(pool) => insert_security_event_sqlite(pool, event).await?,
@@ -949,7 +1282,7 @@ fn validate_new_session(session: &NewAuthSession) -> Result<(), PersistenceError
         _ => return Err(PersistenceError::InvalidSessionContext),
     }
     if session.created_at_ms < 0
-        || session.authenticated_at_ms < session.created_at_ms
+        || session.authenticated_at_ms < 0
         || session.recent_auth_at_ms < session.authenticated_at_ms
         || session.last_seen_at_ms < session.created_at_ms
         || session.last_seen_at_ms < session.recent_auth_at_ms
@@ -1001,6 +1334,78 @@ fn validate_security_event(event: &NewLoginSecurityEvent) -> Result<(), Persiste
     Ok(())
 }
 
+fn validate_session_rotation_request(
+    user_id: EntityId,
+    current_session_id: EntityId,
+    replacement: &NewAuthSession,
+    event: &NewLoginSecurityEvent,
+    now_ms: i64,
+    expected_reason: LoginSecurityReason,
+) -> Result<(), PersistenceError> {
+    validate_non_negative_timestamp(now_ms)?;
+    validate_new_session(replacement)?;
+    validate_security_event(event)?;
+    if replacement.user_id != user_id
+        || replacement.id == current_session_id
+        || event.reason != expected_reason
+        || event.occurred_at_ms != now_ms
+        || event.account_hmac.is_none()
+        || event.ip_prefix_hmac != replacement.ip_prefix_hmac
+        || event.user_agent_hash != replacement.user_agent_hash
+        || replacement.ip_prefix_key_version != Some(event.digest_key_version)
+    {
+        return Err(PersistenceError::InvalidSessionRotation);
+    }
+    Ok(())
+}
+
+fn validate_same_revision_rotation_replacement(
+    replacement: &NewAuthSession,
+    expected_auth_revision: Revision,
+    current_auth_level: AuthLevel,
+    expected_authenticated_at_ms: i64,
+    expected_recent_auth_at_ms: i64,
+    current_absolute_expires_at_ms: i64,
+    now_ms: i64,
+) -> Result<(), PersistenceError> {
+    if replacement.auth_revision != expected_auth_revision
+        || replacement.auth_level != current_auth_level
+        || replacement.created_at_ms != now_ms
+        || replacement.authenticated_at_ms != expected_authenticated_at_ms
+        || replacement.recent_auth_at_ms != expected_recent_auth_at_ms
+        || replacement.last_seen_at_ms != now_ms
+        || replacement.absolute_expires_at_ms > current_absolute_expires_at_ms
+        || replacement.revision != Revision::initial()
+    {
+        return Err(PersistenceError::InvalidSessionRotation);
+    }
+    Ok(())
+}
+
+fn validate_password_rotation_replacement(
+    replacement: &NewAuthSession,
+    current_auth_revision: Revision,
+    current_auth_level: AuthLevel,
+    current_authenticated_at_ms: i64,
+    current_recent_auth_at_ms: i64,
+    current_absolute_expires_at_ms: i64,
+    now_ms: i64,
+) -> Result<Revision, PersistenceError> {
+    let next_auth_revision = current_auth_revision
+        .next()
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    validate_same_revision_rotation_replacement(
+        replacement,
+        next_auth_revision,
+        current_auth_level,
+        current_authenticated_at_ms,
+        current_recent_auth_at_ms,
+        current_absolute_expires_at_ms,
+        now_ms,
+    )?;
+    Ok(next_auth_revision)
+}
+
 fn validate_login_attempt_reservation(
     reservation: &LoginAttemptReservation,
 ) -> Result<(), PersistenceError> {
@@ -1026,6 +1431,24 @@ fn validate_login_attempt_reservation(
             .is_none()
     {
         return Err(PersistenceError::InvalidLoginRatePolicy);
+    }
+    Ok(())
+}
+
+fn validate_rate_limited_event(
+    reservation: &LoginAttemptReservation,
+    event: &NewLoginSecurityEvent,
+) -> Result<(), PersistenceError> {
+    validate_security_event(event)?;
+    if event.reason != LoginSecurityReason::RateLimited
+        || event.occurred_at_ms != reservation.now_ms
+        || event.digest_key_version != reservation.key_version
+        || event.request_id != reservation.request_id
+        || event.account_hmac != Some(reservation.account_hmac)
+        || event.ip_prefix_hmac != Some(reservation.ip_prefix_hmac)
+        || event.user_agent_hash != Some(reservation.user_agent_hash)
+    {
+        return Err(PersistenceError::InvalidLoginRateEvent);
     }
     Ok(())
 }
@@ -1158,6 +1581,385 @@ where
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PasswordUpgradeDecision {
+    NoUpgrade,
+    Apply,
+    ConcurrentWinner,
+}
+
+type PasswordUpgradeStateRow = (i64, i64, String, String, String, String, String, bool, i64);
+
+async fn lock_auth_revision_barrier_postgres(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: EntityId,
+) -> Result<Option<i64>, PersistenceError> {
+    Ok(
+        sqlx::query_scalar("SELECT auth_revision FROM user_auth_state WHERE user_id=$1 FOR UPDATE")
+            .bind(user_id.into_uuid())
+            .fetch_optional(&mut **transaction)
+            .await?,
+    )
+}
+
+async fn lock_active_user_postgres(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: EntityId,
+    expected_revision: Option<Revision>,
+) -> Result<bool, PersistenceError> {
+    let row: Option<i64> = match expected_revision {
+        Some(expected_revision) => sqlx::query_scalar(
+            "SELECT 1::BIGINT FROM users WHERE id=$1 AND status='active' AND deleted_at_ms IS NULL AND revision=$2 FOR UPDATE",
+        )
+        .bind(user_id.into_uuid())
+        .bind(database_revision(expected_revision)?)
+        .fetch_optional(&mut **transaction)
+        .await?,
+        None => sqlx::query_scalar(
+            "SELECT 1::BIGINT FROM users WHERE id=$1 AND status='active' AND deleted_at_ms IS NULL FOR UPDATE",
+        )
+        .bind(user_id.into_uuid())
+        .fetch_optional(&mut **transaction)
+        .await?,
+    };
+    Ok(row.is_some())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn password_upgrade_decision(
+    expected: &UserCredentials,
+    replacement_password_hash: Option<&PasswordHash>,
+    auth_revision: i64,
+    password_changed_at_ms: i64,
+    username: &str,
+    current_hash: &str,
+    role: &str,
+    status: &str,
+    principal_label: &str,
+    force_password_change: bool,
+    current_user_revision: i64,
+) -> Result<PasswordUpgradeDecision, PersistenceError> {
+    if auth_revision != database_revision(expected.auth_revision)?
+        || password_changed_at_ms != expected.password_changed_at_ms
+        || username != expected.username.as_str()
+        || role != expected.role.as_str()
+        || status != expected.status.as_str()
+        || principal_label != expected.principal_label.as_str()
+        || force_password_change != expected.force_password_change
+    {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    if replacement_password_hash == Some(&expected.password_hash) {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+
+    let current_user_revision = decode_revision(current_user_revision)?;
+    if current_user_revision == expected.user_revision
+        && current_hash == expected.password_hash.as_str()
+    {
+        return Ok(if replacement_password_hash.is_some() {
+            PasswordUpgradeDecision::Apply
+        } else {
+            PasswordUpgradeDecision::NoUpgrade
+        });
+    }
+
+    if replacement_password_hash.is_none() {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let concurrent_winner_revision = expected
+        .user_revision
+        .next()
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    if current_user_revision == concurrent_winner_revision
+        && current_hash != expected.password_hash.as_str()
+    {
+        return Ok(PasswordUpgradeDecision::ConcurrentWinner);
+    }
+    Err(PersistenceError::SessionPrincipalUnavailable)
+}
+
+async fn create_session_with_password_upgrade_sqlite(
+    pool: &SqlitePool,
+    session: &NewAuthSession,
+    event: &NewLoginSecurityEvent,
+    expected: &UserCredentials,
+    replacement_password_hash: Option<&PasswordHash>,
+) -> Result<AuthSessionSummary, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    let locked =
+        sqlx::query("UPDATE user_auth_state SET auth_revision=auth_revision WHERE user_id=?")
+            .bind(session.user_id.to_string())
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+    if locked != 1 {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let state: Option<PasswordUpgradeStateRow> = sqlx::query_as(
+        "SELECT a.auth_revision,a.password_changed_at_ms,u.username,u.password_hash,u.role,u.status,u.principal_label,u.force_password_change,u.revision FROM user_auth_state AS a JOIN users AS u ON u.id=a.user_id WHERE a.user_id=? AND u.deleted_at_ms IS NULL",
+    )
+    .bind(session.user_id.to_string())
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (
+        auth_revision,
+        password_changed_at_ms,
+        username,
+        current_hash,
+        role,
+        status,
+        principal_label,
+        force_password_change,
+        current_user_revision,
+    ) = state.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    let decision = password_upgrade_decision(
+        expected,
+        replacement_password_hash,
+        auth_revision,
+        password_changed_at_ms,
+        &username,
+        &current_hash,
+        &role,
+        &status,
+        &principal_label,
+        force_password_change,
+        current_user_revision,
+    )?;
+    if decision == PasswordUpgradeDecision::Apply {
+        let replacement_hash =
+            replacement_password_hash.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+        let next_user_revision = expected
+            .user_revision
+            .next()
+            .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+        let upgraded = sqlx::query(
+            "UPDATE users SET password_hash=?,revision=? WHERE id=? AND revision=? AND password_hash=? AND status='active' AND deleted_at_ms IS NULL",
+        )
+        .bind(replacement_hash.as_str())
+        .bind(database_revision(next_user_revision)?)
+        .bind(session.user_id.to_string())
+        .bind(database_revision(expected.user_revision)?)
+        .bind(expected.password_hash.as_str())
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if upgraded != 1 {
+            return Err(PersistenceError::SessionPrincipalUnavailable);
+        }
+        let updated = sqlx::query(
+            "UPDATE user_auth_state SET updated_at_ms=MAX(updated_at_ms,?) WHERE user_id=? AND auth_revision=? AND password_changed_at_ms=?",
+        )
+        .bind(session.created_at_ms)
+        .bind(session.user_id.to_string())
+        .bind(auth_revision)
+        .bind(expected.password_changed_at_ms)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if updated != 1 {
+            return Err(PersistenceError::SessionRevisionConflict);
+        }
+    }
+    insert_rotated_session_sqlite(&mut transaction, session).await?;
+    insert_security_event_sqlite(&mut *transaction, event).await?;
+    if let Some(account_hmac) = event.account_hmac.as_ref() {
+        sqlx::query(
+            "DELETE FROM login_rate_buckets WHERE scope='account' AND key_version=? AND bucket_hmac=?",
+        )
+        .bind(database_key_version(event.digest_key_version)?)
+        .bind(account_hmac.as_slice())
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(new_session_summary(session))
+}
+
+async fn create_session_with_password_upgrade_postgres(
+    pool: &PgPool,
+    session: &NewAuthSession,
+    event: &NewLoginSecurityEvent,
+    expected: &UserCredentials,
+    replacement_password_hash: Option<&PasswordHash>,
+) -> Result<AuthSessionSummary, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    if lock_auth_revision_barrier_postgres(&mut transaction, session.user_id)
+        .await?
+        .is_none()
+    {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let state: Option<PasswordUpgradeStateRow> = sqlx::query_as(
+        "SELECT a.auth_revision,a.password_changed_at_ms,u.username,u.password_hash,u.role,u.status,u.principal_label,u.force_password_change,u.revision FROM user_auth_state AS a JOIN users AS u ON u.id=a.user_id WHERE a.user_id=$1 AND u.deleted_at_ms IS NULL FOR UPDATE OF u",
+    )
+    .bind(session.user_id.into_uuid())
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (
+        auth_revision,
+        password_changed_at_ms,
+        username,
+        current_hash,
+        role,
+        status,
+        principal_label,
+        force_password_change,
+        current_user_revision,
+    ) = state.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    let decision = password_upgrade_decision(
+        expected,
+        replacement_password_hash,
+        auth_revision,
+        password_changed_at_ms,
+        &username,
+        &current_hash,
+        &role,
+        &status,
+        &principal_label,
+        force_password_change,
+        current_user_revision,
+    )?;
+    if decision == PasswordUpgradeDecision::Apply {
+        let replacement_hash =
+            replacement_password_hash.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+        let next_user_revision = expected
+            .user_revision
+            .next()
+            .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+        let upgraded = sqlx::query(
+            "UPDATE users SET password_hash=$1,revision=$2 WHERE id=$3 AND revision=$4 AND password_hash=$5 AND status='active' AND deleted_at_ms IS NULL",
+        )
+        .bind(replacement_hash.as_str())
+        .bind(database_revision(next_user_revision)?)
+        .bind(session.user_id.into_uuid())
+        .bind(database_revision(expected.user_revision)?)
+        .bind(expected.password_hash.as_str())
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if upgraded != 1 {
+            return Err(PersistenceError::SessionPrincipalUnavailable);
+        }
+        let updated = sqlx::query(
+            "UPDATE user_auth_state SET updated_at_ms=GREATEST(updated_at_ms,$1) WHERE user_id=$2 AND auth_revision=$3 AND password_changed_at_ms=$4",
+        )
+        .bind(session.created_at_ms)
+        .bind(session.user_id.into_uuid())
+        .bind(auth_revision)
+        .bind(expected.password_changed_at_ms)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if updated != 1 {
+            return Err(PersistenceError::SessionRevisionConflict);
+        }
+    }
+    insert_rotated_session_postgres(&mut transaction, session).await?;
+    insert_security_event_postgres(&mut *transaction, event).await?;
+    if let Some(account_hmac) = event.account_hmac.as_ref() {
+        sqlx::query(
+            "DELETE FROM login_rate_buckets WHERE scope='account' AND key_version=$1 AND bucket_hmac=$2",
+        )
+        .bind(database_key_version(event.digest_key_version)?)
+        .bind(account_hmac.as_slice())
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(new_session_summary(session))
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+async fn upgrade_password_hash_sqlite(
+    pool: &SqlitePool,
+    user_id: EntityId,
+    expected_user_revision: Revision,
+    next_user_revision: Revision,
+    expected_hash: &PasswordHash,
+    replacement_hash: &PasswordHash,
+    now_ms: i64,
+) -> Result<bool, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    let upgraded = sqlx::query(
+        "UPDATE users SET password_hash=?,revision=? WHERE id=? AND revision=? AND password_hash=? AND status='active' AND deleted_at_ms IS NULL",
+    )
+    .bind(replacement_hash.as_str())
+    .bind(database_revision(next_user_revision)?)
+    .bind(user_id.to_string())
+    .bind(database_revision(expected_user_revision)?)
+    .bind(expected_hash.as_str())
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if upgraded == 0 {
+        transaction.commit().await?;
+        return Ok(false);
+    }
+    let updated = sqlx::query(
+        "UPDATE user_auth_state SET updated_at_ms=MAX(updated_at_ms,?) WHERE user_id=?",
+    )
+    .bind(now_ms)
+    .bind(user_id.to_string())
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if updated != 1 {
+        return Err(PersistenceError::AuthStateUnavailable);
+    }
+    transaction.commit().await?;
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+async fn upgrade_password_hash_postgres(
+    pool: &PgPool,
+    user_id: EntityId,
+    expected_user_revision: Revision,
+    next_user_revision: Revision,
+    expected_hash: &PasswordHash,
+    replacement_hash: &PasswordHash,
+    now_ms: i64,
+) -> Result<bool, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    if lock_auth_revision_barrier_postgres(&mut transaction, user_id)
+        .await?
+        .is_none()
+    {
+        return Err(PersistenceError::AuthStateUnavailable);
+    }
+    let upgraded = sqlx::query(
+        "UPDATE users SET password_hash=$1,revision=$2 WHERE id=$3 AND revision=$4 AND password_hash=$5 AND status='active' AND deleted_at_ms IS NULL",
+    )
+    .bind(replacement_hash.as_str())
+    .bind(database_revision(next_user_revision)?)
+    .bind(user_id.into_uuid())
+    .bind(database_revision(expected_user_revision)?)
+    .bind(expected_hash.as_str())
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if upgraded == 0 {
+        transaction.commit().await?;
+        return Ok(false);
+    }
+    let updated = sqlx::query(
+        "UPDATE user_auth_state SET updated_at_ms=GREATEST(updated_at_ms,$1) WHERE user_id=$2",
+    )
+    .bind(now_ms)
+    .bind(user_id.into_uuid())
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if updated != 1 {
+        return Err(PersistenceError::AuthStateUnavailable);
+    }
+    transaction.commit().await?;
+    Ok(true)
+}
+
 async fn revoke_current_session_with_event_sqlite(
     pool: &SqlitePool,
     user_id: EntityId,
@@ -1173,11 +1975,10 @@ async fn revoke_current_session_with_event_sqlite(
         .execute(&mut *transaction)
         .await?;
     let row = sqlx::query(
-        "SELECT revision FROM auth_sessions WHERE id=? AND user_id=? AND status='active' AND created_at_ms<=?",
+        "SELECT revision FROM auth_sessions WHERE id=? AND user_id=? AND status='active'",
     )
     .bind(session_id.to_string())
     .bind(user_id.to_string())
-    .bind(now_ms)
     .fetch_optional(&mut *transaction)
     .await?;
     let Some(row) = row else {
@@ -1186,7 +1987,7 @@ async fn revoke_current_session_with_event_sqlite(
     };
     let revision: i64 = row.try_get("revision")?;
     let affected = sqlx::query(
-        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=?,revoked_reason=?,revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END WHERE id=? AND user_id=? AND status='active' AND revision=?",
+        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=MAX(created_at_ms,?),revoked_reason=?,revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END WHERE id=? AND user_id=? AND status='active' AND revision=?",
     )
     .bind(now_ms)
     .bind(reason.as_str())
@@ -1214,11 +2015,10 @@ async fn revoke_current_session_with_event_postgres(
 ) -> Result<bool, PersistenceError> {
     let mut transaction = pool.begin().await?;
     let row = sqlx::query(
-        "SELECT revision FROM auth_sessions WHERE id=$1 AND user_id=$2 AND status='active' AND created_at_ms<=$3 FOR UPDATE",
+        "SELECT revision FROM auth_sessions WHERE id=$1 AND user_id=$2 AND status='active' FOR UPDATE",
     )
     .bind(session_id.into_uuid())
     .bind(user_id.into_uuid())
-    .bind(now_ms)
     .fetch_optional(&mut *transaction)
     .await?;
     let Some(row) = row else {
@@ -1227,7 +2027,7 @@ async fn revoke_current_session_with_event_postgres(
     };
     let revision: i64 = row.try_get("revision")?;
     let affected = sqlx::query(
-        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=$1,revoked_reason=$2,revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END WHERE id=$3 AND user_id=$4 AND status='active' AND revision=$5",
+        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=GREATEST(created_at_ms,$1),revoked_reason=$2,revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END WHERE id=$3 AND user_id=$4 AND status='active' AND revision=$5",
     )
     .bind(now_ms)
     .bind(reason.as_str())
@@ -1245,6 +2045,106 @@ async fn revoke_current_session_with_event_postgres(
     Ok(true)
 }
 
+async fn revoke_user_session_with_event_sqlite(
+    pool: &SqlitePool,
+    revocation: &UserSessionRevocation<'_>,
+) -> Result<bool, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    let actor_auth_state_locked =
+        sqlx::query("UPDATE user_auth_state SET auth_revision=auth_revision WHERE user_id=?")
+            .bind(revocation.user_id.to_string())
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+    if actor_auth_state_locked != 1 {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let actor_is_valid: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.id=? AND s.user_id=? AND s.status='active' AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>? AND u.status='active' AND u.deleted_at_ms IS NULL AND u.revision=? AND a.auth_revision=? AND s.auth_revision=a.auth_revision AND s.recent_auth_at_ms=?",
+    )
+    .bind(revocation.actor_session_id.to_string())
+    .bind(revocation.user_id.to_string())
+    .bind(revocation.now_ms)
+    .bind(revocation.now_ms)
+    .bind(revocation.now_ms)
+    .bind(database_revision(revocation.expected_user_revision)?)
+    .bind(database_revision(revocation.expected_auth_revision)?)
+    .bind(revocation.expected_recent_auth_at_ms)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if actor_is_valid.is_none() {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let revoked = sqlx::query(
+        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=MAX(created_at_ms,?),revoked_reason='user_revoked',revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END WHERE id=? AND user_id=? AND status='active'",
+    )
+    .bind(revocation.now_ms)
+    .bind(revocation.target_session_id.to_string())
+    .bind(revocation.user_id.to_string())
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if revoked == 0 {
+        transaction.commit().await?;
+        return Ok(false);
+    }
+    insert_security_event_sqlite(&mut *transaction, revocation.event).await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
+async fn revoke_user_session_with_event_postgres(
+    pool: &PgPool,
+    revocation: &UserSessionRevocation<'_>,
+) -> Result<bool, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    let auth_revision = lock_auth_revision_barrier_postgres(&mut transaction, revocation.user_id)
+        .await?
+        .ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    if auth_revision != database_revision(revocation.expected_auth_revision)? {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    if !lock_active_user_postgres(
+        &mut transaction,
+        revocation.user_id,
+        Some(revocation.expected_user_revision),
+    )
+    .await?
+    {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let actor_is_valid: Option<i64> = sqlx::query_scalar(
+        "SELECT 1::BIGINT FROM auth_sessions WHERE id=$1 AND user_id=$2 AND status='active' AND last_seen_at_ms<=$3 AND idle_expires_at_ms>$3 AND absolute_expires_at_ms>$3 AND auth_revision=$4 AND recent_auth_at_ms=$5 FOR UPDATE",
+    )
+    .bind(revocation.actor_session_id.into_uuid())
+    .bind(revocation.user_id.into_uuid())
+    .bind(revocation.now_ms)
+    .bind(database_revision(revocation.expected_auth_revision)?)
+    .bind(revocation.expected_recent_auth_at_ms)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if actor_is_valid.is_none() {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let revoked = sqlx::query(
+        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=GREATEST(created_at_ms,$1),revoked_reason='user_revoked',revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END WHERE id=$2 AND user_id=$3 AND status='active'",
+    )
+    .bind(revocation.now_ms)
+    .bind(revocation.target_session_id.into_uuid())
+    .bind(revocation.user_id.into_uuid())
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if revoked == 0 {
+        transaction.commit().await?;
+        return Ok(false);
+    }
+    insert_security_event_postgres(&mut *transaction, revocation.event).await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
+#[cfg(test)]
 async fn create_session_sqlite(
     pool: &SqlitePool,
     session: &NewAuthSession,
@@ -1311,14 +2211,21 @@ async fn create_session_sqlite(
     Ok(new_session_summary(session))
 }
 
+#[cfg(test)]
 async fn create_session_postgres(
     pool: &PgPool,
     session: &NewAuthSession,
     event: &NewLoginSecurityEvent,
 ) -> Result<AuthSessionSummary, PersistenceError> {
     let mut transaction = pool.begin().await?;
+    if lock_auth_revision_barrier_postgres(&mut transaction, session.user_id)
+        .await?
+        .is_none()
+    {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
     let auth_revision: Option<i64> = sqlx::query_scalar(
-        "SELECT a.auth_revision FROM user_auth_state AS a JOIN users AS u ON u.id=a.user_id WHERE a.user_id=$1 AND u.status='active' AND u.deleted_at_ms IS NULL FOR UPDATE OF a,u",
+        "SELECT a.auth_revision FROM user_auth_state AS a JOIN users AS u ON u.id=a.user_id WHERE a.user_id=$1 AND u.status='active' AND u.deleted_at_ms IS NULL FOR UPDATE OF u",
     )
     .bind(session.user_id.into_uuid())
     .fetch_optional(&mut *transaction)
@@ -1471,6 +2378,7 @@ fn decode_authenticated_session(
 async fn authenticate_session_sqlite(
     pool: &SqlitePool,
     authentication: &SessionAuthentication,
+    touch_session: bool,
 ) -> Result<SessionAuthenticationOutcome, PersistenceError> {
     let mut transaction = pool.begin().await?;
     let csrf_key_version = authentication
@@ -1482,13 +2390,14 @@ async fn authenticate_session_sqlite(
         .as_ref()
         .map(|value| value.as_slice());
     let row = sqlx::query(
-        "SELECT CASE WHEN ? IS NULL THEN 1 WHEN s.csrf_key_version=? AND s.csrf_hmac=? THEN 1 ELSE 0 END AS csrf_matches,s.id AS session_id,s.user_id AS user_id,u.username AS username,u.role AS role,u.principal_label AS principal_label,u.force_password_change AS force_password_change,u.revision AS user_revision,s.auth_revision AS auth_revision,s.auth_level AS auth_level,s.created_at_ms AS created_at_ms,s.authenticated_at_ms AS authenticated_at_ms,s.recent_auth_at_ms AS recent_auth_at_ms,s.last_seen_at_ms AS last_seen_at_ms,s.idle_expires_at_ms AS idle_expires_at_ms,s.absolute_expires_at_ms AS absolute_expires_at_ms,s.ip_prefix_hmac IS NOT NULL AS has_ip_context,s.user_agent_hash IS NOT NULL AS has_user_agent_context,s.revision AS session_revision FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.token_key_version=? AND s.token_hmac=? AND s.status='active' AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>? AND u.status='active' AND u.deleted_at_ms IS NULL AND a.auth_revision=s.auth_revision",
+        "SELECT CASE WHEN ? IS NULL THEN 1 WHEN s.csrf_key_version=? AND s.csrf_hmac=? THEN 1 ELSE 0 END AS csrf_matches,s.id AS session_id,s.user_id AS user_id,u.username AS username,u.role AS role,u.principal_label AS principal_label,u.force_password_change AS force_password_change,u.revision AS user_revision,s.auth_revision AS auth_revision,s.auth_level AS auth_level,s.created_at_ms AS created_at_ms,s.authenticated_at_ms AS authenticated_at_ms,s.recent_auth_at_ms AS recent_auth_at_ms,s.last_seen_at_ms AS last_seen_at_ms,s.idle_expires_at_ms AS idle_expires_at_ms,s.absolute_expires_at_ms AS absolute_expires_at_ms,s.ip_prefix_hmac IS NOT NULL AS has_ip_context,s.user_agent_hash IS NOT NULL AS has_user_agent_context,s.revision AS session_revision FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.token_key_version=? AND s.token_hmac=? AND s.status='active' AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>? AND u.status='active' AND u.deleted_at_ms IS NULL AND a.auth_revision=s.auth_revision",
     )
     .bind(csrf_key_version)
     .bind(csrf_key_version)
     .bind(csrf_hmac)
     .bind(database_key_version(authentication.token_key_version)?)
     .bind(authentication.token_hmac.as_slice())
+    .bind(authentication.now_ms)
     .bind(authentication.now_ms)
     .bind(authentication.now_ms)
     .fetch_optional(&mut *transaction)
@@ -1503,8 +2412,10 @@ async fn authenticate_session_sqlite(
         return Ok(SessionAuthenticationOutcome::InvalidCsrf);
     }
     let mut authenticated = decode_sqlite_authenticated_session(row)?;
-    touch_authenticated_session_sqlite(&mut transaction, authentication, &mut authenticated)
-        .await?;
+    if touch_session {
+        touch_authenticated_session_sqlite(&mut transaction, authentication, &mut authenticated)
+            .await?;
+    }
     transaction.commit().await?;
     Ok(SessionAuthenticationOutcome::Authenticated(authenticated))
 }
@@ -1512,6 +2423,7 @@ async fn authenticate_session_sqlite(
 async fn authenticate_session_postgres(
     pool: &PgPool,
     authentication: &SessionAuthentication,
+    touch_session: bool,
 ) -> Result<SessionAuthenticationOutcome, PersistenceError> {
     let mut transaction = pool.begin().await?;
     let csrf_key_version = authentication
@@ -1522,16 +2434,50 @@ async fn authenticate_session_postgres(
         .csrf_hmac
         .as_ref()
         .map(|value| value.as_slice());
-    let row = sqlx::query(
-        "SELECT ($1::integer IS NULL OR (s.csrf_key_version=$1 AND s.csrf_hmac=$2)) AS csrf_matches,s.id AS session_id,s.user_id AS user_id,u.username AS username,u.role AS role,u.principal_label AS principal_label,u.force_password_change AS force_password_change,u.revision AS user_revision,s.auth_revision AS auth_revision,s.auth_level AS auth_level,s.created_at_ms AS created_at_ms,s.authenticated_at_ms AS authenticated_at_ms,s.recent_auth_at_ms AS recent_auth_at_ms,s.last_seen_at_ms AS last_seen_at_ms,s.idle_expires_at_ms AS idle_expires_at_ms,s.absolute_expires_at_ms AS absolute_expires_at_ms,s.ip_prefix_hmac IS NOT NULL AS has_ip_context,s.user_agent_hash IS NOT NULL AS has_user_agent_context,s.revision AS session_revision FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.token_key_version=$3 AND s.token_hmac=$4 AND s.status='active' AND s.idle_expires_at_ms>$5 AND s.absolute_expires_at_ms>$5 AND u.status='active' AND u.deleted_at_ms IS NULL AND a.auth_revision=s.auth_revision FOR UPDATE OF s,u,a",
-    )
-    .bind(csrf_key_version)
-    .bind(csrf_hmac)
-    .bind(database_key_version(authentication.token_key_version)?)
-    .bind(authentication.token_hmac.as_slice())
-    .bind(authentication.now_ms)
-    .fetch_optional(&mut *transaction)
-    .await?;
+    let row = if touch_session {
+        let candidate_user_id: Option<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM auth_sessions WHERE token_key_version=$1 AND token_hmac=$2",
+        )
+        .bind(database_key_version(authentication.token_key_version)?)
+        .bind(authentication.token_hmac.as_slice())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(candidate_user_id) = candidate_user_id else {
+            transaction.commit().await?;
+            return Ok(SessionAuthenticationOutcome::InvalidSession);
+        };
+        let candidate_user_id = EntityId::from_uuid(candidate_user_id);
+        if lock_auth_revision_barrier_postgres(&mut transaction, candidate_user_id)
+            .await?
+            .is_none()
+            || !lock_active_user_postgres(&mut transaction, candidate_user_id, None).await?
+        {
+            transaction.commit().await?;
+            return Ok(SessionAuthenticationOutcome::InvalidSession);
+        }
+        sqlx::query(
+            "SELECT ($1::integer IS NULL OR (s.csrf_key_version=$1 AND s.csrf_hmac=$2)) AS csrf_matches,s.id AS session_id,s.user_id AS user_id,u.username AS username,u.role AS role,u.principal_label AS principal_label,u.force_password_change AS force_password_change,u.revision AS user_revision,s.auth_revision AS auth_revision,s.auth_level AS auth_level,s.created_at_ms AS created_at_ms,s.authenticated_at_ms AS authenticated_at_ms,s.recent_auth_at_ms AS recent_auth_at_ms,s.last_seen_at_ms AS last_seen_at_ms,s.idle_expires_at_ms AS idle_expires_at_ms,s.absolute_expires_at_ms AS absolute_expires_at_ms,s.ip_prefix_hmac IS NOT NULL AS has_ip_context,s.user_agent_hash IS NOT NULL AS has_user_agent_context,s.revision AS session_revision FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.token_key_version=$3 AND s.token_hmac=$4 AND s.user_id=$5 AND s.status='active' AND s.last_seen_at_ms<=$6 AND s.idle_expires_at_ms>$6 AND s.absolute_expires_at_ms>$6 AND u.status='active' AND u.deleted_at_ms IS NULL AND a.auth_revision=s.auth_revision FOR UPDATE OF s",
+        )
+        .bind(csrf_key_version)
+        .bind(csrf_hmac)
+        .bind(database_key_version(authentication.token_key_version)?)
+        .bind(authentication.token_hmac.as_slice())
+        .bind(candidate_user_id.into_uuid())
+        .bind(authentication.now_ms)
+        .fetch_optional(&mut *transaction)
+        .await?
+    } else {
+        sqlx::query(
+            "SELECT ($1::integer IS NULL OR (s.csrf_key_version=$1 AND s.csrf_hmac=$2)) AS csrf_matches,s.id AS session_id,s.user_id AS user_id,u.username AS username,u.role AS role,u.principal_label AS principal_label,u.force_password_change AS force_password_change,u.revision AS user_revision,s.auth_revision AS auth_revision,s.auth_level AS auth_level,s.created_at_ms AS created_at_ms,s.authenticated_at_ms AS authenticated_at_ms,s.recent_auth_at_ms AS recent_auth_at_ms,s.last_seen_at_ms AS last_seen_at_ms,s.idle_expires_at_ms AS idle_expires_at_ms,s.absolute_expires_at_ms AS absolute_expires_at_ms,s.ip_prefix_hmac IS NOT NULL AS has_ip_context,s.user_agent_hash IS NOT NULL AS has_user_agent_context,s.revision AS session_revision FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.token_key_version=$3 AND s.token_hmac=$4 AND s.status='active' AND s.last_seen_at_ms<=$5 AND s.idle_expires_at_ms>$5 AND s.absolute_expires_at_ms>$5 AND u.status='active' AND u.deleted_at_ms IS NULL AND a.auth_revision=s.auth_revision",
+        )
+        .bind(csrf_key_version)
+        .bind(csrf_hmac)
+        .bind(database_key_version(authentication.token_key_version)?)
+        .bind(authentication.token_hmac.as_slice())
+        .bind(authentication.now_ms)
+        .fetch_optional(&mut *transaction)
+        .await?
+    };
     let Some(row) = row else {
         transaction.commit().await?;
         return Ok(SessionAuthenticationOutcome::InvalidSession);
@@ -1542,8 +2488,10 @@ async fn authenticate_session_postgres(
         return Ok(SessionAuthenticationOutcome::InvalidCsrf);
     }
     let mut authenticated = decode_postgres_authenticated_session(row)?;
-    touch_authenticated_session_postgres(&mut transaction, authentication, &mut authenticated)
-        .await?;
+    if touch_session {
+        touch_authenticated_session_postgres(&mut transaction, authentication, &mut authenticated)
+            .await?;
+    }
     transaction.commit().await?;
     Ok(SessionAuthenticationOutcome::Authenticated(authenticated))
 }
@@ -1716,6 +2664,372 @@ fn decode_session_summary(
     })
 }
 
+async fn rotate_current_session_sqlite(
+    pool: &SqlitePool,
+    user_id: EntityId,
+    current_session_id: EntityId,
+    expected_user_revision: Revision,
+    replacement: &NewAuthSession,
+    event: &NewLoginSecurityEvent,
+    now_ms: i64,
+) -> Result<AuthSessionSummary, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query("UPDATE auth_sessions SET revision=revision WHERE id=? AND user_id=?")
+        .bind(current_session_id.to_string())
+        .bind(user_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+    let current: Option<(i64, String, i64, i64)> = sqlx::query_as(
+        "SELECT s.auth_revision,s.auth_level,s.absolute_expires_at_ms,s.revision FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.id=? AND s.user_id=? AND s.status='active' AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>? AND u.status='active' AND u.deleted_at_ms IS NULL AND u.revision=? AND a.auth_revision=s.auth_revision",
+    )
+    .bind(current_session_id.to_string())
+    .bind(user_id.to_string())
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(database_revision(expected_user_revision)?)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (auth_revision, auth_level, absolute_expires_at_ms, session_revision) =
+        current.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    validate_same_revision_rotation_replacement(
+        replacement,
+        decode_revision(auth_revision)?,
+        AuthLevel::parse(&auth_level)?,
+        now_ms,
+        now_ms,
+        absolute_expires_at_ms,
+        now_ms,
+    )?;
+    let next_session_revision = decode_revision(session_revision)?
+        .next()
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    let revoked = sqlx::query(
+        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=MAX(created_at_ms,?),revoked_reason='rotation',revision=? WHERE id=? AND user_id=? AND status='active' AND revision=?",
+    )
+    .bind(now_ms)
+    .bind(database_revision(next_session_revision)?)
+    .bind(current_session_id.to_string())
+    .bind(user_id.to_string())
+    .bind(session_revision)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if revoked != 1 {
+        return Err(PersistenceError::SessionRevisionConflict);
+    }
+    insert_rotated_session_sqlite(&mut transaction, replacement).await?;
+    insert_security_event_sqlite(&mut *transaction, event).await?;
+    if let Some(account_hmac) = event.account_hmac.as_ref() {
+        sqlx::query(
+            "DELETE FROM login_rate_buckets WHERE scope='account' AND key_version=? AND bucket_hmac=?",
+        )
+        .bind(database_key_version(event.digest_key_version)?)
+        .bind(account_hmac.as_slice())
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(new_session_summary(replacement))
+}
+
+async fn rotate_current_session_postgres(
+    pool: &PgPool,
+    user_id: EntityId,
+    current_session_id: EntityId,
+    expected_user_revision: Revision,
+    replacement: &NewAuthSession,
+    event: &NewLoginSecurityEvent,
+    now_ms: i64,
+) -> Result<AuthSessionSummary, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    let auth_revision = lock_auth_revision_barrier_postgres(&mut transaction, user_id)
+        .await?
+        .ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    if !lock_active_user_postgres(&mut transaction, user_id, Some(expected_user_revision)).await? {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let current: Option<(i64, String, i64, i64)> = sqlx::query_as(
+        "SELECT auth_revision,auth_level,absolute_expires_at_ms,revision FROM auth_sessions WHERE id=$1 AND user_id=$2 AND status='active' AND last_seen_at_ms<=$3 AND idle_expires_at_ms>$3 AND absolute_expires_at_ms>$3 AND auth_revision=$4 FOR UPDATE",
+    )
+    .bind(current_session_id.into_uuid())
+    .bind(user_id.into_uuid())
+    .bind(now_ms)
+    .bind(auth_revision)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (auth_revision, auth_level, absolute_expires_at_ms, session_revision) =
+        current.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    validate_same_revision_rotation_replacement(
+        replacement,
+        decode_revision(auth_revision)?,
+        AuthLevel::parse(&auth_level)?,
+        now_ms,
+        now_ms,
+        absolute_expires_at_ms,
+        now_ms,
+    )?;
+    let next_session_revision = decode_revision(session_revision)?
+        .next()
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    let revoked = sqlx::query(
+        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=GREATEST(created_at_ms,$1),revoked_reason='rotation',revision=$2 WHERE id=$3 AND user_id=$4 AND status='active' AND revision=$5",
+    )
+    .bind(now_ms)
+    .bind(database_revision(next_session_revision)?)
+    .bind(current_session_id.into_uuid())
+    .bind(user_id.into_uuid())
+    .bind(session_revision)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if revoked != 1 {
+        return Err(PersistenceError::SessionRevisionConflict);
+    }
+    insert_rotated_session_postgres(&mut transaction, replacement).await?;
+    insert_security_event_postgres(&mut *transaction, event).await?;
+    if let Some(account_hmac) = event.account_hmac.as_ref() {
+        sqlx::query(
+            "DELETE FROM login_rate_buckets WHERE scope='account' AND key_version=$1 AND bucket_hmac=$2",
+        )
+        .bind(database_key_version(event.digest_key_version)?)
+        .bind(account_hmac.as_slice())
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(new_session_summary(replacement))
+}
+
+async fn change_password_and_rotate_sqlite(
+    pool: &SqlitePool,
+    rotation: &PasswordChangeRotation<'_>,
+) -> Result<PasswordChangeResult, PersistenceError> {
+    let PasswordChangeRotation {
+        user_id,
+        current_session_id,
+        expected_user_revision,
+        new_hash,
+        replacement,
+        event,
+        now_ms,
+    } = *rotation;
+    let mut transaction = pool.begin().await?;
+    sqlx::query("UPDATE auth_sessions SET revision=revision WHERE id=? AND user_id=?")
+        .bind(current_session_id.to_string())
+        .bind(user_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+    let current: Option<(i64, String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT s.auth_revision,s.auth_level,s.authenticated_at_ms,s.recent_auth_at_ms,s.absolute_expires_at_ms FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.id=? AND s.user_id=? AND s.status='active' AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>? AND u.status='active' AND u.deleted_at_ms IS NULL AND u.revision=? AND a.auth_revision=s.auth_revision",
+    )
+    .bind(current_session_id.to_string())
+    .bind(user_id.to_string())
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(database_revision(expected_user_revision)?)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (
+        current_auth_revision,
+        auth_level,
+        authenticated_at_ms,
+        recent_auth_at_ms,
+        absolute_expires_at_ms,
+    ) = current.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    let next_auth_revision = validate_password_rotation_replacement(
+        replacement,
+        decode_revision(current_auth_revision)?,
+        AuthLevel::parse(&auth_level)?,
+        authenticated_at_ms,
+        recent_auth_at_ms,
+        absolute_expires_at_ms,
+        now_ms,
+    )?;
+    let next_user_revision = expected_user_revision
+        .next()
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    let active_session_revisions: Vec<i64> = sqlx::query_scalar(
+        "SELECT revision FROM auth_sessions WHERE user_id=? AND status='active'",
+    )
+    .bind(user_id.to_string())
+    .fetch_all(&mut *transaction)
+    .await?;
+    for revision in active_session_revisions {
+        let next = decode_revision(revision)?
+            .next()
+            .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+        database_revision(next)?;
+    }
+    let user_updated = sqlx::query(
+        "UPDATE users SET password_hash=?,force_password_change=0,revision=? WHERE id=? AND revision=? AND status='active' AND deleted_at_ms IS NULL",
+    )
+    .bind(new_hash.as_str())
+    .bind(database_revision(next_user_revision)?)
+    .bind(user_id.to_string())
+    .bind(database_revision(expected_user_revision)?)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if user_updated != 1 {
+        return Err(PersistenceError::SessionRevisionConflict);
+    }
+    let auth_updated = sqlx::query(
+        "UPDATE user_auth_state SET auth_revision=?,password_changed_at_ms=MAX(password_changed_at_ms,?),updated_at_ms=MAX(updated_at_ms,?) WHERE user_id=? AND auth_revision=?",
+    )
+    .bind(database_revision(next_auth_revision)?)
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(user_id.to_string())
+    .bind(current_auth_revision)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if auth_updated != 1 {
+        return Err(PersistenceError::SessionRevisionConflict);
+    }
+    let revoked_sessions = sqlx::query(
+        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=MAX(created_at_ms,?),revoked_reason='password_changed',revision=revision+1 WHERE user_id=? AND status='active'",
+    )
+    .bind(now_ms)
+    .bind(user_id.to_string())
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    insert_rotated_session_sqlite(&mut transaction, replacement).await?;
+    insert_security_event_sqlite(&mut *transaction, event).await?;
+    if let Some(account_hmac) = event.account_hmac.as_ref() {
+        sqlx::query(
+            "DELETE FROM login_rate_buckets WHERE scope='account' AND key_version=? AND bucket_hmac=?",
+        )
+        .bind(database_key_version(event.digest_key_version)?)
+        .bind(account_hmac.as_slice())
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(PasswordChangeResult {
+        session: new_session_summary(replacement),
+        revoked_sessions,
+        auth_revision: next_auth_revision,
+    })
+}
+
+async fn change_password_and_rotate_postgres(
+    pool: &PgPool,
+    rotation: &PasswordChangeRotation<'_>,
+) -> Result<PasswordChangeResult, PersistenceError> {
+    let PasswordChangeRotation {
+        user_id,
+        current_session_id,
+        expected_user_revision,
+        new_hash,
+        replacement,
+        event,
+        now_ms,
+    } = *rotation;
+    let mut transaction = pool.begin().await?;
+    let auth_revision = lock_auth_revision_barrier_postgres(&mut transaction, user_id)
+        .await?
+        .ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    if !lock_active_user_postgres(&mut transaction, user_id, Some(expected_user_revision)).await? {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let current: Option<(i64, String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT auth_revision,auth_level,authenticated_at_ms,recent_auth_at_ms,absolute_expires_at_ms FROM auth_sessions WHERE id=$1 AND user_id=$2 AND status='active' AND last_seen_at_ms<=$3 AND idle_expires_at_ms>$3 AND absolute_expires_at_ms>$3 AND auth_revision=$4 FOR UPDATE",
+    )
+    .bind(current_session_id.into_uuid())
+    .bind(user_id.into_uuid())
+    .bind(now_ms)
+    .bind(auth_revision)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (
+        current_auth_revision,
+        auth_level,
+        authenticated_at_ms,
+        recent_auth_at_ms,
+        absolute_expires_at_ms,
+    ) = current.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    let next_auth_revision = validate_password_rotation_replacement(
+        replacement,
+        decode_revision(current_auth_revision)?,
+        AuthLevel::parse(&auth_level)?,
+        authenticated_at_ms,
+        recent_auth_at_ms,
+        absolute_expires_at_ms,
+        now_ms,
+    )?;
+    let next_user_revision = expected_user_revision
+        .next()
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    let active_session_revisions: Vec<i64> = sqlx::query_scalar(
+        "SELECT revision FROM auth_sessions WHERE user_id=$1 AND status='active' ORDER BY id FOR UPDATE",
+    )
+    .bind(user_id.into_uuid())
+    .fetch_all(&mut *transaction)
+    .await?;
+    for revision in active_session_revisions {
+        let next = decode_revision(revision)?
+            .next()
+            .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+        database_revision(next)?;
+    }
+    let user_updated = sqlx::query(
+        "UPDATE users SET password_hash=$1,force_password_change=false,revision=$2 WHERE id=$3 AND revision=$4 AND status='active' AND deleted_at_ms IS NULL",
+    )
+    .bind(new_hash.as_str())
+    .bind(database_revision(next_user_revision)?)
+    .bind(user_id.into_uuid())
+    .bind(database_revision(expected_user_revision)?)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if user_updated != 1 {
+        return Err(PersistenceError::SessionRevisionConflict);
+    }
+    let auth_updated = sqlx::query(
+        "UPDATE user_auth_state SET auth_revision=$1,password_changed_at_ms=GREATEST(password_changed_at_ms,$2),updated_at_ms=GREATEST(updated_at_ms,$2) WHERE user_id=$3 AND auth_revision=$4",
+    )
+    .bind(database_revision(next_auth_revision)?)
+    .bind(now_ms)
+    .bind(user_id.into_uuid())
+    .bind(current_auth_revision)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if auth_updated != 1 {
+        return Err(PersistenceError::SessionRevisionConflict);
+    }
+    let revoked_sessions = sqlx::query(
+        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=GREATEST(created_at_ms,$1),revoked_reason='password_changed',revision=revision+1 WHERE user_id=$2 AND status='active'",
+    )
+    .bind(now_ms)
+    .bind(user_id.into_uuid())
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    insert_rotated_session_postgres(&mut transaction, replacement).await?;
+    insert_security_event_postgres(&mut *transaction, event).await?;
+    if let Some(account_hmac) = event.account_hmac.as_ref() {
+        sqlx::query(
+            "DELETE FROM login_rate_buckets WHERE scope='account' AND key_version=$1 AND bucket_hmac=$2",
+        )
+        .bind(database_key_version(event.digest_key_version)?)
+        .bind(account_hmac.as_slice())
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(PasswordChangeResult {
+        session: new_session_summary(replacement),
+        revoked_sessions,
+        auth_revision: next_auth_revision,
+    })
+}
+
+#[cfg(test)]
 async fn revoke_all_sessions_sqlite(
     pool: &SqlitePool,
     user_id: EntityId,
@@ -1765,6 +3079,7 @@ async fn revoke_all_sessions_sqlite(
     })
 }
 
+#[cfg(test)]
 async fn revoke_all_sessions_postgres(
     pool: &PgPool,
     user_id: EntityId,
@@ -1806,11 +3121,159 @@ async fn revoke_all_sessions_postgres(
     })
 }
 
+async fn logout_all_sessions_with_event_sqlite(
+    pool: &SqlitePool,
+    user_id: EntityId,
+    current_session_id: EntityId,
+    expected_recent_auth_at_ms: i64,
+    event: &NewLoginSecurityEvent,
+    now_ms: i64,
+) -> Result<LogoutAllResult, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    let locked =
+        sqlx::query("UPDATE user_auth_state SET auth_revision=auth_revision WHERE user_id=?")
+            .bind(user_id.to_string())
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+    if locked != 1 {
+        return Err(PersistenceError::AuthStateUnavailable);
+    }
+    let current: Option<i64> = sqlx::query_scalar(
+        "SELECT a.auth_revision FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.id=? AND s.user_id=? AND s.status='active' AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>? AND u.status='active' AND u.deleted_at_ms IS NULL AND a.auth_revision=s.auth_revision AND s.recent_auth_at_ms=?",
+    )
+    .bind(current_session_id.to_string())
+    .bind(user_id.to_string())
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(expected_recent_auth_at_ms)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let current = current.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    let next = decode_revision(current)?
+        .next()
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    let active_session_revisions: Vec<i64> = sqlx::query_scalar(
+        "SELECT revision FROM auth_sessions WHERE user_id=? AND status='active'",
+    )
+    .bind(user_id.to_string())
+    .fetch_all(&mut *transaction)
+    .await?;
+    for revision in active_session_revisions {
+        let next_session_revision = decode_revision(revision)?
+            .next()
+            .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+        database_revision(next_session_revision)?;
+    }
+    let updated = sqlx::query(
+        "UPDATE user_auth_state SET auth_revision=?,updated_at_ms=MAX(updated_at_ms,?) WHERE user_id=? AND auth_revision=?",
+    )
+    .bind(database_revision(next)?)
+    .bind(now_ms)
+    .bind(user_id.to_string())
+    .bind(current)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if updated != 1 {
+        return Err(PersistenceError::SessionRevisionConflict);
+    }
+    let revoked_sessions = sqlx::query(
+        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=MAX(created_at_ms,?),revoked_reason='logout_all',revision=revision+1 WHERE user_id=? AND status='active'",
+    )
+    .bind(now_ms)
+    .bind(user_id.to_string())
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    insert_security_event_sqlite(&mut *transaction, event).await?;
+    transaction.commit().await?;
+    Ok(LogoutAllResult {
+        revoked_sessions,
+        auth_revision: next,
+        kept_current: false,
+    })
+}
+
+async fn logout_all_sessions_with_event_postgres(
+    pool: &PgPool,
+    user_id: EntityId,
+    current_session_id: EntityId,
+    expected_recent_auth_at_ms: i64,
+    event: &NewLoginSecurityEvent,
+    now_ms: i64,
+) -> Result<LogoutAllResult, PersistenceError> {
+    let mut transaction = pool.begin().await?;
+    let auth_revision = lock_auth_revision_barrier_postgres(&mut transaction, user_id)
+        .await?
+        .ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    if !lock_active_user_postgres(&mut transaction, user_id, None).await? {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let current: Option<i64> = sqlx::query_scalar(
+        "SELECT auth_revision FROM auth_sessions WHERE id=$1 AND user_id=$2 AND status='active' AND last_seen_at_ms<=$3 AND idle_expires_at_ms>$3 AND absolute_expires_at_ms>$3 AND auth_revision=$4 AND recent_auth_at_ms=$5 FOR UPDATE",
+    )
+    .bind(current_session_id.into_uuid())
+    .bind(user_id.into_uuid())
+    .bind(now_ms)
+    .bind(auth_revision)
+    .bind(expected_recent_auth_at_ms)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let current = current.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    let next = decode_revision(current)?
+        .next()
+        .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+    let active_session_revisions: Vec<i64> = sqlx::query_scalar(
+        "SELECT revision FROM auth_sessions WHERE user_id=$1 AND status='active' ORDER BY id FOR UPDATE",
+    )
+    .bind(user_id.into_uuid())
+    .fetch_all(&mut *transaction)
+    .await?;
+    for revision in active_session_revisions {
+        let next_session_revision = decode_revision(revision)?
+            .next()
+            .map_err(|_| PersistenceError::RevisionOutOfRange)?;
+        database_revision(next_session_revision)?;
+    }
+    let updated = sqlx::query(
+        "UPDATE user_auth_state SET auth_revision=$1,updated_at_ms=GREATEST(updated_at_ms,$2) WHERE user_id=$3 AND auth_revision=$4",
+    )
+    .bind(database_revision(next)?)
+    .bind(now_ms)
+    .bind(user_id.into_uuid())
+    .bind(current)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if updated != 1 {
+        return Err(PersistenceError::SessionRevisionConflict);
+    }
+    let revoked_sessions = sqlx::query(
+        "UPDATE auth_sessions SET status='revoked',revoked_at_ms=GREATEST(created_at_ms,$1),revoked_reason='logout_all',revision=revision+1 WHERE user_id=$2 AND status='active'",
+    )
+    .bind(now_ms)
+    .bind(user_id.into_uuid())
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    insert_security_event_postgres(&mut *transaction, event).await?;
+    transaction.commit().await?;
+    Ok(LogoutAllResult {
+        revoked_sessions,
+        auth_revision: next,
+        kept_current: false,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn validate_rotation_replacement(
     replacement: &NewAuthSession,
     current_auth_revision: Revision,
     current_auth_level: AuthLevel,
+    current_authenticated_at_ms: i64,
+    current_recent_auth_at_ms: i64,
     current_absolute_expires_at_ms: i64,
     now_ms: i64,
 ) -> Result<Revision, PersistenceError> {
@@ -1820,8 +3283,8 @@ fn validate_rotation_replacement(
     if replacement.auth_revision != next
         || replacement.auth_level != current_auth_level
         || replacement.created_at_ms != now_ms
-        || replacement.authenticated_at_ms != now_ms
-        || replacement.recent_auth_at_ms != now_ms
+        || replacement.authenticated_at_ms != current_authenticated_at_ms
+        || replacement.recent_auth_at_ms != current_recent_auth_at_ms
         || replacement.last_seen_at_ms != now_ms
         || replacement.absolute_expires_at_ms > current_absolute_expires_at_ms
         || replacement.revision != Revision::initial()
@@ -1835,6 +3298,7 @@ async fn rotate_logout_all_sqlite(
     pool: &SqlitePool,
     user_id: EntityId,
     current_session_id: EntityId,
+    expected_user_revision: Revision,
     replacement: &NewAuthSession,
     event: &NewLoginSecurityEvent,
     now_ms: i64,
@@ -1849,21 +3313,30 @@ async fn rotate_logout_all_sqlite(
     if locked != 1 {
         return Err(PersistenceError::AuthStateUnavailable);
     }
-    let current: Option<(i64, String, i64)> = sqlx::query_as(
-        "SELECT s.auth_revision,s.auth_level,s.absolute_expires_at_ms FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.id=? AND s.user_id=? AND s.status='active' AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>? AND u.status='active' AND u.deleted_at_ms IS NULL AND a.auth_revision=s.auth_revision",
+    let current: Option<(i64, String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT s.auth_revision,s.auth_level,s.authenticated_at_ms,s.recent_auth_at_ms,s.absolute_expires_at_ms FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.id=? AND s.user_id=? AND s.status='active' AND s.last_seen_at_ms<=? AND s.idle_expires_at_ms>? AND s.absolute_expires_at_ms>? AND u.status='active' AND u.deleted_at_ms IS NULL AND u.revision=? AND a.auth_revision=s.auth_revision",
     )
     .bind(current_session_id.to_string())
     .bind(user_id.to_string())
     .bind(now_ms)
     .bind(now_ms)
+    .bind(now_ms)
+    .bind(database_revision(expected_user_revision)?)
     .fetch_optional(&mut *transaction)
     .await?;
-    let (current_auth_revision, current_auth_level, absolute_expires_at_ms) =
-        current.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    let (
+        current_auth_revision,
+        current_auth_level,
+        authenticated_at_ms,
+        recent_auth_at_ms,
+        absolute_expires_at_ms,
+    ) = current.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
     let next = validate_rotation_replacement(
         replacement,
         decode_revision(current_auth_revision)?,
         AuthLevel::parse(&current_auth_level)?,
+        authenticated_at_ms,
+        recent_auth_at_ms,
         absolute_expires_at_ms,
         now_ms,
     )?;
@@ -1902,25 +3375,40 @@ async fn rotate_logout_all_postgres(
     pool: &PgPool,
     user_id: EntityId,
     current_session_id: EntityId,
+    expected_user_revision: Revision,
     replacement: &NewAuthSession,
     event: &NewLoginSecurityEvent,
     now_ms: i64,
 ) -> Result<LogoutAllResult, PersistenceError> {
     let mut transaction = pool.begin().await?;
-    let current: Option<(i64, String, i64)> = sqlx::query_as(
-        "SELECT s.auth_revision,s.auth_level,s.absolute_expires_at_ms FROM auth_sessions AS s JOIN users AS u ON u.id=s.user_id JOIN user_auth_state AS a ON a.user_id=s.user_id WHERE s.id=$1 AND s.user_id=$2 AND s.status='active' AND s.idle_expires_at_ms>$3 AND s.absolute_expires_at_ms>$3 AND u.status='active' AND u.deleted_at_ms IS NULL AND a.auth_revision=s.auth_revision FOR UPDATE OF s,u,a",
+    let auth_revision = lock_auth_revision_barrier_postgres(&mut transaction, user_id)
+        .await?
+        .ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    if !lock_active_user_postgres(&mut transaction, user_id, Some(expected_user_revision)).await? {
+        return Err(PersistenceError::SessionPrincipalUnavailable);
+    }
+    let current: Option<(i64, String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT auth_revision,auth_level,authenticated_at_ms,recent_auth_at_ms,absolute_expires_at_ms FROM auth_sessions WHERE id=$1 AND user_id=$2 AND status='active' AND last_seen_at_ms<=$3 AND idle_expires_at_ms>$3 AND absolute_expires_at_ms>$3 AND auth_revision=$4 FOR UPDATE",
     )
     .bind(current_session_id.into_uuid())
     .bind(user_id.into_uuid())
     .bind(now_ms)
+    .bind(auth_revision)
     .fetch_optional(&mut *transaction)
     .await?;
-    let (current_auth_revision, current_auth_level, absolute_expires_at_ms) =
-        current.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
+    let (
+        current_auth_revision,
+        current_auth_level,
+        authenticated_at_ms,
+        recent_auth_at_ms,
+        absolute_expires_at_ms,
+    ) = current.ok_or(PersistenceError::SessionPrincipalUnavailable)?;
     let next = validate_rotation_replacement(
         replacement,
         decode_revision(current_auth_revision)?,
         AuthLevel::parse(&current_auth_level)?,
+        authenticated_at_ms,
+        recent_auth_at_ms,
         absolute_expires_at_ms,
         now_ms,
     )?;
@@ -2030,6 +3518,7 @@ struct RateBucketOutcome {
     remaining_attempts: u32,
     reset_at_ms: i64,
     blocked_until_ms: Option<i64>,
+    entered_blocked: bool,
 }
 
 fn combine_rate_bucket_outcomes(outcomes: &[RateBucketOutcome], now_ms: i64) -> LoginRateDecision {
@@ -2069,6 +3558,7 @@ fn rate_bucket_is_limited(outcome: RateBucketOutcome, now_ms: i64) -> bool {
 async fn reserve_login_attempt_sqlite(
     pool: &SqlitePool,
     reservation: &LoginAttemptReservation,
+    event: &NewLoginSecurityEvent,
 ) -> Result<LoginRateDecision, PersistenceError> {
     if let Some(decision) = preflight_existing_rate_limit_sqlite(pool, reservation).await? {
         return Ok(decision);
@@ -2084,7 +3574,15 @@ async fn reserve_login_attempt_sqlite(
     .await?;
     if rate_bucket_is_limited(account, reservation.now_ms) {
         let decision = combine_rate_bucket_outcomes(&[account], reservation.now_ms);
-        transaction.commit().await?;
+        if account.entered_blocked {
+            if let Err(error) = insert_security_event_sqlite(&mut *transaction, event).await {
+                transaction.rollback().await?;
+                return Err(error);
+            }
+            transaction.commit().await?;
+        } else {
+            transaction.rollback().await?;
+        }
         return Ok(decision);
     }
     let ip = reserve_rate_bucket_sqlite(
@@ -2097,7 +3595,15 @@ async fn reserve_login_attempt_sqlite(
     .await?;
     if rate_bucket_is_limited(ip, reservation.now_ms) {
         let decision = combine_rate_bucket_outcomes(&[account, ip], reservation.now_ms);
-        transaction.commit().await?;
+        if ip.entered_blocked {
+            if let Err(error) = insert_security_event_sqlite(&mut *transaction, event).await {
+                transaction.rollback().await?;
+                return Err(error);
+            }
+            transaction.commit().await?;
+        } else {
+            transaction.rollback().await?;
+        }
         return Ok(decision);
     }
     let global = reserve_rate_bucket_sqlite(
@@ -2108,6 +3614,19 @@ async fn reserve_login_attempt_sqlite(
         reservation,
     )
     .await?;
+    if rate_bucket_is_limited(global, reservation.now_ms) {
+        let decision = combine_rate_bucket_outcomes(&[account, ip, global], reservation.now_ms);
+        if global.entered_blocked {
+            if let Err(error) = insert_security_event_sqlite(&mut *transaction, event).await {
+                transaction.rollback().await?;
+                return Err(error);
+            }
+            transaction.commit().await?;
+        } else {
+            transaction.rollback().await?;
+        }
+        return Ok(decision);
+    }
     transaction.commit().await?;
     Ok(combine_rate_bucket_outcomes(
         &[account, ip, global],
@@ -2118,6 +3637,7 @@ async fn reserve_login_attempt_sqlite(
 async fn reserve_login_attempt_postgres(
     pool: &PgPool,
     reservation: &LoginAttemptReservation,
+    event: &NewLoginSecurityEvent,
 ) -> Result<LoginRateDecision, PersistenceError> {
     if let Some(decision) = preflight_existing_rate_limit_postgres(pool, reservation).await? {
         return Ok(decision);
@@ -2133,7 +3653,15 @@ async fn reserve_login_attempt_postgres(
     .await?;
     if rate_bucket_is_limited(account, reservation.now_ms) {
         let decision = combine_rate_bucket_outcomes(&[account], reservation.now_ms);
-        transaction.commit().await?;
+        if account.entered_blocked {
+            if let Err(error) = insert_security_event_postgres(&mut *transaction, event).await {
+                transaction.rollback().await?;
+                return Err(error);
+            }
+            transaction.commit().await?;
+        } else {
+            transaction.rollback().await?;
+        }
         return Ok(decision);
     }
     let ip = reserve_rate_bucket_postgres(
@@ -2146,7 +3674,15 @@ async fn reserve_login_attempt_postgres(
     .await?;
     if rate_bucket_is_limited(ip, reservation.now_ms) {
         let decision = combine_rate_bucket_outcomes(&[account, ip], reservation.now_ms);
-        transaction.commit().await?;
+        if ip.entered_blocked {
+            if let Err(error) = insert_security_event_postgres(&mut *transaction, event).await {
+                transaction.rollback().await?;
+                return Err(error);
+            }
+            transaction.commit().await?;
+        } else {
+            transaction.rollback().await?;
+        }
         return Ok(decision);
     }
     let global = reserve_rate_bucket_postgres(
@@ -2157,6 +3693,19 @@ async fn reserve_login_attempt_postgres(
         reservation,
     )
     .await?;
+    if rate_bucket_is_limited(global, reservation.now_ms) {
+        let decision = combine_rate_bucket_outcomes(&[account, ip, global], reservation.now_ms);
+        if global.entered_blocked {
+            if let Err(error) = insert_security_event_postgres(&mut *transaction, event).await {
+                transaction.rollback().await?;
+                return Err(error);
+            }
+            transaction.commit().await?;
+        } else {
+            transaction.rollback().await?;
+        }
+        return Ok(decision);
+    }
     transaction.commit().await?;
     Ok(combine_rate_bucket_outcomes(
         &[account, ip, global],
@@ -2237,6 +3786,7 @@ async fn reserve_rate_bucket_sqlite(
             remaining_attempts: max_attempts - 1,
             reset_at_ms: initial_window_expires_at_ms,
             blocked_until_ms: None,
+            entered_blocked: false,
         });
     }
     let row = sqlx::query(
@@ -2258,6 +3808,7 @@ async fn reserve_rate_bucket_sqlite(
             attempt_count,
             blocked_until_ms,
             max_attempts,
+            false,
         ));
     }
     let (
@@ -2291,6 +3842,9 @@ async fn reserve_rate_bucket_sqlite(
         new_attempt_count,
         new_blocked_until_ms,
         max_attempts,
+        !blocked_until_ms.is_some_and(|blocked_until_ms| blocked_until_ms > reservation.now_ms)
+            && new_blocked_until_ms
+                .is_some_and(|blocked_until_ms| blocked_until_ms > reservation.now_ms),
     ))
 }
 
@@ -2322,6 +3876,7 @@ async fn reserve_rate_bucket_postgres(
             remaining_attempts: max_attempts - 1,
             reset_at_ms: initial_window_expires_at_ms,
             blocked_until_ms: None,
+            entered_blocked: false,
         });
     }
     let row = sqlx::query(
@@ -2343,6 +3898,7 @@ async fn reserve_rate_bucket_postgres(
             i64::from(attempt_count),
             blocked_until_ms,
             max_attempts,
+            false,
         ));
     }
     let (
@@ -2378,6 +3934,9 @@ async fn reserve_rate_bucket_postgres(
         i64::from(new_attempt_count),
         new_blocked_until_ms,
         max_attempts,
+        !blocked_until_ms.is_some_and(|blocked_until_ms| blocked_until_ms > reservation.now_ms)
+            && new_blocked_until_ms
+                .is_some_and(|blocked_until_ms| blocked_until_ms > reservation.now_ms),
     ))
 }
 
@@ -2430,12 +3989,14 @@ fn rate_bucket_outcome(
     attempt_count: i64,
     blocked_until_ms: Option<i64>,
     max_attempts: u32,
+    entered_blocked: bool,
 ) -> RateBucketOutcome {
     let attempts = u32::try_from(attempt_count).unwrap_or(u32::MAX);
     RateBucketOutcome {
         remaining_attempts: max_attempts.saturating_sub(attempts),
         reset_at_ms,
         blocked_until_ms,
+        entered_blocked,
     }
 }
 
@@ -2791,6 +4352,10 @@ pub enum PersistenceError {
     InvalidRequestId,
     #[error("the login rate policy is invalid")]
     InvalidLoginRatePolicy,
+    #[error("the rate-limit event does not match the login-attempt reservation")]
+    InvalidLoginRateEvent,
+    #[error("rate-limit events must be committed atomically with the blocking bucket transition")]
+    RateLimitedEventMustBeAtomic,
     #[error("session creation must atomically record a successful login event")]
     SessionEventMustRecordLoginSuccess,
     #[error("the session principal is unavailable or its authentication revision changed")]
@@ -2799,7 +4364,7 @@ pub enum PersistenceError {
     AuthStateUnavailable,
     #[error("the session revision changed during the operation")]
     SessionRevisionConflict,
-    #[error("the requested logout-all rotation is invalid")]
+    #[error("the requested session rotation is invalid")]
     InvalidSessionRotation,
     #[error("the current-session revocation event does not match the logout transition")]
     InvalidSessionRevocationEvent,
@@ -2841,15 +4406,16 @@ mod tests {
         UserRole, Username,
     };
     use sqlx::{
-        PgPool,
+        PgPool, SqlitePool,
         postgres::{PgConnectOptions, PgPoolOptions},
     };
 
     use super::{
         AuthLevel, AuthSessionStatus, BootstrapState, ConnectionSettings, Database, DatabaseEngine,
         LoginAttemptReservation, LoginRateDecision, LoginSecurityReason, NewAuthSession,
-        NewLoginSecurityEvent, PersistenceError, SessionAuthentication,
-        SessionAuthenticationOutcome, SessionRevocationReason,
+        NewLoginSecurityEvent, PasswordChangeRotation, PersistenceError, SessionAuthentication,
+        SessionAuthenticationOutcome, SessionRevocationReason, UserCredentials,
+        UserSessionRevocation,
     };
 
     fn settings() -> ConnectionSettings {
@@ -2914,11 +4480,41 @@ mod tests {
                     .execute(&admin)
                     .await?;
             }
+            "nodecontroll_test_session_timeline_upgrade" => {
+                sqlx::query(
+                    "DROP SCHEMA IF EXISTS nodecontroll_test_session_timeline_upgrade CASCADE",
+                )
+                .execute(&admin)
+                .await?;
+                sqlx::query("CREATE SCHEMA nodecontroll_test_session_timeline_upgrade")
+                    .execute(&admin)
+                    .await?;
+            }
             "nodecontroll_test_auth_rollback" => {
                 sqlx::query("DROP SCHEMA IF EXISTS nodecontroll_test_auth_rollback CASCADE")
                     .execute(&admin)
                     .await?;
                 sqlx::query("CREATE SCHEMA nodecontroll_test_auth_rollback")
+                    .execute(&admin)
+                    .await?;
+            }
+            "nodecontroll_test_recent_auth_migration_rollback" => {
+                sqlx::query(
+                    "DROP SCHEMA IF EXISTS nodecontroll_test_recent_auth_migration_rollback CASCADE",
+                )
+                .execute(&admin)
+                .await?;
+                sqlx::query("CREATE SCHEMA nodecontroll_test_recent_auth_migration_rollback")
+                    .execute(&admin)
+                    .await?;
+            }
+            "nodecontroll_test_session_timeline_migration_rollback" => {
+                sqlx::query(
+                    "DROP SCHEMA IF EXISTS nodecontroll_test_session_timeline_migration_rollback CASCADE",
+                )
+                .execute(&admin)
+                .await?;
+                sqlx::query("CREATE SCHEMA nodecontroll_test_session_timeline_migration_rollback")
                     .execute(&admin)
                     .await?;
             }
@@ -2985,10 +4581,29 @@ mod tests {
                         .execute(&self.admin)
                         .await?;
                 }
+                "nodecontroll_test_session_timeline_upgrade" => {
+                    sqlx::query("DROP SCHEMA nodecontroll_test_session_timeline_upgrade CASCADE")
+                        .execute(&self.admin)
+                        .await?;
+                }
                 "nodecontroll_test_auth_rollback" => {
                     sqlx::query("DROP SCHEMA nodecontroll_test_auth_rollback CASCADE")
                         .execute(&self.admin)
                         .await?;
+                }
+                "nodecontroll_test_recent_auth_migration_rollback" => {
+                    sqlx::query(
+                        "DROP SCHEMA nodecontroll_test_recent_auth_migration_rollback CASCADE",
+                    )
+                    .execute(&self.admin)
+                    .await?;
+                }
+                "nodecontroll_test_session_timeline_migration_rollback" => {
+                    sqlx::query(
+                        "DROP SCHEMA nodecontroll_test_session_timeline_migration_rollback CASCADE",
+                    )
+                    .execute(&self.admin)
+                    .await?;
                 }
                 _ => panic!("unexpected PostgreSQL fixture schema"),
             }
@@ -3028,6 +4643,90 @@ mod tests {
             revision: Revision::initial(),
             created_at_ms: 1_777_777_777_000,
         }
+    }
+
+    fn member_fixture(marker: u8) -> UserAccount {
+        let username = Username::parse(format!("Member{marker}"));
+        let password_hash = PasswordHash::parse(
+            "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        );
+        let principal_label = PrincipalLabel::parse(format!("member-{}", EntityId::new()));
+        assert!(username.is_ok());
+        assert!(password_hash.is_ok());
+        assert!(principal_label.is_ok());
+        UserAccount {
+            id: EntityId::new(),
+            username: username.unwrap_or_else(|_| unreachable!("checked above")),
+            password_hash: password_hash.unwrap_or_else(|_| unreachable!("checked above")),
+            role: UserRole::Member,
+            principal_label: principal_label.unwrap_or_else(|_| unreachable!("checked above")),
+            force_password_change: false,
+            revision: Revision::initial(),
+            created_at_ms: 1_777_777_780_000 + i64::from(marker) * 10,
+        }
+    }
+
+    async fn insert_auth_user(database: &Database, user: &UserAccount) -> Result<(), sqlx::Error> {
+        match database {
+            Database::Sqlite(pool) => {
+                let mut transaction = pool.begin().await?;
+                sqlx::query(
+                    "INSERT INTO users (id,username,username_norm,password_hash,role,status,principal_label,force_password_change,revision,created_at_ms,deleted_at_ms) VALUES (?,?,?,?,?,'active',?,?,0,?,NULL)",
+                )
+                .bind(user.id.to_string())
+                .bind(user.username.as_str())
+                .bind(user.username.normalized())
+                .bind(user.password_hash.as_str())
+                .bind(user.role.as_str())
+                .bind(user.principal_label.as_str())
+                .bind(user.force_password_change)
+                .bind(user.created_at_ms)
+                .execute(&mut *transaction)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO user_auth_state (user_id,auth_revision,password_changed_at_ms,updated_at_ms) VALUES (?,0,?,?)",
+                )
+                .bind(user.id.to_string())
+                .bind(user.created_at_ms)
+                .bind(user.created_at_ms)
+                .execute(&mut *transaction)
+                .await?;
+                transaction.commit().await
+            }
+            Database::Postgres(pool) => {
+                let mut transaction = pool.begin().await?;
+                sqlx::query(
+                    "INSERT INTO users (id,username,username_norm,password_hash,role,status,principal_label,force_password_change,revision,created_at_ms,deleted_at_ms) VALUES ($1,$2,$3,$4,$5,'active',$6,$7,0,$8,NULL)",
+                )
+                .bind(user.id.into_uuid())
+                .bind(user.username.as_str())
+                .bind(user.username.normalized())
+                .bind(user.password_hash.as_str())
+                .bind(user.role.as_str())
+                .bind(user.principal_label.as_str())
+                .bind(user.force_password_change)
+                .bind(user.created_at_ms)
+                .execute(&mut *transaction)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO user_auth_state (user_id,auth_revision,password_changed_at_ms,updated_at_ms) VALUES ($1,0,$2,$2)",
+                )
+                .bind(user.id.into_uuid())
+                .bind(user.created_at_ms)
+                .execute(&mut *transaction)
+                .await?;
+                transaction.commit().await
+            }
+        }
+    }
+
+    fn password_hash_fixture(output_prefix: char) -> PasswordHash {
+        let output = format!("{output_prefix}{}", "A".repeat(42));
+        let password_hash = PasswordHash::parse(format!(
+            "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA${output}"
+        ));
+        assert!(password_hash.is_ok());
+        password_hash.unwrap_or_else(|_| unreachable!("checked above"))
     }
 
     fn auth_session_fixture(
@@ -3076,6 +4775,19 @@ mod tests {
         }
     }
 
+    fn rate_limited_event(reservation: &LoginAttemptReservation) -> NewLoginSecurityEvent {
+        NewLoginSecurityEvent {
+            id: EntityId::new(),
+            occurred_at_ms: reservation.now_ms,
+            request_id: reservation.request_id.clone(),
+            reason: LoginSecurityReason::RateLimited,
+            digest_key_version: reservation.key_version,
+            account_hmac: Some(reservation.account_hmac),
+            ip_prefix_hmac: Some(reservation.ip_prefix_hmac),
+            user_agent_hash: Some(reservation.user_agent_hash),
+        }
+    }
+
     fn session_security_event(
         session: &NewAuthSession,
         marker: u8,
@@ -3105,15 +4817,314 @@ mod tests {
         }
     }
 
-    fn persisted_authentication_fixture() -> SessionAuthentication {
+    async fn provision_actor_and_target(
+        database: &Database,
+        user_marker: u8,
+        actor_marker: u8,
+        target_marker: u8,
+    ) -> (
+        UserAccount,
+        NewAuthSession,
+        NewAuthSession,
+        super::AuthenticatedSession,
+    ) {
+        let user = member_fixture(user_marker);
+        assert!(insert_auth_user(database, &user).await.is_ok());
+        let created_at_ms = user.created_at_ms + 100;
+        let absolute_expires_at_ms = created_at_ms + 10_000;
+        let actor = auth_session_fixture(
+            user.id,
+            actor_marker,
+            Revision::initial(),
+            created_at_ms,
+            absolute_expires_at_ms,
+        );
+        let target = auth_session_fixture(
+            user.id,
+            target_marker,
+            Revision::initial(),
+            created_at_ms + 1,
+            absolute_expires_at_ms,
+        );
+        assert!(
+            database
+                .create_auth_session(
+                    &actor,
+                    &login_security_event(
+                        actor_marker,
+                        actor.created_at_ms,
+                        LoginSecurityReason::LoginSucceeded,
+                    ),
+                )
+                .await
+                .is_ok()
+        );
+        assert!(
+            database
+                .create_auth_session(
+                    &target,
+                    &login_security_event(
+                        target_marker,
+                        target.created_at_ms,
+                        LoginSecurityReason::LoginSucceeded,
+                    ),
+                )
+                .await
+                .is_ok()
+        );
+        let authenticated = match database
+            .authenticate_session_read_only(&session_authentication(
+                &actor,
+                Some(actor.csrf_hmac),
+                created_at_ms + 2,
+            ))
+            .await
+        {
+            Ok(SessionAuthenticationOutcome::Authenticated(authenticated)) => authenticated,
+            outcome => panic!("unexpected actor authentication outcome: {outcome:?}"),
+        };
+        (user, actor, target, authenticated)
+    }
+
+    fn user_session_revocation<'a>(
+        authenticated: &super::AuthenticatedSession,
+        target_session_id: EntityId,
+        event: &'a NewLoginSecurityEvent,
+        now_ms: i64,
+    ) -> UserSessionRevocation<'a> {
+        UserSessionRevocation {
+            user_id: authenticated.user_id,
+            actor_session_id: authenticated.session.id,
+            target_session_id,
+            expected_user_revision: authenticated.user_revision,
+            expected_auth_revision: authenticated.session.auth_revision,
+            expected_recent_auth_at_ms: authenticated.session.recent_auth_at_ms,
+            event,
+            now_ms,
+        }
+    }
+
+    async fn stored_session_is_active(
+        database: &Database,
+        user_id: EntityId,
+        session_id: EntityId,
+    ) -> bool {
+        matches!(
+            database.list_user_sessions(user_id).await,
+            Ok(ref sessions)
+                if sessions.iter().any(|session|
+                    session.id == session_id
+                        && session.status == AuthSessionStatus::Active
+                        && session.revoked_at_ms.is_none()
+                        && session.revoked_reason.is_none()
+                )
+        )
+    }
+
+    async fn set_user_status_and_revision(
+        database: &Database,
+        user_id: EntityId,
+        status: &str,
+        revision: i64,
+    ) -> Result<u64, sqlx::Error> {
+        match database {
+            Database::Sqlite(pool) => {
+                sqlx::query("UPDATE users SET status=?,revision=? WHERE id=?")
+                    .bind(status)
+                    .bind(revision)
+                    .bind(user_id.to_string())
+                    .execute(pool)
+                    .await
+                    .map(|result| result.rows_affected())
+            }
+            Database::Postgres(pool) => {
+                sqlx::query("UPDATE users SET status=$1,revision=$2 WHERE id=$3")
+                    .bind(status)
+                    .bind(revision)
+                    .bind(user_id.into_uuid())
+                    .execute(pool)
+                    .await
+                    .map(|result| result.rows_affected())
+            }
+        }
+    }
+
+    fn password_change_rotation<'a>(
+        user_id: EntityId,
+        current_session_id: EntityId,
+        expected_user_revision: Revision,
+        new_hash: &'a PasswordHash,
+        replacement: &'a NewAuthSession,
+        event: &'a NewLoginSecurityEvent,
+        now_ms: i64,
+    ) -> PasswordChangeRotation<'a> {
+        PasswordChangeRotation {
+            user_id,
+            current_session_id,
+            expected_user_revision,
+            new_hash,
+            replacement,
+            event,
+            now_ms,
+        }
+    }
+
+    fn persisted_authentication_fixture(marker: u8) -> SessionAuthentication {
         SessionAuthentication {
             token_key_version: 1,
-            token_hmac: [6; 32],
+            token_hmac: [marker; 32],
             csrf_key_version: None,
             csrf_hmac: None,
             now_ms: 1_777_777_777_506,
             touch_interval_ms: 50,
             idle_timeout_ms: 1_000,
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct LoginSecurityEventSnapshot {
+        id: String,
+        occurred_at_ms: i64,
+        request_id: String,
+        reason: String,
+        digest_key_version: i64,
+        account_hmac: Option<Vec<u8>>,
+        ip_prefix_hmac: Option<Vec<u8>>,
+        user_agent_hash: Option<Vec<u8>>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct AuthSessionSnapshot {
+        id: String,
+        user_id: String,
+        token_key_version: i64,
+        token_hmac: Vec<u8>,
+        csrf_key_version: i64,
+        csrf_hmac: Vec<u8>,
+        auth_revision: i64,
+        auth_level: String,
+        status: String,
+        created_at_ms: i64,
+        authenticated_at_ms: i64,
+        recent_auth_at_ms: i64,
+        last_seen_at_ms: i64,
+        idle_expires_at_ms: i64,
+        absolute_expires_at_ms: i64,
+        ip_prefix_key_version: Option<i64>,
+        ip_prefix_hmac: Option<Vec<u8>>,
+        user_agent_hash: Option<Vec<u8>>,
+        revoked_at_ms: Option<i64>,
+        revoked_reason: Option<String>,
+        revision: i64,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct IndexSnapshot {
+        name: String,
+        definition: String,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct PostgresConstraintSnapshot {
+        name: String,
+        definition: String,
+        validated: bool,
+    }
+
+    async fn login_security_event_snapshots(
+        database: &Database,
+    ) -> Result<Vec<LoginSecurityEventSnapshot>, sqlx::Error> {
+        match database {
+            Database::Sqlite(pool) => sqlx::query_as(
+                "SELECT id,occurred_at_ms,request_id,reason,digest_key_version,account_hmac,ip_prefix_hmac,user_agent_hash FROM login_security_events ORDER BY id",
+            )
+            .fetch_all(pool)
+            .await,
+            Database::Postgres(pool) => sqlx::query_as(
+                "SELECT id::text AS id,occurred_at_ms,request_id,reason,digest_key_version::BIGINT AS digest_key_version,account_hmac,ip_prefix_hmac,user_agent_hash FROM login_security_events ORDER BY id",
+            )
+            .fetch_all(pool)
+            .await,
+        }
+    }
+
+    async fn auth_session_snapshots(
+        database: &Database,
+    ) -> Result<Vec<AuthSessionSnapshot>, sqlx::Error> {
+        match database {
+            Database::Sqlite(pool) => sqlx::query_as(
+                "SELECT id,user_id,token_key_version,token_hmac,csrf_key_version,csrf_hmac,auth_revision,auth_level,status,created_at_ms,authenticated_at_ms,recent_auth_at_ms,last_seen_at_ms,idle_expires_at_ms,absolute_expires_at_ms,ip_prefix_key_version,ip_prefix_hmac,user_agent_hash,revoked_at_ms,revoked_reason,revision FROM auth_sessions ORDER BY id",
+            )
+            .fetch_all(pool)
+            .await,
+            Database::Postgres(pool) => sqlx::query_as(
+                "SELECT id::text AS id,user_id::text AS user_id,token_key_version::BIGINT AS token_key_version,token_hmac,csrf_key_version::BIGINT AS csrf_key_version,csrf_hmac,auth_revision,auth_level,status,created_at_ms,authenticated_at_ms,recent_auth_at_ms,last_seen_at_ms,idle_expires_at_ms,absolute_expires_at_ms,ip_prefix_key_version::BIGINT AS ip_prefix_key_version,ip_prefix_hmac,user_agent_hash,revoked_at_ms,revoked_reason,revision FROM auth_sessions ORDER BY id",
+            )
+            .fetch_all(pool)
+            .await,
+        }
+    }
+
+    async fn sqlite_explicit_index_snapshots(
+        pool: &SqlitePool,
+        table: &str,
+    ) -> Result<Vec<IndexSnapshot>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT name,sql AS definition FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL ORDER BY name",
+        )
+        .bind(table)
+        .fetch_all(pool)
+        .await
+    }
+
+    async fn sqlite_table_definition(
+        pool: &SqlitePool,
+        table: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=? AND sql IS NOT NULL",
+        )
+        .bind(table)
+        .fetch_optional(pool)
+        .await
+    }
+
+    async fn postgres_index_snapshots(
+        pool: &PgPool,
+        table: &str,
+    ) -> Result<Vec<IndexSnapshot>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT indexname AS name,indexdef AS definition FROM pg_indexes WHERE schemaname=current_schema() AND tablename=$1 ORDER BY indexname",
+        )
+        .bind(table)
+        .fetch_all(pool)
+        .await
+    }
+
+    async fn postgres_constraint_snapshots(
+        pool: &PgPool,
+        table: &str,
+    ) -> Result<Vec<PostgresConstraintSnapshot>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT conname AS name,pg_get_constraintdef(oid) AS definition,convalidated AS validated FROM pg_constraint WHERE conrelid=to_regclass($1) ORDER BY conname",
+        )
+        .bind(table)
+        .fetch_all(pool)
+        .await
+    }
+
+    async fn migration_version(database: &Database) -> Result<Option<i64>, sqlx::Error> {
+        match database {
+            Database::Sqlite(pool) => {
+                sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+                    .fetch_one(pool)
+                    .await
+            }
+            Database::Postgres(pool) => {
+                sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+                    .fetch_one(pool)
+                    .await
+            }
         }
     }
 
@@ -3129,6 +5140,22 @@ mod tests {
         let result = match database {
             Database::Sqlite(pool) => super::SQLITE_MIGRATOR.run_to(2, pool).await,
             Database::Postgres(pool) => super::POSTGRES_MIGRATOR.run_to(2, pool).await,
+        };
+        assert!(result.is_ok());
+    }
+
+    async fn migrate_to_0003(database: &Database) {
+        let result = match database {
+            Database::Sqlite(pool) => super::SQLITE_MIGRATOR.run_to(3, pool).await,
+            Database::Postgres(pool) => super::POSTGRES_MIGRATOR.run_to(3, pool).await,
+        };
+        assert!(result.is_ok());
+    }
+
+    async fn migrate_to_0004(database: &Database) {
+        let result = match database {
+            Database::Sqlite(pool) => super::SQLITE_MIGRATOR.run_to(4, pool).await,
+            Database::Postgres(pool) => super::POSTGRES_MIGRATOR.run_to(4, pool).await,
         };
         assert!(result.is_ok());
     }
@@ -3253,7 +5280,7 @@ mod tests {
 
         let invalid_timeline = match &database {
             Database::Sqlite(pool) => sqlx::query(
-                "INSERT INTO auth_sessions (id,user_id,token_key_version,token_hmac,csrf_key_version,csrf_hmac,auth_revision,auth_level,status,created_at_ms,authenticated_at_ms,recent_auth_at_ms,last_seen_at_ms,idle_expires_at_ms,absolute_expires_at_ms,ip_prefix_key_version,ip_prefix_hmac,user_agent_hash,revoked_at_ms,revoked_reason,revision) VALUES (?,?,1,?,1,?,0,'password','active',100,99,100,100,200,300,NULL,NULL,NULL,NULL,NULL,0)",
+                "INSERT INTO auth_sessions (id,user_id,token_key_version,token_hmac,csrf_key_version,csrf_hmac,auth_revision,auth_level,status,created_at_ms,authenticated_at_ms,recent_auth_at_ms,last_seen_at_ms,idle_expires_at_ms,absolute_expires_at_ms,ip_prefix_key_version,ip_prefix_hmac,user_agent_hash,revoked_at_ms,revoked_reason,revision) VALUES (?,?,1,?,1,?,0,'password','active',100,-1,100,100,200,300,NULL,NULL,NULL,NULL,NULL,0)",
             )
             .bind(EntityId::new().to_string())
             .bind(user.id.to_string())
@@ -3263,7 +5290,7 @@ mod tests {
             .await
             .map(|_| ()),
             Database::Postgres(pool) => sqlx::query(
-                "INSERT INTO auth_sessions (id,user_id,token_key_version,token_hmac,csrf_key_version,csrf_hmac,auth_revision,auth_level,status,created_at_ms,authenticated_at_ms,recent_auth_at_ms,last_seen_at_ms,idle_expires_at_ms,absolute_expires_at_ms,ip_prefix_key_version,ip_prefix_hmac,user_agent_hash,revoked_at_ms,revoked_reason,revision) VALUES ($1,$2,1,$3,1,$4,0,'password','active',100,99,100,100,200,300,NULL,NULL,NULL,NULL,NULL,0)",
+                "INSERT INTO auth_sessions (id,user_id,token_key_version,token_hmac,csrf_key_version,csrf_hmac,auth_revision,auth_level,status,created_at_ms,authenticated_at_ms,recent_auth_at_ms,last_seen_at_ms,idle_expires_at_ms,absolute_expires_at_ms,ip_prefix_key_version,ip_prefix_hmac,user_agent_hash,revoked_at_ms,revoked_reason,revision) VALUES ($1,$2,1,$3,1,$4,0,'password','active',100,-1,100,100,200,300,NULL,NULL,NULL,NULL,NULL,0)",
             )
             .bind(EntityId::new().into_uuid())
             .bind(user.id.into_uuid())
@@ -3274,6 +5301,792 @@ mod tests {
             .map(|_| ()),
         };
         assert!(invalid_timeline.is_err());
+    }
+
+    async fn session_timeline_upgrade_contract(database: Database) {
+        migrate_to_0002(&database).await;
+        let user = owner_fixture();
+        seed_v2_user(&database, &user).await;
+        migrate_to_0004(&database).await;
+
+        let base = user.created_at_ms + 100;
+        let historical =
+            auth_session_fixture(user.id, 40, Revision::initial(), base, base + 10_000);
+        let historical_event = login_security_event(40, base, LoginSecurityReason::LoginSucceeded);
+        assert!(
+            database
+                .create_auth_session(&historical, &historical_event)
+                .await
+                .is_ok()
+        );
+        let before = database.list_user_sessions(user.id).await;
+        let before = match before {
+            Ok(mut sessions) if sessions.len() == 1 => sessions.remove(0),
+            outcome => panic!("unexpected pre-0005 session history: {outcome:?}"),
+        };
+        let legacy_auth_level = match &database {
+            Database::Sqlite(pool) => {
+                sqlx::query("UPDATE auth_sessions SET auth_level='webauthn' WHERE id=?")
+                    .bind(historical.id.to_string())
+                    .execute(pool)
+                    .await
+                    .map(|result| result.rows_affected())
+            }
+            Database::Postgres(pool) => {
+                sqlx::query("UPDATE auth_sessions SET auth_level='webauthn' WHERE id=$1")
+                    .bind(historical.id.into_uuid())
+                    .execute(pool)
+                    .await
+                    .map(|result| result.rows_affected())
+            }
+        };
+        assert!(matches!(legacy_auth_level, Ok(1)));
+
+        assert!(database.migrate().await.is_ok());
+        let mut expected = before;
+        expected.auth_level = AuthLevel::PhishingResistant;
+        assert!(matches!(
+            database.list_user_sessions(user.id).await,
+            Ok(ref sessions) if sessions.first() == Some(&expected) && sessions.len() == 1
+        ));
+        assert!(matches!(
+            login_security_event_count(&database, historical_event.id).await,
+            Ok(1)
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(&historical, None, base + 1))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(ref authenticated))
+                if authenticated.session == expected
+        ));
+        raw_auth_secret_absence_contract(&database, &historical).await;
+        auth_schema_constraints_contract(&database, &user, &historical).await;
+
+        let mut inherited_proof =
+            auth_session_fixture(user.id, 41, Revision::initial(), base + 200, base + 10_000);
+        inherited_proof.auth_level = AuthLevel::PhishingResistant;
+        inherited_proof.authenticated_at_ms = historical.authenticated_at_ms;
+        inherited_proof.recent_auth_at_ms = historical.recent_auth_at_ms;
+        let inherited_event = login_security_event(
+            41,
+            inherited_proof.created_at_ms,
+            LoginSecurityReason::LoginSucceeded,
+        );
+        assert!(matches!(
+            database
+                .create_auth_session(&inherited_proof, &inherited_event)
+                .await,
+            Ok(ref summary)
+                if summary.created_at_ms == base + 200
+                    && summary.authenticated_at_ms == historical.authenticated_at_ms
+                    && summary.recent_auth_at_ms == historical.recent_auth_at_ms
+                    && summary.auth_level == AuthLevel::PhishingResistant
+        ));
+
+        let mut duplicate_digest = inherited_proof.clone();
+        duplicate_digest.id = EntityId::new();
+        let duplicate_event = session_security_event(
+            &duplicate_digest,
+            42,
+            duplicate_digest.created_at_ms,
+            LoginSecurityReason::LoginSucceeded,
+        );
+        assert!(matches!(
+            database
+                .create_auth_session(&duplicate_digest, &duplicate_event)
+                .await,
+            Err(PersistenceError::Sql(_))
+        ));
+        assert!(matches!(
+            login_security_event_count(&database, duplicate_event.id).await,
+            Ok(0)
+        ));
+    }
+
+    async fn sqlite_recent_auth_migration_rollback_contract(database: Database) {
+        migrate_to_0003(&database).await;
+        let first_event = login_security_event(
+            90,
+            1_777_777_790_000,
+            LoginSecurityReason::InvalidCredentials,
+        );
+        let mut second_event =
+            login_security_event(91, 1_777_777_790_001, LoginSecurityReason::RateLimited);
+        second_event.account_hmac = None;
+        second_event.ip_prefix_hmac = None;
+        second_event.user_agent_hash = None;
+        let Database::Sqlite(pool) = &database else {
+            panic!("SQLite 0004 rollback contract requires SQLite")
+        };
+        assert!(
+            sqlx::query(
+                "INSERT INTO login_security_events (id,occurred_at_ms,request_id,reason,digest_key_version,account_hmac,ip_prefix_hmac,user_agent_hash) VALUES (?,?,?,?,?,?,?,?)",
+            )
+                .bind(first_event.id.to_string())
+                .bind(first_event.occurred_at_ms)
+                .bind(&first_event.request_id)
+                .bind(first_event.reason.as_str())
+                .bind(i64::from(first_event.digest_key_version))
+                .bind(first_event.account_hmac.as_ref().map(|value| value.as_slice()))
+                .bind(first_event.ip_prefix_hmac.as_ref().map(|value| value.as_slice()))
+                .bind(first_event.user_agent_hash.as_ref().map(|value| value.as_slice()))
+                .execute(pool)
+                .await
+                .is_ok()
+        );
+        assert!(
+            sqlx::query(
+                "INSERT INTO login_security_events (id,occurred_at_ms,request_id,reason,digest_key_version,account_hmac,ip_prefix_hmac,user_agent_hash) VALUES (?,?,?,?,?,?,?,?)",
+            )
+                .bind(second_event.id.to_string())
+                .bind(second_event.occurred_at_ms)
+                .bind(&second_event.request_id)
+                .bind(second_event.reason.as_str())
+                .bind(i64::from(second_event.digest_key_version))
+                .bind(second_event.account_hmac.as_ref().map(|value| value.as_slice()))
+                .bind(second_event.ip_prefix_hmac.as_ref().map(|value| value.as_slice()))
+                .bind(second_event.user_agent_hash.as_ref().map(|value| value.as_slice()))
+                .execute(pool)
+                .await
+                .is_ok()
+        );
+
+        let before_events = login_security_event_snapshots(&database).await;
+        assert!(matches!(&before_events, Ok(rows) if rows.len() == 2));
+        let before_events = before_events
+            .unwrap_or_else(|error| panic!("failed to snapshot pre-0004 login events: {error}"));
+        let before_table = sqlite_table_definition(pool, "login_security_events").await;
+        assert!(matches!(&before_table, Ok(Some(_))));
+        let before_indexes = sqlite_explicit_index_snapshots(pool, "login_security_events").await;
+        assert!(matches!(&before_indexes, Ok(indexes) if indexes.len() == 2));
+        let before_indexes = before_indexes
+            .unwrap_or_else(|error| panic!("failed to snapshot pre-0004 indexes: {error}"));
+        assert_eq!(
+            before_indexes
+                .iter()
+                .map(|index| index.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "login_security_events_account_idx",
+                "login_security_events_time_idx",
+            ]
+        );
+
+        assert!(
+            sqlx::query(
+                "CREATE TABLE nodecontroll_test_login_event_refs (event_id TEXT PRIMARY KEY REFERENCES login_security_events(id) ON DELETE RESTRICT)",
+            )
+            .execute(pool)
+            .await
+            .is_ok()
+        );
+        assert!(
+            sqlx::query("INSERT INTO nodecontroll_test_login_event_refs (event_id) VALUES (?)")
+                .bind(first_event.id.to_string())
+                .execute(pool)
+                .await
+                .is_ok()
+        );
+
+        let migration = super::SQLITE_MIGRATOR.run_to(4, pool).await;
+        let Err(error) = migration else {
+            panic!("SQLite 0004 foreign-key fixture did not fail the migration")
+        };
+        assert!(error.to_string().contains("FOREIGN KEY"));
+        assert!(matches!(migration_version(&database).await, Ok(Some(3))));
+        assert_eq!(
+            login_security_event_snapshots(&database).await.ok(),
+            Some(before_events.clone())
+        );
+        assert_eq!(
+            sqlite_table_definition(pool, "login_security_events")
+                .await
+                .ok(),
+            before_table.ok()
+        );
+        assert_eq!(
+            sqlite_explicit_index_snapshots(pool, "login_security_events")
+                .await
+                .ok(),
+            Some(before_indexes.clone())
+        );
+        let staging_count: Result<i64, sqlx::Error> = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='login_security_events_new'",
+        )
+        .fetch_one(pool)
+        .await;
+        assert!(matches!(staging_count, Ok(0)));
+        let fixture_rows: Result<i64, sqlx::Error> =
+            sqlx::query_scalar("SELECT COUNT(*) FROM nodecontroll_test_login_event_refs")
+                .fetch_one(pool)
+                .await;
+        assert!(matches!(fixture_rows, Ok(1)));
+
+        assert!(
+            sqlx::query("DROP TABLE nodecontroll_test_login_event_refs")
+                .execute(pool)
+                .await
+                .is_ok()
+        );
+        assert!(super::SQLITE_MIGRATOR.run_to(4, pool).await.is_ok());
+        assert!(matches!(migration_version(&database).await, Ok(Some(4))));
+        assert_eq!(
+            login_security_event_snapshots(&database).await.ok(),
+            Some(before_events)
+        );
+        assert_eq!(
+            sqlite_explicit_index_snapshots(pool, "login_security_events")
+                .await
+                .ok(),
+            Some(before_indexes)
+        );
+        let account_index_rows: Result<Vec<String>, sqlx::Error> = sqlx::query_scalar(
+            "SELECT id FROM login_security_events INDEXED BY login_security_events_account_idx WHERE account_hmac IS NOT NULL ORDER BY occurred_at_ms DESC,id",
+        )
+        .fetch_all(pool)
+        .await;
+        assert!(matches!(account_index_rows, Ok(ref ids) if ids == &[first_event.id.to_string()]));
+        let time_index_rows: Result<Vec<String>, sqlx::Error> = sqlx::query_scalar(
+            "SELECT id FROM login_security_events INDEXED BY login_security_events_time_idx ORDER BY occurred_at_ms DESC,id",
+        )
+        .fetch_all(pool)
+        .await;
+        assert!(matches!(time_index_rows, Ok(ref ids) if ids.len() == 2));
+        let staging_count: Result<i64, sqlx::Error> = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='login_security_events_new'",
+        )
+        .fetch_one(pool)
+        .await;
+        assert!(matches!(staging_count, Ok(0)));
+        let reauthentication_event = login_security_event(
+            95,
+            1_777_777_790_002,
+            LoginSecurityReason::ReauthenticationSucceeded,
+        );
+        let password_changed_event =
+            login_security_event(96, 1_777_777_790_003, LoginSecurityReason::PasswordChanged);
+        assert!(
+            database
+                .record_login_security_event(&reauthentication_event)
+                .await
+                .is_ok()
+        );
+        assert!(
+            database
+                .record_login_security_event(&password_changed_event)
+                .await
+                .is_ok()
+        );
+        let invalid_reason = sqlx::query(
+            "INSERT INTO login_security_events (id,occurred_at_ms,request_id,reason,digest_key_version,account_hmac,ip_prefix_hmac,user_agent_hash) VALUES (?,?,'01900000-0000-7000-8000-000000000097','nodecontroll_test_invalid',1,NULL,NULL,NULL)",
+        )
+        .bind(EntityId::new().to_string())
+        .bind(1_777_777_790_004_i64)
+        .execute(pool)
+        .await;
+        assert!(invalid_reason.is_err());
+    }
+
+    async fn sqlite_session_timeline_migration_rollback_contract(database: Database) {
+        migrate_to_0002(&database).await;
+        let user = owner_fixture();
+        seed_v2_user(&database, &user).await;
+        migrate_to_0004(&database).await;
+        let base = user.created_at_ms + 700;
+        let session = auth_session_fixture(user.id, 92, Revision::initial(), base, base + 10_000);
+        let event = login_security_event(92, base, LoginSecurityReason::LoginSucceeded);
+        assert!(database.create_auth_session(&session, &event).await.is_ok());
+
+        let Database::Sqlite(pool) = &database else {
+            panic!("SQLite 0005 rollback contract requires SQLite")
+        };
+        let legacy_auth_level =
+            sqlx::query("UPDATE auth_sessions SET auth_level='webauthn' WHERE id=?")
+                .bind(session.id.to_string())
+                .execute(pool)
+                .await;
+        assert!(matches!(legacy_auth_level, Ok(result) if result.rows_affected() == 1));
+        let before_sessions = auth_session_snapshots(&database).await;
+        assert!(matches!(&before_sessions, Ok(rows) if rows.len() == 1));
+        let before_sessions = before_sessions
+            .unwrap_or_else(|error| panic!("failed to snapshot pre-0005 sessions: {error}"));
+        let before_events = login_security_event_snapshots(&database).await;
+        assert!(matches!(&before_events, Ok(rows) if rows.len() == 1));
+        let before_events = before_events
+            .unwrap_or_else(|error| panic!("failed to snapshot pre-0005 events: {error}"));
+        let before_table = sqlite_table_definition(pool, "auth_sessions").await;
+        assert!(matches!(&before_table, Ok(Some(_))));
+        let before_indexes = sqlite_explicit_index_snapshots(pool, "auth_sessions").await;
+        assert!(matches!(&before_indexes, Ok(indexes) if indexes.len() == 2));
+        let before_indexes = before_indexes
+            .unwrap_or_else(|error| panic!("failed to snapshot pre-0005 indexes: {error}"));
+        assert_eq!(
+            before_indexes
+                .iter()
+                .map(|index| index.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "auth_sessions_active_user_idx",
+                "auth_sessions_user_created_idx",
+            ]
+        );
+
+        assert!(
+            sqlx::query(
+                "CREATE TABLE nodecontroll_test_auth_session_refs (session_id TEXT PRIMARY KEY REFERENCES auth_sessions(id) ON DELETE RESTRICT)",
+            )
+            .execute(pool)
+            .await
+            .is_ok()
+        );
+        assert!(
+            sqlx::query("INSERT INTO nodecontroll_test_auth_session_refs (session_id) VALUES (?)")
+                .bind(session.id.to_string())
+                .execute(pool)
+                .await
+                .is_ok()
+        );
+
+        let migration = super::SQLITE_MIGRATOR.run_to(5, pool).await;
+        let Err(error) = migration else {
+            panic!("SQLite 0005 foreign-key fixture did not fail the migration")
+        };
+        assert!(error.to_string().contains("FOREIGN KEY"));
+        assert!(matches!(migration_version(&database).await, Ok(Some(4))));
+        assert_eq!(
+            auth_session_snapshots(&database).await.ok(),
+            Some(before_sessions.clone())
+        );
+        assert_eq!(
+            login_security_event_snapshots(&database).await.ok(),
+            Some(before_events.clone())
+        );
+        assert_eq!(
+            sqlite_table_definition(pool, "auth_sessions").await.ok(),
+            before_table.ok()
+        );
+        assert_eq!(
+            sqlite_explicit_index_snapshots(pool, "auth_sessions")
+                .await
+                .ok(),
+            Some(before_indexes.clone())
+        );
+        let staging_count: Result<i64, sqlx::Error> = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='auth_sessions_new'",
+        )
+        .fetch_one(pool)
+        .await;
+        assert!(matches!(staging_count, Ok(0)));
+        let fixture_rows: Result<i64, sqlx::Error> =
+            sqlx::query_scalar("SELECT COUNT(*) FROM nodecontroll_test_auth_session_refs")
+                .fetch_one(pool)
+                .await;
+        assert!(matches!(fixture_rows, Ok(1)));
+
+        assert!(
+            sqlx::query("DROP TABLE nodecontroll_test_auth_session_refs")
+                .execute(pool)
+                .await
+                .is_ok()
+        );
+        assert!(super::SQLITE_MIGRATOR.run_to(5, pool).await.is_ok());
+        assert!(matches!(migration_version(&database).await, Ok(Some(5))));
+        let mut expected_sessions = before_sessions;
+        assert_eq!(expected_sessions.len(), 1);
+        if let Some(expected) = expected_sessions.first_mut() {
+            expected.auth_level = "phishing_resistant".to_owned();
+        }
+        assert_eq!(
+            auth_session_snapshots(&database).await.ok(),
+            Some(expected_sessions)
+        );
+        assert_eq!(
+            login_security_event_snapshots(&database).await.ok(),
+            Some(before_events)
+        );
+        assert_eq!(
+            sqlite_explicit_index_snapshots(pool, "auth_sessions")
+                .await
+                .ok(),
+            Some(before_indexes)
+        );
+        let staging_count: Result<i64, sqlx::Error> = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='auth_sessions_new'",
+        )
+        .fetch_one(pool)
+        .await;
+        assert!(matches!(staging_count, Ok(0)));
+    }
+
+    async fn postgres_recent_auth_migration_rollback_contract(database: Database) {
+        migrate_to_0003(&database).await;
+        let valid_event = login_security_event(
+            93,
+            1_777_777_793_000,
+            LoginSecurityReason::InvalidCredentials,
+        );
+        assert!(
+            database
+                .record_login_security_event(&valid_event)
+                .await
+                .is_ok()
+        );
+        let Database::Postgres(pool) = &database else {
+            panic!("PostgreSQL 0004 rollback contract requires PostgreSQL")
+        };
+        let original_reason_definition: String = sqlx::query_scalar(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid=to_regclass('login_security_events') AND conname='login_security_events_reason_check'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|error| panic!("failed to read the version-3 reason check: {error}"));
+        assert!(
+            sqlx::query(
+                "ALTER TABLE login_security_events DROP CONSTRAINT login_security_events_reason_check",
+            )
+            .execute(pool)
+            .await
+            .is_ok()
+        );
+        let poison_id = EntityId::new();
+        assert!(
+            sqlx::query(
+                "INSERT INTO login_security_events (id,occurred_at_ms,request_id,reason,digest_key_version,account_hmac,ip_prefix_hmac,user_agent_hash) VALUES ($1,$2,$3,'nodecontroll_test_invalid',1,NULL,NULL,NULL)",
+            )
+            .bind(poison_id.into_uuid())
+            .bind(1_777_777_793_001_i64)
+            .bind("01900000-0000-7000-8000-000000000094")
+            .execute(pool)
+            .await
+            .is_ok()
+        );
+        let restore_old_constraint = format!(
+            "ALTER TABLE login_security_events ADD CONSTRAINT login_security_events_reason_check {original_reason_definition} NOT VALID"
+        );
+        // Test-only catalog round-trip: the identifier is fixed above and the
+        // definition comes from PostgreSQL's own pg_get_constraintdef output.
+        assert!(
+            sqlx::query(sqlx::AssertSqlSafe(restore_old_constraint))
+                .execute(pool)
+                .await
+                .is_ok()
+        );
+
+        let before_events = login_security_event_snapshots(&database)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to snapshot pre-0004 PostgreSQL events: {error}")
+            });
+        assert_eq!(before_events.len(), 2);
+        let before_indexes = postgres_index_snapshots(pool, "login_security_events")
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to snapshot pre-0004 PostgreSQL indexes: {error}")
+            });
+        let before_constraints = postgres_constraint_snapshots(pool, "login_security_events")
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to snapshot pre-0004 PostgreSQL constraints: {error}")
+            });
+        assert!(before_constraints.iter().any(|constraint| {
+            constraint.name == "login_security_events_reason_check" && !constraint.validated
+        }));
+
+        let migration = super::POSTGRES_MIGRATOR.run_to(4, pool).await;
+        let Err(error) = migration else {
+            panic!("PostgreSQL 0004 poison fixture did not fail the migration")
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("login_security_events_reason_check")
+        );
+        assert!(matches!(migration_version(&database).await, Ok(Some(3))));
+        assert_eq!(
+            login_security_event_snapshots(&database).await.ok(),
+            Some(before_events.clone())
+        );
+        assert_eq!(
+            postgres_index_snapshots(pool, "login_security_events")
+                .await
+                .ok(),
+            Some(before_indexes.clone())
+        );
+        assert_eq!(
+            postgres_constraint_snapshots(pool, "login_security_events")
+                .await
+                .ok(),
+            Some(before_constraints)
+        );
+
+        let deleted_poison = sqlx::query("DELETE FROM login_security_events WHERE id=$1")
+            .bind(poison_id.into_uuid())
+            .execute(pool)
+            .await;
+        assert!(matches!(deleted_poison, Ok(result) if result.rows_affected() == 1));
+        // A failed sqlx migration can leave its session-level advisory lock on
+        // the pooled connection. Production retries happen in a fresh process;
+        // closing and reconnecting here models that boundary and releases it.
+        let retry_options = pool.connect_options().as_ref().clone();
+        pool.close().await;
+        let retry_pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(retry_options)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to reconnect for PostgreSQL 0004 retry: {error}")
+            });
+        let retry_database = Database::Postgres(retry_pool.clone());
+        let retry = super::POSTGRES_MIGRATOR.run_to(4, &retry_pool).await;
+        assert!(retry.is_ok(), "PostgreSQL 0004 retry failed: {retry:?}");
+        assert!(matches!(
+            migration_version(&retry_database).await,
+            Ok(Some(4))
+        ));
+        let poison_id_text = poison_id.to_string();
+        let expected_events = before_events
+            .into_iter()
+            .filter(|event| event.id != poison_id_text)
+            .collect::<Vec<_>>();
+        assert_eq!(expected_events.len(), 1);
+        assert_eq!(
+            login_security_event_snapshots(&retry_database).await.ok(),
+            Some(expected_events)
+        );
+        assert_eq!(
+            postgres_index_snapshots(&retry_pool, "login_security_events")
+                .await
+                .ok(),
+            Some(before_indexes)
+        );
+        let after_constraints = postgres_constraint_snapshots(&retry_pool, "login_security_events")
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to snapshot post-0004 PostgreSQL constraints: {error}")
+            });
+        assert!(after_constraints.iter().any(|constraint| {
+            constraint.name == "login_security_events_reason_check"
+                && constraint.validated
+                && constraint.definition.contains("reauthentication_succeeded")
+                && constraint.definition.contains("password_changed")
+        }));
+        let reauthentication_event = login_security_event(
+            97,
+            1_777_777_793_002,
+            LoginSecurityReason::ReauthenticationSucceeded,
+        );
+        let password_changed_event =
+            login_security_event(98, 1_777_777_793_003, LoginSecurityReason::PasswordChanged);
+        assert!(
+            retry_database
+                .record_login_security_event(&reauthentication_event)
+                .await
+                .is_ok()
+        );
+        assert!(
+            retry_database
+                .record_login_security_event(&password_changed_event)
+                .await
+                .is_ok()
+        );
+        let invalid_reason = sqlx::query(
+            "INSERT INTO login_security_events (id,occurred_at_ms,request_id,reason,digest_key_version,account_hmac,ip_prefix_hmac,user_agent_hash) VALUES ($1,$2,'01900000-0000-7000-8000-000000000099','nodecontroll_test_invalid',1,NULL,NULL,NULL)",
+        )
+        .bind(EntityId::new().into_uuid())
+        .bind(1_777_777_793_004_i64)
+        .execute(&retry_pool)
+        .await;
+        assert!(invalid_reason.is_err());
+        retry_pool.close().await;
+    }
+
+    async fn postgres_session_timeline_migration_rollback_contract(database: Database) {
+        migrate_to_0002(&database).await;
+        let user = owner_fixture();
+        seed_v2_user(&database, &user).await;
+        migrate_to_0004(&database).await;
+        let base = user.created_at_ms + 800;
+        let session = auth_session_fixture(user.id, 94, Revision::initial(), base, base + 10_000);
+        let event = login_security_event(94, base, LoginSecurityReason::LoginSucceeded);
+        assert!(database.create_auth_session(&session, &event).await.is_ok());
+        let Database::Postgres(pool) = &database else {
+            panic!("PostgreSQL 0005 rollback contract requires PostgreSQL")
+        };
+        let legacy_auth_level =
+            sqlx::query("UPDATE auth_sessions SET auth_level='webauthn' WHERE id=$1")
+                .bind(session.id.into_uuid())
+                .execute(pool)
+                .await;
+        assert!(matches!(legacy_auth_level, Ok(result) if result.rows_affected() == 1));
+        let before_sessions = auth_session_snapshots(&database)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to snapshot pre-0005 PostgreSQL sessions: {error}")
+            });
+        assert_eq!(before_sessions.len(), 1);
+        let before_events = login_security_event_snapshots(&database)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to snapshot pre-0005 PostgreSQL events: {error}")
+            });
+        assert_eq!(before_events.len(), 1);
+        let before_indexes = postgres_index_snapshots(pool, "auth_sessions")
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to snapshot pre-0005 PostgreSQL indexes: {error}")
+            });
+        let before_constraints = postgres_constraint_snapshots(pool, "auth_sessions")
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to snapshot pre-0005 PostgreSQL constraints: {error}")
+            });
+        assert!(
+            before_constraints
+                .iter()
+                .any(|constraint| constraint.name == "auth_sessions_check")
+        );
+        assert!(
+            !before_constraints
+                .iter()
+                .any(|constraint| { constraint.name == "auth_sessions_authenticated_at_ms_check" })
+        );
+
+        assert!(
+            sqlx::query(
+                "CREATE FUNCTION nodecontroll_test_fail_0005_auth_level() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.auth_level='webauthn' AND NEW.auth_level='phishing_resistant' THEN RAISE EXCEPTION 'forced 0005 auth level migration failure'; END IF; RETURN NEW; END $$",
+            )
+            .execute(pool)
+            .await
+            .is_ok()
+        );
+        assert!(
+            sqlx::query(
+                "CREATE TRIGGER nodecontroll_test_fail_0005_auth_level BEFORE UPDATE OF auth_level ON auth_sessions FOR EACH ROW EXECUTE FUNCTION nodecontroll_test_fail_0005_auth_level()",
+            )
+            .execute(pool)
+            .await
+            .is_ok()
+        );
+
+        let migration = super::POSTGRES_MIGRATOR.run_to(5, pool).await;
+        let Err(error) = migration else {
+            panic!("PostgreSQL 0005 trigger fixture did not fail the migration")
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("forced 0005 auth level migration failure")
+        );
+        assert!(matches!(migration_version(&database).await, Ok(Some(4))));
+        assert_eq!(
+            auth_session_snapshots(&database).await.ok(),
+            Some(before_sessions.clone())
+        );
+        assert_eq!(
+            login_security_event_snapshots(&database).await.ok(),
+            Some(before_events.clone())
+        );
+        assert_eq!(
+            postgres_index_snapshots(pool, "auth_sessions").await.ok(),
+            Some(before_indexes.clone())
+        );
+        assert_eq!(
+            postgres_constraint_snapshots(pool, "auth_sessions")
+                .await
+                .ok(),
+            Some(before_constraints)
+        );
+        let trigger_count: Result<i64, sqlx::Error> = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_trigger WHERE tgname='nodecontroll_test_fail_0005_auth_level' AND NOT tgisinternal",
+        )
+        .fetch_one(pool)
+        .await;
+        assert!(matches!(trigger_count, Ok(1)));
+
+        assert!(
+            sqlx::query("DROP TRIGGER nodecontroll_test_fail_0005_auth_level ON auth_sessions")
+                .execute(pool)
+                .await
+                .is_ok()
+        );
+        assert!(
+            sqlx::query("DROP FUNCTION nodecontroll_test_fail_0005_auth_level()")
+                .execute(pool)
+                .await
+                .is_ok()
+        );
+        // A failed sqlx migration can leave its session-level advisory lock on
+        // the pooled connection. Production retries happen in a fresh process;
+        // closing and reconnecting here models that boundary and releases it.
+        let retry_options = pool.connect_options().as_ref().clone();
+        pool.close().await;
+        let retry_pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(retry_options)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to reconnect for PostgreSQL 0005 retry: {error}")
+            });
+        let retry_database = Database::Postgres(retry_pool.clone());
+        let retry = super::POSTGRES_MIGRATOR.run_to(5, &retry_pool).await;
+        assert!(retry.is_ok(), "PostgreSQL 0005 retry failed: {retry:?}");
+        assert!(matches!(
+            migration_version(&retry_database).await,
+            Ok(Some(5))
+        ));
+        let mut expected_sessions = before_sessions;
+        assert_eq!(expected_sessions.len(), 1);
+        if let Some(expected) = expected_sessions.first_mut() {
+            expected.auth_level = "phishing_resistant".to_owned();
+        }
+        assert_eq!(
+            auth_session_snapshots(&retry_database).await.ok(),
+            Some(expected_sessions)
+        );
+        assert_eq!(
+            login_security_event_snapshots(&retry_database).await.ok(),
+            Some(before_events)
+        );
+        assert_eq!(
+            postgres_index_snapshots(&retry_pool, "auth_sessions")
+                .await
+                .ok(),
+            Some(before_indexes)
+        );
+        let after_constraints = postgres_constraint_snapshots(&retry_pool, "auth_sessions")
+            .await
+            .unwrap_or_else(|error| {
+                panic!("failed to snapshot post-0005 PostgreSQL constraints: {error}")
+            });
+        assert!(
+            !after_constraints
+                .iter()
+                .any(|constraint| constraint.name == "auth_sessions_check")
+        );
+        assert!(after_constraints.iter().any(|constraint| {
+            constraint.name == "auth_sessions_authenticated_at_ms_check"
+                && constraint.validated
+                && constraint.definition.contains("authenticated_at_ms >= 0")
+        }));
+        assert!(after_constraints.iter().any(|constraint| {
+            constraint.name == "auth_sessions_auth_level_check"
+                && constraint.validated
+                && constraint.definition.contains("phishing_resistant")
+                && !constraint.definition.contains("webauthn")
+        }));
+        assert!(after_constraints.iter().any(|constraint| {
+            constraint.name == "auth_sessions_revoked_reason_check"
+                && constraint.validated
+                && constraint.definition.contains("user_revoked")
+        }));
+        let function_absent: Result<bool, sqlx::Error> = sqlx::query_scalar(
+            "SELECT to_regprocedure('nodecontroll_test_fail_0005_auth_level()') IS NULL",
+        )
+        .fetch_one(&retry_pool)
+        .await;
+        assert!(matches!(function_absent, Ok(true)));
+        retry_pool.close().await;
     }
 
     async fn auth_migration_rollback_contract(database: Database) {
@@ -3336,7 +6149,30 @@ mod tests {
                 );
             }
         }
-        assert!(database.migrate().await.is_ok());
+        match &database {
+            Database::Sqlite(_) => assert!(database.migrate().await.is_ok()),
+            Database::Postgres(pool) => {
+                // sqlx returns before unlocking its session advisory lock when
+                // an apply step fails. A production retry starts in a fresh
+                // process, so release the old sessions before retrying here.
+                let retry_options = pool.connect_options().as_ref().clone();
+                pool.close().await;
+                let retry_pool = PgPoolOptions::new()
+                    .max_connections(4)
+                    .connect_with(retry_options)
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("failed to reconnect for PostgreSQL auth migration retry: {error}")
+                    });
+                let retry_database = Database::Postgres(retry_pool.clone());
+                let retry = retry_database.migrate().await;
+                assert!(
+                    retry.is_ok(),
+                    "PostgreSQL auth migration retry failed: {retry:?}"
+                );
+                retry_pool.close().await;
+            }
+        }
     }
 
     async fn login_security_event_count(
@@ -3356,6 +6192,129 @@ mod tests {
                     .fetch_one(pool)
                     .await
             }
+        }
+    }
+
+    async fn credentials_snapshot(database: &Database, username_norm: &str) -> UserCredentials {
+        match database
+            .user_credentials_by_normalized_username(username_norm)
+            .await
+        {
+            Ok(Some(credentials)) => credentials,
+            _ => panic!("expected a persisted credential snapshot"),
+        }
+    }
+
+    async fn auth_state_timestamps(
+        database: &Database,
+        user_id: EntityId,
+    ) -> Result<Option<(i64, i64, i64)>, sqlx::Error> {
+        match database {
+            Database::Sqlite(pool) => sqlx::query_as(
+                "SELECT auth_revision,password_changed_at_ms,updated_at_ms FROM user_auth_state WHERE user_id=?",
+            )
+            .bind(user_id.to_string())
+            .fetch_optional(pool)
+            .await,
+            Database::Postgres(pool) => sqlx::query_as(
+                "SELECT auth_revision,password_changed_at_ms,updated_at_ms FROM user_auth_state WHERE user_id=$1",
+            )
+            .bind(user_id.into_uuid())
+            .fetch_optional(pool)
+            .await,
+        }
+    }
+
+    async fn set_user_auth_revision(
+        database: &Database,
+        user_id: EntityId,
+        auth_revision: i64,
+    ) -> Result<u64, sqlx::Error> {
+        match database {
+            Database::Sqlite(pool) => {
+                sqlx::query("UPDATE user_auth_state SET auth_revision=? WHERE user_id=?")
+                    .bind(auth_revision)
+                    .bind(user_id.to_string())
+                    .execute(pool)
+                    .await
+                    .map(|result| result.rows_affected())
+            }
+            Database::Postgres(pool) => {
+                sqlx::query("UPDATE user_auth_state SET auth_revision=$1 WHERE user_id=$2")
+                    .bind(auth_revision)
+                    .bind(user_id.into_uuid())
+                    .execute(pool)
+                    .await
+                    .map(|result| result.rows_affected())
+            }
+        }
+    }
+
+    async fn set_session_revision(
+        database: &Database,
+        session_id: EntityId,
+        revision: i64,
+    ) -> Result<u64, sqlx::Error> {
+        match database {
+            Database::Sqlite(pool) => sqlx::query("UPDATE auth_sessions SET revision=? WHERE id=?")
+                .bind(revision)
+                .bind(session_id.to_string())
+                .execute(pool)
+                .await
+                .map(|result| result.rows_affected()),
+            Database::Postgres(pool) => {
+                sqlx::query("UPDATE auth_sessions SET revision=$1 WHERE id=$2")
+                    .bind(revision)
+                    .bind(session_id.into_uuid())
+                    .execute(pool)
+                    .await
+                    .map(|result| result.rows_affected())
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn set_user_login_snapshot(
+        database: &Database,
+        user_id: EntityId,
+        username: &str,
+        password_hash: &PasswordHash,
+        role: &str,
+        status: &str,
+        principal_label: &str,
+        force_password_change: bool,
+        revision: i64,
+    ) -> Result<u64, sqlx::Error> {
+        match database {
+            Database::Sqlite(pool) => sqlx::query(
+                "UPDATE users SET username=?,username_norm=lower(?),password_hash=?,role=?,status=?,principal_label=?,force_password_change=?,revision=? WHERE id=?",
+            )
+            .bind(username)
+            .bind(username)
+            .bind(password_hash.as_str())
+            .bind(role)
+            .bind(status)
+            .bind(principal_label)
+            .bind(force_password_change)
+            .bind(revision)
+            .bind(user_id.to_string())
+            .execute(pool)
+            .await
+            .map(|result| result.rows_affected()),
+            Database::Postgres(pool) => sqlx::query(
+                "UPDATE users SET username=$1,username_norm=lower($1),password_hash=$2,role=$3,status=$4,principal_label=$5,force_password_change=$6,revision=$7 WHERE id=$8",
+            )
+            .bind(username)
+            .bind(password_hash.as_str())
+            .bind(role)
+            .bind(status)
+            .bind(principal_label)
+            .bind(force_password_change)
+            .bind(revision)
+            .bind(user_id.into_uuid())
+            .execute(pool)
+            .await
+            .map(|result| result.rows_affected()),
         }
     }
 
@@ -3513,6 +6472,83 @@ mod tests {
             }
         };
         assert!(invalid_enum.is_err());
+
+        let inherited_authenticated_at_ms = session.created_at_ms.saturating_sub(1);
+        assert!(inherited_authenticated_at_ms < session.created_at_ms);
+        let relaxed_authenticated_timeline = match database {
+            Database::Sqlite(pool) => {
+                sqlx::query("UPDATE auth_sessions SET authenticated_at_ms=? WHERE id=?")
+                    .bind(inherited_authenticated_at_ms)
+                    .bind(session.id.to_string())
+                    .execute(pool)
+                    .await
+                    .map(|result| result.rows_affected())
+            }
+            Database::Postgres(pool) => {
+                sqlx::query("UPDATE auth_sessions SET authenticated_at_ms=$1 WHERE id=$2")
+                    .bind(inherited_authenticated_at_ms)
+                    .bind(session.id.into_uuid())
+                    .execute(pool)
+                    .await
+                    .map(|result| result.rows_affected())
+            }
+        };
+        assert!(matches!(relaxed_authenticated_timeline, Ok(1)));
+        let restored_authenticated_timeline = match database {
+            Database::Sqlite(pool) => {
+                sqlx::query("UPDATE auth_sessions SET authenticated_at_ms=? WHERE id=?")
+                    .bind(session.authenticated_at_ms)
+                    .bind(session.id.to_string())
+                    .execute(pool)
+                    .await
+                    .map(|result| result.rows_affected())
+            }
+            Database::Postgres(pool) => {
+                sqlx::query("UPDATE auth_sessions SET authenticated_at_ms=$1 WHERE id=$2")
+                    .bind(session.authenticated_at_ms)
+                    .bind(session.id.into_uuid())
+                    .execute(pool)
+                    .await
+                    .map(|result| result.rows_affected())
+            }
+        };
+        assert!(matches!(restored_authenticated_timeline, Ok(1)));
+
+        let active_with_revocation_metadata = match database {
+            Database::Sqlite(pool) => sqlx::query(
+                "UPDATE auth_sessions SET revoked_at_ms=created_at_ms,revoked_reason='logout' WHERE id=?",
+            )
+            .bind(session.id.to_string())
+            .execute(pool)
+            .await
+            .map(|_| ()),
+            Database::Postgres(pool) => sqlx::query(
+                "UPDATE auth_sessions SET revoked_at_ms=created_at_ms,revoked_reason='logout' WHERE id=$1",
+            )
+            .bind(session.id.into_uuid())
+            .execute(pool)
+            .await
+            .map(|_| ()),
+        };
+        assert!(active_with_revocation_metadata.is_err());
+        let revoked_without_revocation_metadata = match database {
+            Database::Sqlite(pool) => {
+                sqlx::query("UPDATE auth_sessions SET status='revoked' WHERE id=?")
+                    .bind(session.id.to_string())
+                    .execute(pool)
+                    .await
+                    .map(|_| ())
+            }
+            Database::Postgres(pool) => {
+                sqlx::query("UPDATE auth_sessions SET status='revoked' WHERE id=$1")
+                    .bind(session.id.into_uuid())
+                    .execute(pool)
+                    .await
+                    .map(|_| ())
+            }
+        };
+        assert!(revoked_without_revocation_metadata.is_err());
+
         let hard_delete = match database {
             Database::Sqlite(pool) => sqlx::query("DELETE FROM users WHERE id=?")
                 .bind(owner.id.to_string())
@@ -3539,6 +6575,559 @@ mod tests {
             .await,
         };
         assert!(matches!(partial_index_count, Ok(1)));
+    }
+
+    async fn actor_aware_session_revocation_contract(database: &Database) {
+        let (touch_user, touch_actor, touch_target, touch_snapshot) =
+            provision_actor_and_target(database, 60, 100, 101).await;
+        let touch_at_ms = touch_actor.created_at_ms + 100;
+        let touched = database
+            .authenticate_session(&session_authentication(
+                &touch_actor,
+                Some(touch_actor.csrf_hmac),
+                touch_at_ms,
+            ))
+            .await;
+        assert!(matches!(
+            touched,
+            Ok(SessionAuthenticationOutcome::Authenticated(ref authenticated))
+                if authenticated.session.revision != touch_snapshot.session.revision
+                    && authenticated.session.last_seen_at_ms == touch_at_ms
+        ));
+        let touch_revocation_at_ms = touch_at_ms + 1;
+        let touch_revocation_event = session_security_event(
+            &touch_actor,
+            160,
+            touch_revocation_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &touch_snapshot,
+                    touch_target.id,
+                    &touch_revocation_event,
+                    touch_revocation_at_ms,
+                ))
+                .await,
+            Ok(true)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, touch_revocation_event.id).await,
+            Ok(1)
+        ));
+        assert!(matches!(
+            database.list_user_sessions(touch_user.id).await,
+            Ok(ref sessions)
+                if sessions.iter().any(|session|
+                    session.id == touch_target.id
+                        && session.status == AuthSessionStatus::Revoked
+                        && session.revoked_reason == Some(SessionRevocationReason::UserRevoked)
+                )
+        ));
+
+        let repeated_at_ms = touch_revocation_at_ms + 1;
+        let repeated_event = session_security_event(
+            &touch_actor,
+            161,
+            repeated_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &touch_snapshot,
+                    touch_target.id,
+                    &repeated_event,
+                    repeated_at_ms,
+                ))
+                .await,
+            Ok(false)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, repeated_event.id).await,
+            Ok(0)
+        ));
+
+        let (other_user, _other_actor, other_target, _) =
+            provision_actor_and_target(database, 61, 102, 103).await;
+        let wrong_user_at_ms = repeated_at_ms + 1;
+        let wrong_user_event = session_security_event(
+            &touch_actor,
+            162,
+            wrong_user_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &touch_snapshot,
+                    other_target.id,
+                    &wrong_user_event,
+                    wrong_user_at_ms,
+                ))
+                .await,
+            Ok(false)
+        ));
+        assert!(stored_session_is_active(database, other_user.id, other_target.id).await);
+        assert!(matches!(
+            login_security_event_count(database, wrong_user_event.id).await,
+            Ok(0)
+        ));
+
+        let unknown_at_ms = wrong_user_at_ms + 1;
+        let unknown_event = session_security_event(
+            &touch_actor,
+            163,
+            unknown_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &touch_snapshot,
+                    EntityId::new(),
+                    &unknown_event,
+                    unknown_at_ms,
+                ))
+                .await,
+            Ok(false)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, unknown_event.id).await,
+            Ok(0)
+        ));
+
+        let (_current_user, current_actor, current_sibling, current_snapshot) =
+            provision_actor_and_target(database, 62, 104, 105).await;
+        let current_revoke_at_ms = current_actor.created_at_ms + 10;
+        let current_revoke_event = session_security_event(
+            &current_actor,
+            164,
+            current_revoke_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &current_snapshot,
+                    current_actor.id,
+                    &current_revoke_event,
+                    current_revoke_at_ms,
+                ))
+                .await,
+            Ok(true)
+        ));
+        let repeated_current_at_ms = current_revoke_at_ms + 1;
+        let repeated_current_event = session_security_event(
+            &current_actor,
+            165,
+            repeated_current_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &current_snapshot,
+                    current_actor.id,
+                    &repeated_current_event,
+                    repeated_current_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(
+            stored_session_is_active(database, current_snapshot.user_id, current_sibling.id).await
+        );
+        assert!(matches!(
+            login_security_event_count(database, repeated_current_event.id).await,
+            Ok(0)
+        ));
+
+        let (rotation_user, rotation_actor, rotation_target, rotation_snapshot) =
+            provision_actor_and_target(database, 63, 106, 107).await;
+        let rotation_at_ms = rotation_actor.created_at_ms + 100;
+        let rotation_replacement = auth_session_fixture(
+            rotation_user.id,
+            108,
+            Revision::initial(),
+            rotation_at_ms,
+            rotation_actor.absolute_expires_at_ms,
+        );
+        let rotation_event = session_security_event(
+            &rotation_replacement,
+            166,
+            rotation_at_ms,
+            LoginSecurityReason::ReauthenticationSucceeded,
+        );
+        assert!(
+            database
+                .rotate_current_session(
+                    rotation_user.id,
+                    rotation_actor.id,
+                    rotation_snapshot.user_revision,
+                    &rotation_replacement,
+                    &rotation_event,
+                    rotation_at_ms,
+                )
+                .await
+                .is_ok()
+        );
+        let stale_rotation_at_ms = rotation_at_ms + 1;
+        let stale_rotation_event = session_security_event(
+            &rotation_actor,
+            167,
+            stale_rotation_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &rotation_snapshot,
+                    rotation_target.id,
+                    &stale_rotation_event,
+                    stale_rotation_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(stored_session_is_active(database, rotation_user.id, rotation_target.id).await);
+        assert!(matches!(
+            login_security_event_count(database, stale_rotation_event.id).await,
+            Ok(0)
+        ));
+
+        let (revoked_user, revoked_actor, revoked_target, revoked_snapshot) =
+            provision_actor_and_target(database, 64, 109, 110).await;
+        let actor_revoke_at_ms = revoked_actor.created_at_ms + 100;
+        let actor_revoke_event = session_security_event(
+            &revoked_actor,
+            168,
+            actor_revoke_at_ms,
+            LoginSecurityReason::Logout,
+        );
+        assert!(matches!(
+            database
+                .revoke_current_session_with_event(
+                    revoked_user.id,
+                    revoked_actor.id,
+                    actor_revoke_at_ms,
+                    SessionRevocationReason::Logout,
+                    &actor_revoke_event,
+                )
+                .await,
+            Ok(true)
+        ));
+        let stale_revoke_at_ms = actor_revoke_at_ms + 1;
+        let stale_revoke_event = session_security_event(
+            &revoked_actor,
+            169,
+            stale_revoke_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &revoked_snapshot,
+                    revoked_target.id,
+                    &stale_revoke_event,
+                    stale_revoke_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(stored_session_is_active(database, revoked_user.id, revoked_target.id).await);
+        assert!(matches!(
+            login_security_event_count(database, stale_revoke_event.id).await,
+            Ok(0)
+        ));
+
+        let (auth_revision_user, auth_revision_actor, auth_revision_target, auth_revision_snapshot) =
+            provision_actor_and_target(database, 65, 111, 112).await;
+        assert!(matches!(
+            set_user_auth_revision(database, auth_revision_user.id, 1).await,
+            Ok(1)
+        ));
+        let stale_auth_revision_at_ms = auth_revision_actor.created_at_ms + 10;
+        let stale_auth_revision_event = session_security_event(
+            &auth_revision_actor,
+            170,
+            stale_auth_revision_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &auth_revision_snapshot,
+                    auth_revision_target.id,
+                    &stale_auth_revision_event,
+                    stale_auth_revision_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(
+            stored_session_is_active(database, auth_revision_user.id, auth_revision_target.id)
+                .await
+        );
+        assert!(matches!(
+            login_security_event_count(database, stale_auth_revision_event.id).await,
+            Ok(0)
+        ));
+
+        let (disabled_user, disabled_actor, disabled_target, disabled_snapshot) =
+            provision_actor_and_target(database, 66, 113, 114).await;
+        assert!(matches!(
+            set_user_status_and_revision(database, disabled_user.id, "disabled", 0).await,
+            Ok(1)
+        ));
+        let disabled_at_ms = disabled_actor.created_at_ms + 10;
+        let disabled_event = session_security_event(
+            &disabled_actor,
+            171,
+            disabled_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &disabled_snapshot,
+                    disabled_target.id,
+                    &disabled_event,
+                    disabled_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(stored_session_is_active(database, disabled_user.id, disabled_target.id).await);
+        assert!(matches!(
+            login_security_event_count(database, disabled_event.id).await,
+            Ok(0)
+        ));
+
+        let (user_revision_user, user_revision_actor, user_revision_target, user_revision_snapshot) =
+            provision_actor_and_target(database, 67, 115, 116).await;
+        assert!(matches!(
+            set_user_status_and_revision(database, user_revision_user.id, "active", 1).await,
+            Ok(1)
+        ));
+        let stale_user_revision_at_ms = user_revision_actor.created_at_ms + 10;
+        let stale_user_revision_event = session_security_event(
+            &user_revision_actor,
+            172,
+            stale_user_revision_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &user_revision_snapshot,
+                    user_revision_target.id,
+                    &stale_user_revision_event,
+                    stale_user_revision_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(
+            stored_session_is_active(database, user_revision_user.id, user_revision_target.id)
+                .await
+        );
+        assert!(matches!(
+            login_security_event_count(database, stale_user_revision_event.id).await,
+            Ok(0)
+        ));
+
+        let (clock_user, clock_actor, clock_target, clock_snapshot) =
+            provision_actor_and_target(database, 68, 117, 118).await;
+        let rolled_back_at_ms = clock_actor.created_at_ms - 1;
+        let rolled_back_event = session_security_event(
+            &clock_actor,
+            173,
+            rolled_back_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_user_session_with_event(user_session_revocation(
+                    &clock_snapshot,
+                    clock_target.id,
+                    &rolled_back_event,
+                    rolled_back_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(stored_session_is_active(database, clock_user.id, clock_target.id).await);
+        assert!(matches!(
+            login_security_event_count(database, rolled_back_event.id).await,
+            Ok(0)
+        ));
+
+        let (cross_user, cross_actor, cross_target, cross_actor_snapshot) =
+            provision_actor_and_target(database, 69, 119, 120).await;
+        let cross_target_snapshot = database
+            .authenticate_session(&session_authentication(
+                &cross_target,
+                Some(cross_target.csrf_hmac),
+                cross_target.created_at_ms,
+            ))
+            .await;
+        let cross_target_snapshot = match cross_target_snapshot {
+            Ok(SessionAuthenticationOutcome::Authenticated(authenticated)) => authenticated,
+            outcome => panic!("unexpected cross-delete target authentication: {outcome:?}"),
+        };
+        let cross_delete_at_ms = cross_target.created_at_ms + 10;
+        let actor_deletes_target_event = session_security_event(
+            &cross_actor,
+            174,
+            cross_delete_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        let target_deletes_actor_event = session_security_event(
+            &cross_target,
+            175,
+            cross_delete_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        let (actor_deletes_target, target_deletes_actor) = tokio::join!(
+            database.revoke_user_session_with_event(user_session_revocation(
+                &cross_actor_snapshot,
+                cross_target.id,
+                &actor_deletes_target_event,
+                cross_delete_at_ms,
+            )),
+            database.revoke_user_session_with_event(user_session_revocation(
+                &cross_target_snapshot,
+                cross_actor.id,
+                &target_deletes_actor_event,
+                cross_delete_at_ms,
+            )),
+        );
+        assert!(matches!(
+            (&actor_deletes_target, &target_deletes_actor),
+            (Ok(true), Err(PersistenceError::SessionPrincipalUnavailable))
+                | (Err(PersistenceError::SessionPrincipalUnavailable), Ok(true))
+        ));
+        let winner_actor_id = if matches!(&actor_deletes_target, Ok(true)) {
+            cross_actor.id
+        } else {
+            cross_target.id
+        };
+        let (actor_event_count, target_event_count) = tokio::join!(
+            login_security_event_count(database, actor_deletes_target_event.id),
+            login_security_event_count(database, target_deletes_actor_event.id),
+        );
+        assert!(matches!(
+            (actor_event_count, target_event_count),
+            (Ok(1), Ok(0)) | (Ok(0), Ok(1))
+        ));
+        assert!(matches!(
+            database.list_user_sessions(cross_user.id).await,
+            Ok(ref sessions)
+                if sessions.iter().filter(|session| session.status == AuthSessionStatus::Active).count() == 1
+                    && sessions.iter().any(|session|
+                        session.id == winner_actor_id
+                            && session.status == AuthSessionStatus::Active
+                    )
+                    && sessions.iter().filter(|session|
+                        session.status == AuthSessionStatus::Revoked
+                            && session.revoked_reason == Some(SessionRevocationReason::UserRevoked)
+                    ).count() == 1
+        ));
+
+        let (touch_delete_user, touch_delete_actor, touch_delete_target, touch_delete_snapshot) =
+            provision_actor_and_target(database, 70, 121, 122).await;
+        let touch_delete_at_ms = touch_delete_target.created_at_ms + 100;
+        let touch_delete_event = session_security_event(
+            &touch_delete_actor,
+            176,
+            touch_delete_at_ms,
+            LoginSecurityReason::SessionRevoked,
+        );
+        let touch_delete_authentication = session_authentication(
+            &touch_delete_target,
+            Some(touch_delete_target.csrf_hmac),
+            touch_delete_at_ms,
+        );
+        let (touch_during_delete, delete_during_touch) = tokio::join!(
+            database.authenticate_session(&touch_delete_authentication),
+            database.revoke_user_session_with_event(user_session_revocation(
+                &touch_delete_snapshot,
+                touch_delete_target.id,
+                &touch_delete_event,
+                touch_delete_at_ms,
+            )),
+        );
+        assert!(matches!(delete_during_touch, Ok(true)));
+        assert!(matches!(
+            touch_during_delete,
+            Ok(SessionAuthenticationOutcome::Authenticated(_))
+                | Ok(SessionAuthenticationOutcome::InvalidSession)
+        ));
+        assert!(
+            !stored_session_is_active(database, touch_delete_user.id, touch_delete_target.id,)
+                .await
+        );
+        assert!(matches!(
+            login_security_event_count(database, touch_delete_event.id).await,
+            Ok(1)
+        ));
+
+        let (touch_rotate_user, touch_rotate_actor, _touch_rotate_sibling, touch_rotate_snapshot) =
+            provision_actor_and_target(database, 71, 123, 124).await;
+        let touch_rotate_at_ms = touch_rotate_actor.created_at_ms + 100;
+        let touch_rotate_replacement = auth_session_fixture(
+            touch_rotate_user.id,
+            125,
+            touch_rotate_actor.auth_revision,
+            touch_rotate_at_ms,
+            touch_rotate_actor.absolute_expires_at_ms,
+        );
+        let touch_rotate_event = session_security_event(
+            &touch_rotate_replacement,
+            177,
+            touch_rotate_at_ms,
+            LoginSecurityReason::ReauthenticationSucceeded,
+        );
+        let touch_rotate_authentication = session_authentication(
+            &touch_rotate_actor,
+            Some(touch_rotate_actor.csrf_hmac),
+            touch_rotate_at_ms,
+        );
+        let (touch_during_rotation, rotation_during_touch) = tokio::join!(
+            database.authenticate_session(&touch_rotate_authentication),
+            database.rotate_current_session(
+                touch_rotate_user.id,
+                touch_rotate_actor.id,
+                touch_rotate_snapshot.user_revision,
+                &touch_rotate_replacement,
+                &touch_rotate_event,
+                touch_rotate_at_ms,
+            ),
+        );
+        assert!(rotation_during_touch.is_ok());
+        assert!(matches!(
+            touch_during_rotation,
+            Ok(SessionAuthenticationOutcome::Authenticated(_))
+                | Ok(SessionAuthenticationOutcome::InvalidSession)
+        ));
+        assert!(matches!(
+            database.list_user_sessions(touch_rotate_user.id).await,
+            Ok(ref sessions)
+                if sessions.iter().any(|session|
+                    session.id == touch_rotate_actor.id
+                        && session.status == AuthSessionStatus::Revoked
+                        && session.revoked_reason == Some(SessionRevocationReason::Rotation)
+                ) && sessions.iter().any(|session|
+                    session.id == touch_rotate_replacement.id
+                        && session.status == AuthSessionStatus::Active
+                )
+        ));
+        assert!(matches!(
+            login_security_event_count(database, touch_rotate_event.id).await,
+            Ok(1)
+        ));
     }
 
     async fn auth_core_contract(database: &Database, owner: &UserAccount) {
@@ -3574,6 +7163,15 @@ mod tests {
         ));
         raw_auth_secret_absence_contract(database, &first).await;
         auth_schema_constraints_contract(database, owner, &first).await;
+        let rolled_back_clock = session_authentication(&first, None, base - 1);
+        assert!(matches!(
+            database.authenticate_session(&rolled_back_clock).await,
+            Ok(SessionAuthenticationOutcome::InvalidSession)
+        ));
+        assert!(matches!(
+            database.list_active_user_sessions(owner.id, base - 1).await,
+            Ok(ref sessions) if sessions.is_empty()
+        ));
 
         let wrong_csrf = session_authentication(&first, Some([0xff; 32]), base + 100);
         assert!(matches!(
@@ -3604,6 +7202,23 @@ mod tests {
         let touched_at_ms = base + 100;
         let csrf_authentication =
             session_authentication(&first, Some(first.csrf_hmac), touched_at_ms);
+        assert!(matches!(
+            database
+                .authenticate_session_read_only(&csrf_authentication)
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(ref authenticated))
+                if authenticated.session.last_seen_at_ms == base
+                    && authenticated.session.idle_expires_at_ms == first.idle_expires_at_ms
+                    && authenticated.session.revision == Revision::initial()
+        ));
+        assert!(matches!(
+            database.list_user_sessions(owner.id).await,
+            Ok(ref sessions)
+                if sessions.len() == 1
+                    && sessions[0].last_seen_at_ms == base
+                    && sessions[0].idle_expires_at_ms == first.idle_expires_at_ms
+                    && sessions[0].revision == Revision::initial()
+        ));
         assert!(matches!(
             database.authenticate_session(&csrf_authentication).await,
             Ok(SessionAuthenticationOutcome::Authenticated(ref authenticated))
@@ -3640,24 +7255,161 @@ mod tests {
                 .await,
             Ok(SessionAuthenticationOutcome::InvalidSession)
         ));
-        let wrong_reason_event =
-            session_security_event(&first, 21, base + 299, LoginSecurityReason::LogoutAll);
+        assert!(matches!(
+            database
+                .list_active_user_sessions(owner.id, base + 249)
+                .await,
+            Ok(ref sessions)
+                if sessions.len() == 2
+                    && sessions.iter().any(|session| session.id == first.id)
+                    && sessions.iter().any(|session| session.id == expired.id)
+        ));
+        assert!(matches!(
+            database
+                .list_active_user_sessions(owner.id, base + 250)
+                .await,
+            Ok(ref sessions) if sessions.len() == 1 && sessions[0].id == first.id
+        ));
+        assert!(matches!(
+            database
+                .list_active_user_sessions(owner.id, base + 251)
+                .await,
+            Ok(ref sessions) if sessions.len() == 1 && sessions[0].id == first.id
+        ));
+        assert!(matches!(
+            database
+                .list_active_user_sessions(EntityId::new(), base + 251)
+                .await,
+            Ok(ref sessions) if sessions.is_empty()
+        ));
+        assert!(matches!(
+            database.list_active_user_sessions(owner.id, -1).await,
+            Err(PersistenceError::InvalidTimestamp)
+        ));
+        assert!(matches!(
+            set_user_auth_revision(database, owner.id, 1).await,
+            Ok(1)
+        ));
+        let current_revision_sibling = auth_session_fixture(
+            owner.id,
+            200,
+            Revision::from_value(1),
+            base + 260,
+            base + 10_000,
+        );
+        assert!(
+            database
+                .create_auth_session(
+                    &current_revision_sibling,
+                    &login_security_event(200, base + 260, LoginSecurityReason::LoginSucceeded,),
+                )
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            database
+                .list_active_user_sessions(owner.id, base + 261)
+                .await,
+            Ok(ref sessions)
+                if sessions.len() == 1 && sessions[0].id == current_revision_sibling.id
+        ));
+        let user_revoke_event = session_security_event(
+            &current_revision_sibling,
+            201,
+            base + 262,
+            LoginSecurityReason::SessionRevoked,
+        );
         assert!(matches!(
             database
                 .revoke_current_session_with_event(
                     owner.id,
-                    first.id,
-                    base + 299,
-                    SessionRevocationReason::Logout,
-                    &wrong_reason_event,
+                    current_revision_sibling.id,
+                    base + 262,
+                    SessionRevocationReason::UserRevoked,
+                    &user_revoke_event,
                 )
                 .await,
-            Err(PersistenceError::InvalidSessionRevocationEvent)
+            Ok(true)
         ));
         assert!(matches!(
-            login_security_event_count(database, wrong_reason_event.id).await,
+            login_security_event_count(database, user_revoke_event.id).await,
+            Ok(1)
+        ));
+        assert!(matches!(
+            database.list_user_sessions(owner.id).await,
+            Ok(ref sessions)
+                if sessions.iter().any(|session|
+                    session.id == current_revision_sibling.id
+                        && session.revoked_reason == Some(SessionRevocationReason::UserRevoked)
+                )
+        ));
+        let repeated_user_revoke_event = session_security_event(
+            &current_revision_sibling,
+            204,
+            base + 263,
+            LoginSecurityReason::SessionRevoked,
+        );
+        assert!(matches!(
+            database
+                .revoke_current_session_with_event(
+                    owner.id,
+                    current_revision_sibling.id,
+                    base + 263,
+                    SessionRevocationReason::UserRevoked,
+                    &repeated_user_revoke_event,
+                )
+                .await,
+            Ok(false)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, repeated_user_revoke_event.id).await,
             Ok(0)
         ));
+        assert!(matches!(
+            login_security_event_count(database, user_revoke_event.id).await,
+            Ok(1)
+        ));
+        assert!(matches!(
+            set_user_auth_revision(database, owner.id, 0).await,
+            Ok(1)
+        ));
+        assert!(matches!(
+            database
+                .list_active_user_sessions(owner.id, base + 263)
+                .await,
+            Ok(ref sessions) if sessions.len() == 1 && sessions[0].id == first.id
+        ));
+        for (marker, revocation_reason, event_reason) in [
+            (
+                202,
+                SessionRevocationReason::Logout,
+                LoginSecurityReason::SessionRevoked,
+            ),
+            (
+                203,
+                SessionRevocationReason::UserRevoked,
+                LoginSecurityReason::Logout,
+            ),
+        ] {
+            let cross_paired_event =
+                session_security_event(&first, marker, base + 299, event_reason);
+            assert!(matches!(
+                database
+                    .revoke_current_session_with_event(
+                        owner.id,
+                        first.id,
+                        base + 299,
+                        revocation_reason,
+                        &cross_paired_event,
+                    )
+                    .await,
+                Err(PersistenceError::InvalidSessionRevocationEvent)
+            ));
+            assert!(matches!(
+                login_security_event_count(database, cross_paired_event.id).await,
+                Ok(0)
+            ));
+        }
         let mut missing_context_event =
             session_security_event(&first, 24, base + 299, LoginSecurityReason::Logout);
         missing_context_event.account_hmac = None;
@@ -3778,20 +7530,145 @@ mod tests {
                 .await
                 .is_ok()
         );
+        let logout_rotation_guard_seen_at_ms = base + 360;
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &current,
+                    None,
+                    logout_rotation_guard_seen_at_ms,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(ref authenticated))
+                if authenticated.session.last_seen_at_ms == logout_rotation_guard_seen_at_ms
+        ));
+        let logout_rotation_rollback_at_ms = logout_rotation_guard_seen_at_ms - 1;
+        let mut rollback_logout_rotation = auth_session_fixture(
+            owner.id,
+            210,
+            Revision::from_value(1),
+            logout_rotation_rollback_at_ms,
+            base + 10_000,
+        );
+        rollback_logout_rotation.authenticated_at_ms = current.authenticated_at_ms;
+        rollback_logout_rotation.recent_auth_at_ms = current.recent_auth_at_ms;
+        let rollback_logout_rotation_event = session_security_event(
+            &rollback_logout_rotation,
+            210,
+            logout_rotation_rollback_at_ms,
+            LoginSecurityReason::LogoutAll,
+        );
+        assert!(matches!(
+            database
+                .logout_all_sessions_and_rotate(
+                    owner.id,
+                    current.id,
+                    Revision::initial(),
+                    &rollback_logout_rotation,
+                    &rollback_logout_rotation_event,
+                    logout_rotation_rollback_at_ms,
+                )
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, rollback_logout_rotation_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &current,
+                    None,
+                    logout_rotation_guard_seen_at_ms + 1,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(_))
+        ));
         let rotate_at_ms = base + 400;
-        let replacement = auth_session_fixture(
+        let mut replacement = auth_session_fixture(
             owner.id,
             5,
             Revision::from_value(1),
             rotate_at_ms,
             base + 10_000,
         );
+        replacement.authenticated_at_ms = current.authenticated_at_ms;
+        replacement.recent_auth_at_ms = current.recent_auth_at_ms;
+        let rotation_event = login_security_event(5, rotate_at_ms, LoginSecurityReason::LogoutAll);
+        let mut missing_account_rotation_event = rotation_event.clone();
+        missing_account_rotation_event.account_hmac = None;
+        assert!(matches!(
+            database
+                .logout_all_sessions_and_rotate(
+                    owner.id,
+                    current.id,
+                    Revision::initial(),
+                    &replacement,
+                    &missing_account_rotation_event,
+                    rotate_at_ms,
+                )
+                .await,
+            Err(PersistenceError::InvalidSessionRotation)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, missing_account_rotation_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            set_user_login_snapshot(
+                database,
+                owner.id,
+                owner.username.as_str(),
+                &owner.password_hash,
+                owner.role.as_str(),
+                "active",
+                owner.principal_label.as_str(),
+                owner.force_password_change,
+                1,
+            )
+            .await,
+            Ok(1)
+        ));
+        assert!(matches!(
+            database
+                .logout_all_sessions_and_rotate(
+                    owner.id,
+                    current.id,
+                    Revision::initial(),
+                    &replacement,
+                    &rotation_event,
+                    rotate_at_ms,
+                )
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, rotation_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            set_user_login_snapshot(
+                database,
+                owner.id,
+                owner.username.as_str(),
+                &owner.password_hash,
+                owner.role.as_str(),
+                "active",
+                owner.principal_label.as_str(),
+                owner.force_password_change,
+                0,
+            )
+            .await,
+            Ok(1)
+        ));
         let rotation = database
             .logout_all_sessions_and_rotate(
                 owner.id,
                 current.id,
+                Revision::initial(),
                 &replacement,
-                &login_security_event(5, rotate_at_ms, LoginSecurityReason::LogoutAll),
+                &rotation_event,
                 rotate_at_ms,
             )
             .await;
@@ -3816,7 +7693,9 @@ mod tests {
                     rotate_at_ms + 1,
                 ))
                 .await,
-            Ok(SessionAuthenticationOutcome::Authenticated(_))
+            Ok(SessionAuthenticationOutcome::Authenticated(ref authenticated))
+                if authenticated.session.authenticated_at_ms == current.authenticated_at_ms
+                    && authenticated.session.recent_auth_at_ms == current.recent_auth_at_ms
         ));
         let logout_all = database
             .logout_all_sessions(owner.id, rotate_at_ms + 2)
@@ -3868,11 +7747,1381 @@ mod tests {
                 if authenticated.session.auth_revision == Revision::from_value(2)
         ));
 
+        let upgraded_hash = password_hash_fixture('B');
+        let second_upgraded_hash = password_hash_fixture('C');
+        let final_password_hash = password_hash_fixture('D');
+        let competing_rehash_hash = password_hash_fixture('E');
+        let third_rehash_hash = password_hash_fixture('F');
+        let actor_drift_hash = password_hash_fixture('G');
+        let actor_replacement_hash = password_hash_fixture('H');
+        let initial_login_snapshot = credentials_snapshot(database, &normalized).await;
+        assert!(
+            initial_login_snapshot.password_hash == owner.password_hash
+                && initial_login_snapshot.user_revision == Revision::initial()
+                && initial_login_snapshot.auth_revision == Revision::from_value(2)
+                && initial_login_snapshot.password_changed_at_ms == owner.created_at_ms
+        );
+        let rehash_at_ms = rotate_at_ms + 10;
+        let rehash_session = auth_session_fixture(
+            owner.id,
+            7,
+            Revision::from_value(2),
+            rehash_at_ms,
+            base + 10_000,
+        );
+        let mut duplicate_rehash_event =
+            login_security_event(7, rehash_at_ms, LoginSecurityReason::LoginSucceeded);
+        duplicate_rehash_event.id = first_event.id;
+        assert!(matches!(
+            database
+                .create_auth_session_with_optional_password_upgrade(
+                    &rehash_session,
+                    &duplicate_rehash_event,
+                    &initial_login_snapshot,
+                    Some(&upgraded_hash),
+                )
+                .await,
+            Err(PersistenceError::Sql(_))
+        ));
+        assert!(matches!(
+            database
+                .user_credentials_by_normalized_username(&normalized)
+                .await,
+            Ok(Some(ref credentials))
+                if credentials.password_hash == owner.password_hash
+                    && credentials.user_revision == Revision::initial()
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &rehash_session,
+                    None,
+                    rehash_at_ms + 1,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::InvalidSession)
+        ));
+        let rehash_event =
+            login_security_event(7, rehash_at_ms, LoginSecurityReason::LoginSucceeded);
+        assert!(
+            database
+                .create_auth_session_with_optional_password_upgrade(
+                    &rehash_session,
+                    &rehash_event,
+                    &initial_login_snapshot,
+                    Some(&upgraded_hash),
+                )
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            database
+                .user_credentials_by_normalized_username(&normalized)
+                .await,
+            Ok(Some(ref credentials))
+                if credentials.password_hash == upgraded_hash
+                    && credentials.user_revision == Revision::from_value(1)
+                    && credentials.auth_revision == Revision::from_value(2)
+                    && credentials.password_changed_at_ms == owner.created_at_ms
+        ));
+        assert!(matches!(
+            auth_state_timestamps(database, owner.id).await,
+            Ok(Some((2, password_changed_at_ms, updated_at_ms)))
+                if password_changed_at_ms == owner.created_at_ms
+                    && updated_at_ms >= rehash_at_ms
+        ));
+        assert!(matches!(
+            database
+                .upgrade_password_hash_if_current(
+                    owner.id,
+                    Revision::from_value(1),
+                    &upgraded_hash,
+                    &second_upgraded_hash,
+                    rehash_at_ms + 1,
+                )
+                .await,
+            Ok(true)
+        ));
+        assert!(matches!(
+            database
+                .upgrade_password_hash_if_current(
+                    owner.id,
+                    Revision::from_value(1),
+                    &upgraded_hash,
+                    &final_password_hash,
+                    rehash_at_ms + 2,
+                )
+                .await,
+            Ok(false)
+        ));
+        assert!(matches!(
+            auth_state_timestamps(database, owner.id).await,
+            Ok(Some((2, password_changed_at_ms, updated_at_ms)))
+                if password_changed_at_ms == owner.created_at_ms
+                    && updated_at_ms > rehash_at_ms
+        ));
+        let concurrent_login_snapshot = credentials_snapshot(database, &normalized).await;
+        assert!(
+            concurrent_login_snapshot.password_hash == second_upgraded_hash
+                && concurrent_login_snapshot.user_revision == Revision::from_value(2)
+                && concurrent_login_snapshot.auth_revision == Revision::from_value(2)
+                && concurrent_login_snapshot.password_changed_at_ms == owner.created_at_ms
+        );
+        let rehash_race_at_ms = rehash_at_ms + 3;
+        let rehash_race_session = auth_session_fixture(
+            owner.id,
+            8,
+            Revision::from_value(2),
+            rehash_race_at_ms,
+            base + 10_000,
+        );
+        let rehash_race_event =
+            login_security_event(8, rehash_race_at_ms, LoginSecurityReason::LoginSucceeded);
+        let second_race_session = auth_session_fixture(
+            owner.id,
+            36,
+            Revision::from_value(2),
+            rehash_race_at_ms + 1,
+            base + 10_000,
+        );
+        let second_race_event = login_security_event(
+            36,
+            rehash_race_at_ms + 1,
+            LoginSecurityReason::LoginSucceeded,
+        );
+        let third_race_session = auth_session_fixture(
+            owner.id,
+            37,
+            Revision::from_value(2),
+            rehash_race_at_ms + 2,
+            base + 10_000,
+        );
+        let third_race_event = login_security_event(
+            37,
+            rehash_race_at_ms + 2,
+            LoginSecurityReason::LoginSucceeded,
+        );
+        let (first_race, second_race, third_race) = tokio::join!(
+            database.create_auth_session_with_optional_password_upgrade(
+                &rehash_race_session,
+                &rehash_race_event,
+                &concurrent_login_snapshot,
+                Some(&final_password_hash),
+            ),
+            database.create_auth_session_with_optional_password_upgrade(
+                &second_race_session,
+                &second_race_event,
+                &concurrent_login_snapshot,
+                Some(&competing_rehash_hash),
+            ),
+            database.create_auth_session_with_optional_password_upgrade(
+                &third_race_session,
+                &third_race_event,
+                &concurrent_login_snapshot,
+                Some(&third_rehash_hash),
+            ),
+        );
+        assert!(first_race.is_ok() && second_race.is_ok() && third_race.is_ok());
+        for (session, event) in [
+            (&rehash_race_session, &rehash_race_event),
+            (&second_race_session, &second_race_event),
+            (&third_race_session, &third_race_event),
+        ] {
+            assert!(matches!(
+                login_security_event_count(database, event.id).await,
+                Ok(1)
+            ));
+            assert!(matches!(
+                database
+                    .authenticate_session(&session_authentication(
+                        session,
+                        None,
+                        rehash_race_at_ms + 3,
+                    ))
+                    .await,
+                Ok(SessionAuthenticationOutcome::Authenticated(_))
+            ));
+        }
+        let post_rehash_snapshot = credentials_snapshot(database, &normalized).await;
+        assert!(
+            post_rehash_snapshot.user_revision == Revision::from_value(3)
+                && post_rehash_snapshot.auth_revision == Revision::from_value(2)
+                && post_rehash_snapshot.password_changed_at_ms == owner.created_at_ms
+                && (post_rehash_snapshot.password_hash == final_password_hash
+                    || post_rehash_snapshot.password_hash == competing_rehash_hash
+                    || post_rehash_snapshot.password_hash == third_rehash_hash)
+        );
+
+        for (offset, marker, username, role, status, principal_label, force_password_change) in [
+            (
+                1_i64,
+                50_u8,
+                "ConcurrentOwner",
+                post_rehash_snapshot.role.as_str(),
+                post_rehash_snapshot.status.as_str(),
+                post_rehash_snapshot.principal_label.as_str(),
+                post_rehash_snapshot.force_password_change,
+            ),
+            (
+                2_i64,
+                51_u8,
+                post_rehash_snapshot.username.as_str(),
+                "admin",
+                post_rehash_snapshot.status.as_str(),
+                post_rehash_snapshot.principal_label.as_str(),
+                post_rehash_snapshot.force_password_change,
+            ),
+            (
+                3_i64,
+                52_u8,
+                post_rehash_snapshot.username.as_str(),
+                post_rehash_snapshot.role.as_str(),
+                "disabled",
+                post_rehash_snapshot.principal_label.as_str(),
+                post_rehash_snapshot.force_password_change,
+            ),
+            (
+                4_i64,
+                53_u8,
+                post_rehash_snapshot.username.as_str(),
+                post_rehash_snapshot.role.as_str(),
+                post_rehash_snapshot.status.as_str(),
+                "owner-drift",
+                post_rehash_snapshot.force_password_change,
+            ),
+            (
+                5_i64,
+                54_u8,
+                post_rehash_snapshot.username.as_str(),
+                post_rehash_snapshot.role.as_str(),
+                post_rehash_snapshot.status.as_str(),
+                post_rehash_snapshot.principal_label.as_str(),
+                !post_rehash_snapshot.force_password_change,
+            ),
+        ] {
+            assert!(matches!(
+                set_user_login_snapshot(
+                    database,
+                    owner.id,
+                    username,
+                    &actor_drift_hash,
+                    role,
+                    status,
+                    principal_label,
+                    force_password_change,
+                    4,
+                )
+                .await,
+                Ok(1)
+            ));
+            let drift_at_ms = rehash_race_at_ms + offset;
+            let drift_session = auth_session_fixture(
+                owner.id,
+                marker,
+                Revision::from_value(2),
+                drift_at_ms,
+                base + 10_000,
+            );
+            let drift_event =
+                login_security_event(marker, drift_at_ms, LoginSecurityReason::LoginSucceeded);
+            assert!(matches!(
+                database
+                    .create_auth_session_with_optional_password_upgrade(
+                        &drift_session,
+                        &drift_event,
+                        &post_rehash_snapshot,
+                        Some(&actor_replacement_hash),
+                    )
+                    .await,
+                Err(PersistenceError::SessionPrincipalUnavailable)
+            ));
+            assert!(matches!(
+                login_security_event_count(database, drift_event.id).await,
+                Ok(0)
+            ));
+            assert!(matches!(
+                database
+                    .authenticate_session(&session_authentication(
+                        &drift_session,
+                        None,
+                        drift_at_ms + 1,
+                    ))
+                    .await,
+                Ok(SessionAuthenticationOutcome::InvalidSession)
+            ));
+            assert!(matches!(
+                set_user_login_snapshot(
+                    database,
+                    owner.id,
+                    post_rehash_snapshot.username.as_str(),
+                    &post_rehash_snapshot.password_hash,
+                    post_rehash_snapshot.role.as_str(),
+                    post_rehash_snapshot.status.as_str(),
+                    post_rehash_snapshot.principal_label.as_str(),
+                    post_rehash_snapshot.force_password_change,
+                    3,
+                )
+                .await,
+                Ok(1)
+            ));
+        }
+
+        assert!(matches!(
+            set_user_login_snapshot(
+                database,
+                owner.id,
+                post_rehash_snapshot.username.as_str(),
+                &actor_drift_hash,
+                post_rehash_snapshot.role.as_str(),
+                post_rehash_snapshot.status.as_str(),
+                post_rehash_snapshot.principal_label.as_str(),
+                post_rehash_snapshot.force_password_change,
+                4,
+            )
+            .await,
+            Ok(1)
+        ));
+        let none_drift_at_ms = rehash_race_at_ms + 6;
+        let none_drift_session = auth_session_fixture(
+            owner.id,
+            55,
+            Revision::from_value(2),
+            none_drift_at_ms,
+            base + 10_000,
+        );
+        let none_drift_event =
+            login_security_event(55, none_drift_at_ms, LoginSecurityReason::LoginSucceeded);
+        assert!(matches!(
+            database
+                .create_auth_session_with_optional_password_upgrade(
+                    &none_drift_session,
+                    &none_drift_event,
+                    &post_rehash_snapshot,
+                    None,
+                )
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, none_drift_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            set_user_login_snapshot(
+                database,
+                owner.id,
+                post_rehash_snapshot.username.as_str(),
+                &post_rehash_snapshot.password_hash,
+                post_rehash_snapshot.role.as_str(),
+                post_rehash_snapshot.status.as_str(),
+                post_rehash_snapshot.principal_label.as_str(),
+                post_rehash_snapshot.force_password_change,
+                3,
+            )
+            .await,
+            Ok(1)
+        ));
+
+        let recent_auth_at_ms = rotate_at_ms + 100;
+        let recent_auth_session = auth_session_fixture(
+            owner.id,
+            9,
+            Revision::from_value(2),
+            recent_auth_at_ms,
+            base + 10_000,
+        );
+        let reauthentication_guard_seen_at_ms = recent_auth_at_ms - 1;
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &after_logout,
+                    None,
+                    reauthentication_guard_seen_at_ms,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(ref authenticated))
+                if authenticated.session.last_seen_at_ms == reauthentication_guard_seen_at_ms
+        ));
+        let reauthentication_rollback_at_ms = reauthentication_guard_seen_at_ms - 1;
+        let rollback_reauthentication_session = auth_session_fixture(
+            owner.id,
+            211,
+            Revision::from_value(2),
+            reauthentication_rollback_at_ms,
+            base + 10_000,
+        );
+        let rollback_reauthentication_event = session_security_event(
+            &rollback_reauthentication_session,
+            211,
+            reauthentication_rollback_at_ms,
+            LoginSecurityReason::ReauthenticationSucceeded,
+        );
+        assert!(matches!(
+            database
+                .rotate_current_session(
+                    owner.id,
+                    after_logout.id,
+                    Revision::from_value(3),
+                    &rollback_reauthentication_session,
+                    &rollback_reauthentication_event,
+                    reauthentication_rollback_at_ms,
+                )
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, rollback_reauthentication_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &after_logout,
+                    None,
+                    recent_auth_at_ms,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(_))
+        ));
+        let wrong_reauthentication_event = session_security_event(
+            &recent_auth_session,
+            19,
+            recent_auth_at_ms,
+            LoginSecurityReason::PasswordChanged,
+        );
+        assert!(matches!(
+            database
+                .rotate_current_session(
+                    owner.id,
+                    after_logout.id,
+                    Revision::from_value(3),
+                    &recent_auth_session,
+                    &wrong_reauthentication_event,
+                    recent_auth_at_ms,
+                )
+                .await,
+            Err(PersistenceError::InvalidSessionRotation)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, wrong_reauthentication_event.id).await,
+            Ok(0)
+        ));
+        let mut extended_recent_auth_session = recent_auth_session.clone();
+        extended_recent_auth_session.absolute_expires_at_ms = base + 10_001;
+        let extended_reauthentication_event = session_security_event(
+            &extended_recent_auth_session,
+            20,
+            recent_auth_at_ms,
+            LoginSecurityReason::ReauthenticationSucceeded,
+        );
+        assert!(matches!(
+            database
+                .rotate_current_session(
+                    owner.id,
+                    after_logout.id,
+                    Revision::from_value(3),
+                    &extended_recent_auth_session,
+                    &extended_reauthentication_event,
+                    recent_auth_at_ms,
+                )
+                .await,
+            Err(PersistenceError::InvalidSessionRotation)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, extended_reauthentication_event.id).await,
+            Ok(0)
+        ));
+        let reauthentication_event = session_security_event(
+            &recent_auth_session,
+            21,
+            recent_auth_at_ms,
+            LoginSecurityReason::ReauthenticationSucceeded,
+        );
+        let mut missing_account_reauthentication_event = session_security_event(
+            &recent_auth_session,
+            212,
+            recent_auth_at_ms,
+            LoginSecurityReason::ReauthenticationSucceeded,
+        );
+        missing_account_reauthentication_event.account_hmac = None;
+        assert!(matches!(
+            database
+                .rotate_current_session(
+                    owner.id,
+                    after_logout.id,
+                    Revision::from_value(3),
+                    &recent_auth_session,
+                    &missing_account_reauthentication_event,
+                    recent_auth_at_ms,
+                )
+                .await,
+            Err(PersistenceError::InvalidSessionRotation)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, missing_account_reauthentication_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            set_user_login_snapshot(
+                database,
+                owner.id,
+                post_rehash_snapshot.username.as_str(),
+                &post_rehash_snapshot.password_hash,
+                post_rehash_snapshot.role.as_str(),
+                post_rehash_snapshot.status.as_str(),
+                post_rehash_snapshot.principal_label.as_str(),
+                post_rehash_snapshot.force_password_change,
+                4,
+            )
+            .await,
+            Ok(1)
+        ));
+        assert!(matches!(
+            database
+                .rotate_current_session(
+                    owner.id,
+                    after_logout.id,
+                    Revision::from_value(3),
+                    &recent_auth_session,
+                    &reauthentication_event,
+                    recent_auth_at_ms,
+                )
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, reauthentication_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            set_user_login_snapshot(
+                database,
+                owner.id,
+                post_rehash_snapshot.username.as_str(),
+                &post_rehash_snapshot.password_hash,
+                post_rehash_snapshot.role.as_str(),
+                post_rehash_snapshot.status.as_str(),
+                post_rehash_snapshot.principal_label.as_str(),
+                post_rehash_snapshot.force_password_change,
+                3,
+            )
+            .await,
+            Ok(1)
+        ));
+        assert!(matches!(
+            database
+                .rotate_current_session(
+                    owner.id,
+                    after_logout.id,
+                    Revision::from_value(3),
+                    &recent_auth_session,
+                    &reauthentication_event,
+                    recent_auth_at_ms,
+                )
+                .await,
+            Ok(ref summary)
+                if summary.id == recent_auth_session.id
+                    && summary.auth_revision == Revision::from_value(2)
+                    && summary.recent_auth_at_ms == recent_auth_at_ms
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &after_logout,
+                    None,
+                    recent_auth_at_ms + 1,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::InvalidSession)
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &rehash_session,
+                    None,
+                    recent_auth_at_ms + 1,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(_))
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &recent_auth_session,
+                    None,
+                    recent_auth_at_ms + 1,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(ref authenticated))
+                if authenticated.session.recent_auth_at_ms == recent_auth_at_ms
+        ));
+        let repeated_reauthentication_session = auth_session_fixture(
+            owner.id,
+            10,
+            Revision::from_value(2),
+            recent_auth_at_ms + 1,
+            base + 10_000,
+        );
+        let repeated_reauthentication_event = session_security_event(
+            &repeated_reauthentication_session,
+            22,
+            recent_auth_at_ms + 1,
+            LoginSecurityReason::ReauthenticationSucceeded,
+        );
+        assert!(matches!(
+            database
+                .rotate_current_session(
+                    owner.id,
+                    after_logout.id,
+                    Revision::from_value(3),
+                    &repeated_reauthentication_session,
+                    &repeated_reauthentication_event,
+                    recent_auth_at_ms + 1,
+                )
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, repeated_reauthentication_event.id).await,
+            Ok(0)
+        ));
+
+        let password_change_at_ms = rotate_at_ms + 200;
+        let mut password_session = auth_session_fixture(
+            owner.id,
+            11,
+            Revision::from_value(3),
+            password_change_at_ms,
+            base + 10_000,
+        );
+        password_session.authenticated_at_ms = recent_auth_session.authenticated_at_ms;
+        password_session.recent_auth_at_ms = recent_auth_session.recent_auth_at_ms;
+        let wrong_password_event = session_security_event(
+            &password_session,
+            23,
+            password_change_at_ms,
+            LoginSecurityReason::ReauthenticationSucceeded,
+        );
+        assert!(matches!(
+            database
+                .change_password_and_rotate(password_change_rotation(
+                    owner.id,
+                    recent_auth_session.id,
+                    Revision::from_value(3),
+                    &final_password_hash,
+                    &password_session,
+                    &wrong_password_event,
+                    password_change_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::InvalidSessionRotation)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, wrong_password_event.id).await,
+            Ok(0)
+        ));
+        let mut extended_password_session = password_session.clone();
+        extended_password_session.absolute_expires_at_ms = base + 10_001;
+        let extended_password_event = session_security_event(
+            &extended_password_session,
+            24,
+            password_change_at_ms,
+            LoginSecurityReason::PasswordChanged,
+        );
+        assert!(matches!(
+            database
+                .change_password_and_rotate(password_change_rotation(
+                    owner.id,
+                    recent_auth_session.id,
+                    Revision::from_value(3),
+                    &final_password_hash,
+                    &extended_password_session,
+                    &extended_password_event,
+                    password_change_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::InvalidSessionRotation)
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session_read_only(&session_authentication(
+                    &recent_auth_session,
+                    None,
+                    password_change_at_ms + 1,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(_))
+        ));
+        let password_event = session_security_event(
+            &password_session,
+            25,
+            password_change_at_ms,
+            LoginSecurityReason::PasswordChanged,
+        );
+        assert!(matches!(
+            set_user_login_snapshot(
+                database,
+                owner.id,
+                post_rehash_snapshot.username.as_str(),
+                &post_rehash_snapshot.password_hash,
+                post_rehash_snapshot.role.as_str(),
+                post_rehash_snapshot.status.as_str(),
+                post_rehash_snapshot.principal_label.as_str(),
+                post_rehash_snapshot.force_password_change,
+                4,
+            )
+            .await,
+            Ok(1)
+        ));
+        assert!(matches!(
+            database
+                .change_password_and_rotate(password_change_rotation(
+                    owner.id,
+                    recent_auth_session.id,
+                    Revision::from_value(3),
+                    &final_password_hash,
+                    &password_session,
+                    &password_event,
+                    password_change_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, password_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            set_user_login_snapshot(
+                database,
+                owner.id,
+                post_rehash_snapshot.username.as_str(),
+                &post_rehash_snapshot.password_hash,
+                post_rehash_snapshot.role.as_str(),
+                post_rehash_snapshot.status.as_str(),
+                post_rehash_snapshot.principal_label.as_str(),
+                post_rehash_snapshot.force_password_change,
+                3,
+            )
+            .await,
+            Ok(1)
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &recent_auth_session,
+                    None,
+                    password_change_at_ms + 1,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(ref authenticated))
+                if authenticated.session.last_seen_at_ms == password_change_at_ms + 1
+        ));
+        assert!(matches!(
+            database
+                .change_password_and_rotate(password_change_rotation(
+                    owner.id,
+                    recent_auth_session.id,
+                    Revision::from_value(3),
+                    &final_password_hash,
+                    &password_session,
+                    &password_event,
+                    password_change_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, password_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            database
+                .user_credentials_by_normalized_username(&normalized)
+                .await,
+            Ok(Some(ref credentials))
+                if credentials.password_hash == post_rehash_snapshot.password_hash
+                    && credentials.user_revision == Revision::from_value(3)
+                    && credentials.auth_revision == Revision::from_value(2)
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &recent_auth_session,
+                    None,
+                    password_change_at_ms + 2,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(_))
+        ));
+
+        let password_change_at_ms = password_change_at_ms + 2;
+        let mut password_session = auth_session_fixture(
+            owner.id,
+            11,
+            Revision::from_value(3),
+            password_change_at_ms,
+            base + 10_000,
+        );
+        password_session.authenticated_at_ms = recent_auth_session.authenticated_at_ms;
+        password_session.recent_auth_at_ms = recent_auth_session.recent_auth_at_ms;
+        let mut missing_account_password_event = session_security_event(
+            &password_session,
+            213,
+            password_change_at_ms,
+            LoginSecurityReason::PasswordChanged,
+        );
+        missing_account_password_event.account_hmac = None;
+        assert!(matches!(
+            database
+                .change_password_and_rotate(password_change_rotation(
+                    owner.id,
+                    recent_auth_session.id,
+                    Revision::from_value(3),
+                    &final_password_hash,
+                    &password_session,
+                    &missing_account_password_event,
+                    password_change_at_ms,
+                ))
+                .await,
+            Err(PersistenceError::InvalidSessionRotation)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, missing_account_password_event.id).await,
+            Ok(0)
+        ));
+        let password_event = session_security_event(
+            &password_session,
+            25,
+            password_change_at_ms,
+            LoginSecurityReason::PasswordChanged,
+        );
+        assert!(matches!(
+            database
+                .change_password_and_rotate(password_change_rotation(
+                    owner.id,
+                    recent_auth_session.id,
+                    Revision::from_value(3),
+                    &final_password_hash,
+                    &password_session,
+                    &password_event,
+                    password_change_at_ms,
+                ))
+                .await,
+            Ok(ref result)
+                if result.session.id == password_session.id
+                    && result.revoked_sessions == 5
+                    && result.auth_revision == Revision::from_value(3)
+                    && result.session.authenticated_at_ms
+                        == recent_auth_session.authenticated_at_ms
+                    && result.session.recent_auth_at_ms == recent_auth_session.recent_auth_at_ms
+        ));
+        assert!(matches!(
+            database
+                .user_credentials_by_normalized_username(&normalized)
+                .await,
+            Ok(Some(ref credentials))
+                if credentials.password_hash == final_password_hash
+                    && !credentials.force_password_change
+                    && credentials.user_revision == Revision::from_value(4)
+                    && credentials.auth_revision == Revision::from_value(3)
+                    && credentials.password_changed_at_ms == password_change_at_ms
+        ));
+        assert!(matches!(
+            login_security_event_count(database, password_event.id).await,
+            Ok(1)
+        ));
+        for revoked in [
+            &rehash_session,
+            &rehash_race_session,
+            &second_race_session,
+            &third_race_session,
+            &recent_auth_session,
+        ] {
+            assert!(matches!(
+                database
+                    .authenticate_session(&session_authentication(
+                        revoked,
+                        None,
+                        password_change_at_ms + 1,
+                    ))
+                    .await,
+                Ok(SessionAuthenticationOutcome::InvalidSession)
+            ));
+        }
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &password_session,
+                    None,
+                    password_change_at_ms + 1,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(ref authenticated))
+                if authenticated.session.authenticated_at_ms
+                    == recent_auth_session.authenticated_at_ms
+                    && authenticated.session.recent_auth_at_ms
+                        == recent_auth_session.recent_auth_at_ms
+        ));
+        let stale_password_state_session = auth_session_fixture(
+            owner.id,
+            12,
+            Revision::from_value(3),
+            password_change_at_ms + 2,
+            base + 10_000,
+        );
+        let stale_password_state_event = login_security_event(
+            12,
+            password_change_at_ms + 2,
+            LoginSecurityReason::LoginSucceeded,
+        );
+        assert!(matches!(
+            database
+                .create_auth_session_with_optional_password_upgrade(
+                    &stale_password_state_session,
+                    &stale_password_state_event,
+                    &post_rehash_snapshot,
+                    None,
+                )
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, stale_password_state_event.id).await,
+            Ok(0)
+        ));
+        let mut rolled_back_password_session = auth_session_fixture(
+            owner.id,
+            12,
+            Revision::from_value(4),
+            password_change_at_ms + 2,
+            base + 10_000,
+        );
+        rolled_back_password_session.authenticated_at_ms = password_session.authenticated_at_ms;
+        rolled_back_password_session.recent_auth_at_ms = password_session.recent_auth_at_ms;
+        let mut duplicate_password_event = session_security_event(
+            &rolled_back_password_session,
+            26,
+            password_change_at_ms + 2,
+            LoginSecurityReason::PasswordChanged,
+        );
+        duplicate_password_event.id = password_event.id;
+        assert!(matches!(
+            database
+                .change_password_and_rotate(password_change_rotation(
+                    owner.id,
+                    password_session.id,
+                    Revision::from_value(4),
+                    &second_upgraded_hash,
+                    &rolled_back_password_session,
+                    &duplicate_password_event,
+                    password_change_at_ms + 2,
+                ))
+                .await,
+            Err(PersistenceError::Sql(_))
+        ));
+        assert!(matches!(
+            database
+                .user_credentials_by_normalized_username(&normalized)
+                .await,
+            Ok(Some(ref credentials))
+                if credentials.password_hash == final_password_hash
+                    && credentials.user_revision == Revision::from_value(4)
+                    && credentials.auth_revision == Revision::from_value(3)
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &password_session,
+                    None,
+                    password_change_at_ms + 3,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(_))
+        ));
+        assert!(matches!(
+            set_session_revision(database, password_session.id, i64::MAX).await,
+            Ok(1)
+        ));
+        let mut saturated_revision_session = auth_session_fixture(
+            owner.id,
+            15,
+            Revision::from_value(4),
+            password_change_at_ms + 4,
+            base + 10_000,
+        );
+        saturated_revision_session.authenticated_at_ms = password_session.authenticated_at_ms;
+        saturated_revision_session.recent_auth_at_ms = password_session.recent_auth_at_ms;
+        let saturated_revision_event = session_security_event(
+            &saturated_revision_session,
+            32,
+            password_change_at_ms + 4,
+            LoginSecurityReason::PasswordChanged,
+        );
+        assert!(matches!(
+            database
+                .change_password_and_rotate(password_change_rotation(
+                    owner.id,
+                    password_session.id,
+                    Revision::from_value(4),
+                    &second_upgraded_hash,
+                    &saturated_revision_session,
+                    &saturated_revision_event,
+                    password_change_at_ms + 4,
+                ))
+                .await,
+            Err(PersistenceError::RevisionOutOfRange)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, saturated_revision_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            auth_state_timestamps(database, owner.id).await,
+            Ok(Some((3, changed_at_ms, _))) if changed_at_ms == password_change_at_ms
+        ));
+        assert!(matches!(
+            database
+                .user_credentials_by_normalized_username(&normalized)
+                .await,
+            Ok(Some(ref credentials))
+                if credentials.password_hash == final_password_hash
+                    && credentials.user_revision == Revision::from_value(4)
+                    && credentials.auth_revision == Revision::from_value(3)
+        ));
+        assert!(matches!(
+            set_session_revision(database, password_session.id, 0).await,
+            Ok(1)
+        ));
+        let stale_logout_session_revision = password_session.revision;
+
+        let audited_logout_at_ms = rotate_at_ms + 300;
+        let audited_logout_sibling = auth_session_fixture(
+            owner.id,
+            30,
+            Revision::from_value(3),
+            audited_logout_at_ms - 1,
+            base + 10_000,
+        );
+        assert!(
+            database
+                .create_auth_session(
+                    &audited_logout_sibling,
+                    &login_security_event(
+                        30,
+                        audited_logout_at_ms - 1,
+                        LoginSecurityReason::LoginSucceeded,
+                    ),
+                )
+                .await
+                .is_ok()
+        );
+        let guarded_password_summary = match database
+            .authenticate_session(&session_authentication(
+                &password_session,
+                None,
+                audited_logout_at_ms - 1,
+            ))
+            .await
+        {
+            Ok(SessionAuthenticationOutcome::Authenticated(authenticated)) => {
+                assert_eq!(
+                    authenticated.session.last_seen_at_ms,
+                    audited_logout_at_ms - 1
+                );
+                assert_ne!(
+                    authenticated.session.revision, stale_logout_session_revision,
+                    "the guard request must touch the session so logout-all exercises a stale snapshot"
+                );
+                authenticated.session
+            }
+            outcome => panic!("unexpected logout-all guard authentication: {outcome:?}"),
+        };
+        assert_eq!(password_session.revision, stale_logout_session_revision);
+        assert_ne!(
+            password_session.revision, guarded_password_summary.revision,
+            "the caller snapshot must remain stale after the independent touch"
+        );
+        let audited_logout_rollback_at_ms = audited_logout_at_ms - 2;
+        let rollback_audited_logout_event = session_security_event(
+            &password_session,
+            214,
+            audited_logout_rollback_at_ms,
+            LoginSecurityReason::LogoutAll,
+        );
+        assert!(matches!(
+            database
+                .logout_all_sessions_with_event(
+                    owner.id,
+                    password_session.id,
+                    password_session.recent_auth_at_ms,
+                    &rollback_audited_logout_event,
+                    audited_logout_rollback_at_ms,
+                )
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, rollback_audited_logout_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            auth_state_timestamps(database, owner.id).await,
+            Ok(Some((3, _, _)))
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &password_session,
+                    None,
+                    audited_logout_at_ms,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(_))
+        ));
+        let mut missing_account_audited_logout_event = session_security_event(
+            &password_session,
+            215,
+            audited_logout_at_ms,
+            LoginSecurityReason::LogoutAll,
+        );
+        missing_account_audited_logout_event.account_hmac = None;
+        assert!(matches!(
+            database
+                .logout_all_sessions_with_event(
+                    owner.id,
+                    password_session.id,
+                    password_session.recent_auth_at_ms,
+                    &missing_account_audited_logout_event,
+                    audited_logout_at_ms,
+                )
+                .await,
+            Err(PersistenceError::InvalidSessionRevocationEvent)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, missing_account_audited_logout_event.id).await,
+            Ok(0)
+        ));
+        let audited_logout_event = session_security_event(
+            &password_session,
+            27,
+            audited_logout_at_ms,
+            LoginSecurityReason::LogoutAll,
+        );
+        let competing_logout_event = session_security_event(
+            &password_session,
+            28,
+            audited_logout_at_ms,
+            LoginSecurityReason::LogoutAll,
+        );
+        let (audited_logout, competing_logout) = tokio::join!(
+            database.logout_all_sessions_with_event(
+                owner.id,
+                password_session.id,
+                password_session.recent_auth_at_ms,
+                &audited_logout_event,
+                audited_logout_at_ms,
+            ),
+            database.logout_all_sessions_with_event(
+                owner.id,
+                password_session.id,
+                password_session.recent_auth_at_ms,
+                &competing_logout_event,
+                audited_logout_at_ms,
+            ),
+        );
+        match (&audited_logout, &competing_logout) {
+            (Ok(result), Err(PersistenceError::SessionPrincipalUnavailable))
+            | (Err(PersistenceError::SessionPrincipalUnavailable), Ok(result)) => {
+                assert!(!result.kept_current);
+                assert_eq!(result.revoked_sessions, 2);
+                assert_eq!(result.auth_revision, Revision::from_value(4));
+            }
+            outcome => panic!("unexpected concurrent audited logout outcome: {outcome:?}"),
+        }
+        let persisted_logout_event_id = if audited_logout.is_ok() {
+            audited_logout_event.id
+        } else {
+            competing_logout_event.id
+        };
+        let (audited_event_count, competing_event_count) = tokio::join!(
+            login_security_event_count(database, audited_logout_event.id),
+            login_security_event_count(database, competing_logout_event.id),
+        );
+        assert!(matches!(
+            (audited_event_count, competing_event_count),
+            (Ok(1), Ok(0)) | (Ok(0), Ok(1))
+        ));
+        for revoked in [&password_session, &audited_logout_sibling] {
+            assert!(matches!(
+                database
+                    .authenticate_session(&session_authentication(
+                        revoked,
+                        None,
+                        audited_logout_at_ms + 1,
+                    ))
+                    .await,
+                Ok(SessionAuthenticationOutcome::InvalidSession)
+            ));
+        }
+        let rollback_logout_session = auth_session_fixture(
+            owner.id,
+            13,
+            Revision::from_value(4),
+            audited_logout_at_ms + 10,
+            base + 10_000,
+        );
+        assert!(
+            database
+                .create_auth_session(
+                    &rollback_logout_session,
+                    &login_security_event(
+                        13,
+                        audited_logout_at_ms + 10,
+                        LoginSecurityReason::LoginSucceeded,
+                    ),
+                )
+                .await
+                .is_ok()
+        );
+        let stale_current_logout_event = session_security_event(
+            &password_session,
+            29,
+            audited_logout_at_ms + 15,
+            LoginSecurityReason::LogoutAll,
+        );
+        assert!(matches!(
+            database
+                .logout_all_sessions_with_event(
+                    owner.id,
+                    password_session.id,
+                    password_session.recent_auth_at_ms,
+                    &stale_current_logout_event,
+                    audited_logout_at_ms + 15,
+                )
+                .await,
+            Err(PersistenceError::SessionPrincipalUnavailable)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, stale_current_logout_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &rollback_logout_session,
+                    None,
+                    audited_logout_at_ms + 16,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(_))
+        ));
+        let mut duplicate_logout_event = session_security_event(
+            &rollback_logout_session,
+            31,
+            audited_logout_at_ms + 20,
+            LoginSecurityReason::LogoutAll,
+        );
+        duplicate_logout_event.id = persisted_logout_event_id;
+        assert!(matches!(
+            database
+                .logout_all_sessions_with_event(
+                    owner.id,
+                    rollback_logout_session.id,
+                    rollback_logout_session.recent_auth_at_ms,
+                    &duplicate_logout_event,
+                    audited_logout_at_ms + 20,
+                )
+                .await,
+            Err(PersistenceError::Sql(_))
+        ));
+        assert!(matches!(
+            auth_state_timestamps(database, owner.id).await,
+            Ok(Some((4, _, _)))
+        ));
+        assert!(matches!(
+            database
+                .authenticate_session(&session_authentication(
+                    &rollback_logout_session,
+                    None,
+                    audited_logout_at_ms + 21,
+                ))
+                .await,
+            Ok(SessionAuthenticationOutcome::Authenticated(_))
+        ));
+        assert!(matches!(
+            database
+                .revoke_current_session(
+                    owner.id,
+                    rollback_logout_session.id,
+                    audited_logout_at_ms + 5,
+                    SessionRevocationReason::Administrator,
+                )
+                .await,
+            Ok(true)
+        ));
+        assert!(matches!(
+            database.list_user_sessions(owner.id).await,
+            Ok(ref sessions)
+                if sessions.iter().any(|session|
+                    session.id == rollback_logout_session.id
+                        && session.revoked_at_ms == Some(rollback_logout_session.created_at_ms)
+                )
+        ));
+        let rollback_event_session = auth_session_fixture(
+            owner.id,
+            14,
+            Revision::from_value(4),
+            audited_logout_at_ms + 30,
+            base + 10_000,
+        );
+        assert!(
+            database
+                .create_auth_session(
+                    &rollback_event_session,
+                    &login_security_event(
+                        14,
+                        audited_logout_at_ms + 30,
+                        LoginSecurityReason::LoginSucceeded,
+                    ),
+                )
+                .await
+                .is_ok()
+        );
+        let rollback_logout_event = session_security_event(
+            &rollback_event_session,
+            31,
+            audited_logout_at_ms + 25,
+            LoginSecurityReason::Logout,
+        );
+        assert!(matches!(
+            database
+                .revoke_current_session_with_event(
+                    owner.id,
+                    rollback_event_session.id,
+                    audited_logout_at_ms + 25,
+                    SessionRevocationReason::Logout,
+                    &rollback_logout_event,
+                )
+                .await,
+            Ok(true)
+        ));
+        assert!(matches!(
+            database.list_user_sessions(owner.id).await,
+            Ok(ref sessions)
+                if sessions.iter().any(|session|
+                    session.id == rollback_event_session.id
+                        && session.revoked_at_ms == Some(rollback_event_session.created_at_ms)
+                )
+        ));
+
         let rate = LoginAttemptReservation {
             key_version: 1,
             account_hmac: [0x31; 32],
             ip_prefix_hmac: [0x32; 32],
             global_hmac: [0x33; 32],
+            user_agent_hash: [0x34; 32],
+            request_id: "rate-account-0".to_owned(),
             now_ms: base + 20_000,
             window_ms: 60_000,
             account_max_attempts: 2,
@@ -3880,11 +9129,52 @@ mod tests {
             global_max_attempts: 100,
             lockout_ms: 60_000,
         };
+        let standalone_rate_event = rate_limited_event(&rate);
+        assert!(matches!(
+            database
+                .record_login_security_event(&standalone_rate_event)
+                .await,
+            Err(PersistenceError::RateLimitedEventMustBeAtomic)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, standalone_rate_event.id).await,
+            Ok(0)
+        ));
+        for (scope, bucket_hmac) in [
+            ("account", &rate.account_hmac),
+            ("ip", &rate.ip_prefix_hmac),
+            ("global", &rate.global_hmac),
+        ] {
+            assert!(matches!(
+                login_rate_attempt_count(database, scope, rate.key_version, bucket_hmac).await,
+                Ok(None)
+            ));
+        }
+        let first_rate_request = LoginAttemptReservation {
+            request_id: "rate-account-1".to_owned(),
+            ..rate.clone()
+        };
+        let second_rate_request = LoginAttemptReservation {
+            request_id: "rate-account-2".to_owned(),
+            ..rate.clone()
+        };
+        let third_rate_request = LoginAttemptReservation {
+            request_id: "rate-account-3".to_owned(),
+            ..rate.clone()
+        };
+        let fourth_rate_request = LoginAttemptReservation {
+            request_id: "rate-account-4".to_owned(),
+            ..rate.clone()
+        };
+        let first_rate_event = rate_limited_event(&first_rate_request);
+        let second_rate_event = rate_limited_event(&second_rate_request);
+        let third_rate_event = rate_limited_event(&third_rate_request);
+        let fourth_rate_event = rate_limited_event(&fourth_rate_request);
         let (first_rate, second_rate, third_rate, fourth_rate) = tokio::join!(
-            database.reserve_login_attempt(&rate),
-            database.reserve_login_attempt(&rate),
-            database.reserve_login_attempt(&rate),
-            database.reserve_login_attempt(&rate),
+            database.reserve_login_attempt(&first_rate_request, &first_rate_event),
+            database.reserve_login_attempt(&second_rate_request, &second_rate_event),
+            database.reserve_login_attempt(&third_rate_request, &third_rate_event),
+            database.reserve_login_attempt(&fourth_rate_request, &fourth_rate_event),
         );
         let outcomes = [first_rate, second_rate, third_rate, fourth_rate];
         let allowed = outcomes
@@ -3897,6 +9187,30 @@ mod tests {
             .count();
         assert_eq!(allowed, 2);
         assert_eq!(limited, 2);
+        let rate_event_counts = tokio::join!(
+            login_security_event_count(database, first_rate_event.id),
+            login_security_event_count(database, second_rate_event.id),
+            login_security_event_count(database, third_rate_event.id),
+            login_security_event_count(database, fourth_rate_event.id),
+        );
+        let rate_event_counts = [
+            rate_event_counts.0,
+            rate_event_counts.1,
+            rate_event_counts.2,
+            rate_event_counts.3,
+        ];
+        assert!(
+            rate_event_counts
+                .iter()
+                .all(|count| matches!(count, Ok(0) | Ok(1)))
+        );
+        assert_eq!(
+            rate_event_counts
+                .iter()
+                .filter(|count| matches!(count, Ok(1)))
+                .count(),
+            1
+        );
         assert!(matches!(
             login_rate_attempt_count(database, "account", rate.key_version, &rate.account_hmac,)
                 .await,
@@ -3911,11 +9225,82 @@ mod tests {
             Ok(Some(2))
         ));
 
+        let blocked_until_ms = rate.now_ms + rate.lockout_ms;
+        let still_blocked_request = LoginAttemptReservation {
+            request_id: "rate-account-still-blocked".to_owned(),
+            now_ms: blocked_until_ms - 1,
+            ..rate.clone()
+        };
+        let still_blocked_event = rate_limited_event(&still_blocked_request);
+        assert!(matches!(
+            database
+                .reserve_login_attempt(&still_blocked_request, &still_blocked_event)
+                .await,
+            Ok(LoginRateDecision::Limited { .. })
+        ));
+        assert!(matches!(
+            login_security_event_count(database, still_blocked_event.id).await,
+            Ok(0)
+        ));
+
+        let reopened_request = LoginAttemptReservation {
+            request_id: "rate-account-reopened".to_owned(),
+            now_ms: blocked_until_ms,
+            ..rate.clone()
+        };
+        let reopened_event = rate_limited_event(&reopened_request);
+        assert!(matches!(
+            database
+                .reserve_login_attempt(&reopened_request, &reopened_event)
+                .await,
+            Ok(LoginRateDecision::Allowed { .. })
+        ));
+        assert!(matches!(
+            login_security_event_count(database, reopened_event.id).await,
+            Ok(0)
+        ));
+
+        let second_cycle_allowed = LoginAttemptReservation {
+            request_id: "rate-account-second-cycle-allowed".to_owned(),
+            now_ms: blocked_until_ms + 1,
+            ..rate.clone()
+        };
+        let second_cycle_allowed_event = rate_limited_event(&second_cycle_allowed);
+        assert!(matches!(
+            database
+                .reserve_login_attempt(&second_cycle_allowed, &second_cycle_allowed_event)
+                .await,
+            Ok(LoginRateDecision::Allowed { .. })
+        ));
+        assert!(matches!(
+            login_security_event_count(database, second_cycle_allowed_event.id).await,
+            Ok(0)
+        ));
+
+        let second_cycle_transition = LoginAttemptReservation {
+            request_id: "rate-account-second-cycle-transition".to_owned(),
+            now_ms: blocked_until_ms + 2,
+            ..rate.clone()
+        };
+        let second_cycle_transition_event = rate_limited_event(&second_cycle_transition);
+        assert!(matches!(
+            database
+                .reserve_login_attempt(&second_cycle_transition, &second_cycle_transition_event)
+                .await,
+            Ok(LoginRateDecision::Limited { .. })
+        ));
+        assert!(matches!(
+            login_security_event_count(database, second_cycle_transition_event.id).await,
+            Ok(1)
+        ));
+
         let ip_limited = LoginAttemptReservation {
             key_version: 2,
             account_hmac: [0x51; 32],
             ip_prefix_hmac: [0x52; 32],
             global_hmac: [0x53; 32],
+            user_agent_hash: [0x54; 32],
+            request_id: "rate-ip-1".to_owned(),
             now_ms: base + 30_000,
             window_ms: 60_000,
             account_max_attempts: 10,
@@ -3923,20 +9308,33 @@ mod tests {
             global_max_attempts: 100,
             lockout_ms: 60_000,
         };
+        let first_ip_event = rate_limited_event(&ip_limited);
         assert!(matches!(
-            database.reserve_login_attempt(&ip_limited).await,
+            database
+                .reserve_login_attempt(&ip_limited, &first_ip_event)
+                .await,
             Ok(LoginRateDecision::Allowed { .. })
         ));
         let second_account_same_ip = LoginAttemptReservation {
             account_hmac: [0x54; 32],
+            request_id: "rate-ip-2".to_owned(),
             now_ms: ip_limited.now_ms + 1,
             ..ip_limited.clone()
         };
+        let second_ip_event = rate_limited_event(&second_account_same_ip);
         assert!(matches!(
             database
-                .reserve_login_attempt(&second_account_same_ip)
+                .reserve_login_attempt(&second_account_same_ip, &second_ip_event)
                 .await,
             Ok(LoginRateDecision::Limited { .. })
+        ));
+        assert!(matches!(
+            login_security_event_count(database, first_ip_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, second_ip_event.id).await,
+            Ok(1)
         ));
         assert!(matches!(
             login_rate_attempt_count(
@@ -3970,14 +9368,20 @@ mod tests {
         ));
         let rotated_account_while_ip_blocked = LoginAttemptReservation {
             account_hmac: [0x55; 32],
+            request_id: "rate-ip-blocked".to_owned(),
             now_ms: ip_limited.now_ms + 2,
             ..ip_limited.clone()
         };
+        let blocked_ip_event = rate_limited_event(&rotated_account_while_ip_blocked);
         assert!(matches!(
             database
-                .reserve_login_attempt(&rotated_account_while_ip_blocked)
+                .reserve_login_attempt(&rotated_account_while_ip_blocked, &blocked_ip_event)
                 .await,
             Ok(LoginRateDecision::Limited { .. })
+        ));
+        assert!(matches!(
+            login_security_event_count(database, blocked_ip_event.id).await,
+            Ok(0)
         ));
         assert!(matches!(
             login_rate_attempt_count(
@@ -4009,12 +9413,20 @@ mod tests {
         for offset in 0_u8..20 {
             let rotated = LoginAttemptReservation {
                 account_hmac: [0x70 + offset; 32],
+                request_id: format!("rate-ip-rotated-{offset}"),
                 now_ms: ip_limited.now_ms + 3 + i64::from(offset),
                 ..ip_limited.clone()
             };
+            let rotated_event = rate_limited_event(&rotated);
             assert!(matches!(
-                database.reserve_login_attempt(&rotated).await,
+                database
+                    .reserve_login_attempt(&rotated, &rotated_event)
+                    .await,
                 Ok(LoginRateDecision::Limited { .. })
+            ));
+            assert!(matches!(
+                login_security_event_count(database, rotated_event.id).await,
+                Ok(0)
             ));
         }
         assert_eq!(
@@ -4033,6 +9445,8 @@ mod tests {
             account_hmac: [0x61; 32],
             ip_prefix_hmac: [0x62; 32],
             global_hmac: [0x63; 32],
+            user_agent_hash: [0x64; 32],
+            request_id: "rate-global-1".to_owned(),
             now_ms: base + 40_000,
             window_ms: 60_000,
             account_max_attempts: 10,
@@ -4040,33 +9454,52 @@ mod tests {
             global_max_attempts: 1,
             lockout_ms: 60_000,
         };
+        let first_global_event = rate_limited_event(&global_limited);
         assert!(matches!(
-            database.reserve_login_attempt(&global_limited).await,
+            database
+                .reserve_login_attempt(&global_limited, &first_global_event)
+                .await,
             Ok(LoginRateDecision::Allowed { .. })
         ));
         let second_origin_same_global = LoginAttemptReservation {
             account_hmac: [0x64; 32],
             ip_prefix_hmac: [0x65; 32],
+            request_id: "rate-global-2".to_owned(),
             now_ms: global_limited.now_ms + 1,
             ..global_limited.clone()
         };
+        let second_global_event = rate_limited_event(&second_origin_same_global);
         assert!(matches!(
             database
-                .reserve_login_attempt(&second_origin_same_global)
+                .reserve_login_attempt(&second_origin_same_global, &second_global_event)
                 .await,
             Ok(LoginRateDecision::Limited { .. })
+        ));
+        assert!(matches!(
+            login_security_event_count(database, first_global_event.id).await,
+            Ok(0)
+        ));
+        assert!(matches!(
+            login_security_event_count(database, second_global_event.id).await,
+            Ok(1)
         ));
         let rotated_origin_while_global_blocked = LoginAttemptReservation {
             account_hmac: [0x66; 32],
             ip_prefix_hmac: [0x67; 32],
+            request_id: "rate-global-blocked".to_owned(),
             now_ms: global_limited.now_ms + 2,
             ..global_limited.clone()
         };
+        let blocked_global_event = rate_limited_event(&rotated_origin_while_global_blocked);
         assert!(matches!(
             database
-                .reserve_login_attempt(&rotated_origin_while_global_blocked)
+                .reserve_login_attempt(&rotated_origin_while_global_blocked, &blocked_global_event,)
                 .await,
             Ok(LoginRateDecision::Limited { .. })
+        ));
+        assert!(matches!(
+            login_security_event_count(database, blocked_global_event.id).await,
+            Ok(0)
         ));
         assert!(matches!(
             login_rate_attempt_count(
@@ -4116,12 +9549,20 @@ mod tests {
             let rotated = LoginAttemptReservation {
                 account_hmac: [0x80 + offset; 32],
                 ip_prefix_hmac: [0xa0 + offset; 32],
+                request_id: format!("rate-global-rotated-{offset}"),
                 now_ms: global_limited.now_ms + 3 + i64::from(offset),
                 ..global_limited.clone()
             };
+            let rotated_event = rate_limited_event(&rotated);
             assert!(matches!(
-                database.reserve_login_attempt(&rotated).await,
+                database
+                    .reserve_login_attempt(&rotated, &rotated_event)
+                    .await,
                 Ok(LoginRateDecision::Limited { .. })
+            ));
+            assert!(matches!(
+                login_security_event_count(database, rotated_event.id).await,
+                Ok(0)
             ));
         }
         assert_eq!(
@@ -4153,15 +9594,171 @@ mod tests {
         let after_clear = LoginAttemptReservation {
             ip_prefix_hmac: [0x42; 32],
             global_hmac: [0x43; 32],
+            request_id: "rate-after-clear".to_owned(),
             now_ms: rate.now_ms + 1,
             ..rate
         };
+        let after_clear_event = rate_limited_event(&after_clear);
         assert!(matches!(
-            database.reserve_login_attempt(&after_clear).await,
+            database
+                .reserve_login_attempt(&after_clear, &after_clear_event)
+                .await,
             Ok(LoginRateDecision::Allowed {
                 remaining_attempts: 1,
                 ..
             })
+        ));
+        assert!(matches!(
+            login_security_event_count(database, after_clear_event.id).await,
+            Ok(0)
+        ));
+
+        let mismatched_event_rate = LoginAttemptReservation {
+            key_version: 4,
+            account_hmac: [0xb1; 32],
+            ip_prefix_hmac: [0xb2; 32],
+            global_hmac: [0xb3; 32],
+            user_agent_hash: [0xb4; 32],
+            request_id: "rate-mismatch".to_owned(),
+            now_ms: base + 50_000,
+            window_ms: 60_000,
+            account_max_attempts: 1,
+            ip_max_attempts: 10,
+            global_max_attempts: 100,
+            lockout_ms: 60_000,
+        };
+        let valid_rate_event = rate_limited_event(&mismatched_event_rate);
+        let mut wrong_reason_event = valid_rate_event.clone();
+        wrong_reason_event.reason = LoginSecurityReason::InvalidCredentials;
+        let mut wrong_time_event = valid_rate_event.clone();
+        wrong_time_event.occurred_at_ms += 1;
+        let mut wrong_key_event = valid_rate_event.clone();
+        wrong_key_event.digest_key_version += 1;
+        let mut wrong_request_event = valid_rate_event.clone();
+        wrong_request_event.request_id = "rate-mismatch-other".to_owned();
+        let mut wrong_account_event = valid_rate_event.clone();
+        wrong_account_event.account_hmac = Some([0xc1; 32]);
+        let mut wrong_ip_event = valid_rate_event.clone();
+        wrong_ip_event.ip_prefix_hmac = Some([0xc2; 32]);
+        let mut wrong_user_agent_event = valid_rate_event;
+        wrong_user_agent_event.user_agent_hash = Some([0xc3; 32]);
+        for mismatched_event in [
+            wrong_reason_event,
+            wrong_time_event,
+            wrong_key_event,
+            wrong_request_event,
+            wrong_account_event,
+            wrong_ip_event,
+            wrong_user_agent_event,
+        ] {
+            assert!(matches!(
+                database
+                    .reserve_login_attempt(&mismatched_event_rate, &mismatched_event)
+                    .await,
+                Err(PersistenceError::InvalidLoginRateEvent)
+            ));
+            assert!(matches!(
+                login_security_event_count(database, mismatched_event.id).await,
+                Ok(0)
+            ));
+        }
+        for (scope, bucket_hmac) in [
+            ("account", &mismatched_event_rate.account_hmac),
+            ("ip", &mismatched_event_rate.ip_prefix_hmac),
+            ("global", &mismatched_event_rate.global_hmac),
+        ] {
+            assert!(matches!(
+                login_rate_attempt_count(
+                    database,
+                    scope,
+                    mismatched_event_rate.key_version,
+                    bucket_hmac,
+                )
+                .await,
+                Ok(None)
+            ));
+        }
+
+        let rollback_rate = LoginAttemptReservation {
+            key_version: 5,
+            account_hmac: [0xd1; 32],
+            ip_prefix_hmac: [0xd2; 32],
+            global_hmac: [0xd3; 32],
+            user_agent_hash: [0xd4; 32],
+            request_id: "rate-rollback-first".to_owned(),
+            now_ms: base + 60_000,
+            window_ms: 60_000,
+            account_max_attempts: 1,
+            ip_max_attempts: 10,
+            global_max_attempts: 100,
+            lockout_ms: 60_000,
+        };
+        let occupied_event = login_security_event(
+            251,
+            rollback_rate.now_ms,
+            LoginSecurityReason::InvalidCredentials,
+        );
+        assert!(
+            database
+                .record_login_security_event(&occupied_event)
+                .await
+                .is_ok()
+        );
+        let rollback_first_event = rate_limited_event(&rollback_rate);
+        assert!(matches!(
+            database
+                .reserve_login_attempt(&rollback_rate, &rollback_first_event)
+                .await,
+            Ok(LoginRateDecision::Allowed { .. })
+        ));
+        let rollback_transition = LoginAttemptReservation {
+            request_id: "rate-rollback-transition".to_owned(),
+            now_ms: rollback_rate.now_ms + 1,
+            ..rollback_rate.clone()
+        };
+        let mut conflicting_rate_event = rate_limited_event(&rollback_transition);
+        conflicting_rate_event.id = occupied_event.id;
+        assert!(matches!(
+            database
+                .reserve_login_attempt(&rollback_transition, &conflicting_rate_event)
+                .await,
+            Err(PersistenceError::Sql(_))
+        ));
+        for (scope, bucket_hmac) in [
+            ("account", &rollback_rate.account_hmac),
+            ("ip", &rollback_rate.ip_prefix_hmac),
+            ("global", &rollback_rate.global_hmac),
+        ] {
+            assert!(matches!(
+                login_rate_attempt_count(database, scope, rollback_rate.key_version, bucket_hmac,)
+                    .await,
+                Ok(Some(1))
+            ));
+        }
+        let retry_rate = LoginAttemptReservation {
+            request_id: "rate-rollback-retry".to_owned(),
+            ..rollback_transition
+        };
+        let retry_rate_event = rate_limited_event(&retry_rate);
+        assert!(matches!(
+            database
+                .reserve_login_attempt(&retry_rate, &retry_rate_event)
+                .await,
+            Ok(LoginRateDecision::Limited { .. })
+        ));
+        assert!(matches!(
+            login_rate_attempt_count(
+                database,
+                "account",
+                retry_rate.key_version,
+                &retry_rate.account_hmac,
+            )
+            .await,
+            Ok(Some(2))
+        ));
+        assert!(matches!(
+            login_security_event_count(database, retry_rate_event.id).await,
+            Ok(1)
         ));
     }
 
@@ -4503,15 +10100,44 @@ mod tests {
                 );
             }
         }
-        assert!(database.migrate().await.is_ok());
-        assert!(matches!(
-            database.bootstrap_state().await,
-            Ok(BootstrapState::Uninitialized)
-        ));
+        match &database {
+            Database::Sqlite(_) => {
+                assert!(database.migrate().await.is_ok());
+                assert!(matches!(
+                    database.bootstrap_state().await,
+                    Ok(BootstrapState::Uninitialized)
+                ));
+            }
+            Database::Postgres(pool) => {
+                // Match the process-restart boundary used by production after
+                // a failed sqlx migration has retained its session lock.
+                let retry_options = pool.connect_options().as_ref().clone();
+                pool.close().await;
+                let retry_pool = PgPoolOptions::new()
+                    .max_connections(4)
+                    .connect_with(retry_options)
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("failed to reconnect for PostgreSQL atomic migration retry: {error}")
+                    });
+                let retry_database = Database::Postgres(retry_pool.clone());
+                let retry = retry_database.migrate().await;
+                assert!(
+                    retry.is_ok(),
+                    "PostgreSQL atomic migration retry failed: {retry:?}"
+                );
+                assert!(matches!(
+                    retry_database.bootstrap_state().await,
+                    Ok(BootstrapState::Uninitialized)
+                ));
+                retry_pool.close().await;
+            }
+        }
     }
 
     async fn repository_contract(database: Database) {
-        assert!(database.migrate().await.is_ok());
+        let migration = database.migrate().await;
+        assert!(migration.is_ok(), "fresh migration failed: {migration:?}");
         assert!(matches!(
             database.bootstrap_state().await,
             Ok(BootstrapState::Uninitialized)
@@ -4631,6 +10257,27 @@ mod tests {
             Ok(Some(found)) if found == owner.id.to_string()
         ));
         auth_core_contract(&database, &owner).await;
+        actor_aware_session_revocation_contract(&database).await;
+        let restart_session = auth_session_fixture(
+            owner.id,
+            56,
+            Revision::from_value(4),
+            owner.created_at_ms + 500,
+            owner.created_at_ms + 10_000,
+        );
+        assert!(
+            database
+                .create_auth_session(
+                    &restart_session,
+                    &login_security_event(
+                        56,
+                        restart_session.created_at_ms,
+                        LoginSecurityReason::LoginSucceeded,
+                    ),
+                )
+                .await
+                .is_ok()
+        );
         remove_bootstrap_latch(&database).await;
         assert!(matches!(
             database.bootstrap_state().await,
@@ -4670,10 +10317,28 @@ mod tests {
         if let Ok(database) = auth_upgrade_database {
             auth_upgrade_contract(database).await;
         }
+        let session_timeline_upgrade_database =
+            Database::connect("sqlite::memory:", settings()).await;
+        assert!(session_timeline_upgrade_database.is_ok());
+        if let Ok(database) = session_timeline_upgrade_database {
+            session_timeline_upgrade_contract(database).await;
+        }
         let auth_rollback_database = Database::connect("sqlite::memory:", settings()).await;
         assert!(auth_rollback_database.is_ok());
         if let Ok(database) = auth_rollback_database {
             auth_migration_rollback_contract(database).await;
+        }
+        let recent_auth_migration_rollback_database =
+            Database::connect("sqlite::memory:", settings()).await;
+        assert!(recent_auth_migration_rollback_database.is_ok());
+        if let Ok(database) = recent_auth_migration_rollback_database {
+            sqlite_recent_auth_migration_rollback_contract(database).await;
+        }
+        let session_timeline_migration_rollback_database =
+            Database::connect("sqlite::memory:", settings()).await;
+        assert!(session_timeline_migration_rollback_database.is_ok());
+        if let Ok(database) = session_timeline_migration_rollback_database {
+            sqlite_session_timeline_migration_rollback_contract(database).await;
         }
     }
 
@@ -4729,7 +10394,7 @@ mod tests {
             if let Ok(reopened) = reopened {
                 assert!(matches!(
                     reopened
-                        .authenticate_session(&persisted_authentication_fixture())
+                        .authenticate_session(&persisted_authentication_fixture(6))
                         .await,
                     Ok(SessionAuthenticationOutcome::Authenticated(ref authenticated))
                         if authenticated.user_id == owner.id
@@ -4769,7 +10434,7 @@ mod tests {
             if let Ok(reopened) = reopened {
                 assert!(matches!(
                     reopened
-                        .authenticate_session(&persisted_authentication_fixture())
+                        .authenticate_session(&persisted_authentication_fixture(56))
                         .await,
                     Ok(SessionAuthenticationOutcome::Authenticated(_))
                 ));
@@ -4803,11 +10468,41 @@ mod tests {
             auth_upgrade_contract(auth_upgrade.database.clone()).await;
             assert!(auth_upgrade.cleanup().await.is_ok());
         }
+        let session_timeline_upgrade =
+            isolated_postgres(&url, "nodecontroll_test_session_timeline_upgrade").await;
+        assert!(session_timeline_upgrade.is_ok());
+        if let Ok(session_timeline_upgrade) = session_timeline_upgrade {
+            session_timeline_upgrade_contract(session_timeline_upgrade.database.clone()).await;
+            assert!(session_timeline_upgrade.cleanup().await.is_ok());
+        }
         let auth_rollback = isolated_postgres(&url, "nodecontroll_test_auth_rollback").await;
         assert!(auth_rollback.is_ok());
         if let Ok(auth_rollback) = auth_rollback {
             auth_migration_rollback_contract(auth_rollback.database.clone()).await;
             assert!(auth_rollback.cleanup().await.is_ok());
+        }
+        let recent_auth_migration_rollback =
+            isolated_postgres(&url, "nodecontroll_test_recent_auth_migration_rollback").await;
+        assert!(recent_auth_migration_rollback.is_ok());
+        if let Ok(recent_auth_migration_rollback) = recent_auth_migration_rollback {
+            postgres_recent_auth_migration_rollback_contract(
+                recent_auth_migration_rollback.database.clone(),
+            )
+            .await;
+            assert!(recent_auth_migration_rollback.cleanup().await.is_ok());
+        }
+        let session_timeline_migration_rollback = isolated_postgres(
+            &url,
+            "nodecontroll_test_session_timeline_migration_rollback",
+        )
+        .await;
+        assert!(session_timeline_migration_rollback.is_ok());
+        if let Ok(session_timeline_migration_rollback) = session_timeline_migration_rollback {
+            postgres_session_timeline_migration_rollback_contract(
+                session_timeline_migration_rollback.database.clone(),
+            )
+            .await;
+            assert!(session_timeline_migration_rollback.cleanup().await.is_ok());
         }
     }
 

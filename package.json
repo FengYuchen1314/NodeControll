@@ -12,6 +12,7 @@
     "web:typecheck": "pnpm --filter @nodecontroll/web typecheck",
     "web:lint": "pnpm --filter @nodecontroll/web lint",
     "web:test": "pnpm --filter @nodecontroll/web test",
+    "web:e2e": "pnpm --filter @nodecontroll/web test:e2e",
     "web:build": "pnpm --filter @nodecontroll/web build"
   }
 }

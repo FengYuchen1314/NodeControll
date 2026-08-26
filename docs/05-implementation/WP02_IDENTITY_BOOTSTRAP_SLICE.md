@@ -2,13 +2,13 @@
 
 ## 1. 交付边界与当前结论
 
-> 后续状态：密码登录、服务端会话和浏览器安全边界已经进入下一纵切，见 [WP-02 密码登录与服务端会话](./WP02_AUTH_SESSION_SLICE.md)。下文保留首次初始化纵切交付时的事实，不应再用其中“尚无登录/session”的描述判断当前工作树。
+> 后续状态：密码登录、服务端会话和浏览器安全边界已经进入后续纵切，见 [WP-02 密码登录与服务端会话](./WP02_AUTH_SESSION_SLICE.md) 和 [C1 实现记录](./WP02_C1_PASSWORD_RECENT_AUTH_SESSION_IMPLEMENTATION.md)。下文冻结首次初始化纵切交付时的事实；正文里的“当前”“尚未”都指该历史基线，不得拿来判断现在的工作树。
 
 本纵切实现了一个可实际写入数据库的首次初始化闭环：公开页面读取初始化状态，部署者同时提交短时一次性 setup token、实例名、Owner 用户名和密码，Master 先校验部署者能力，再在受限的阻塞线程中生成 Argon2id 密码哈希，最后由 SQLite 或 PostgreSQL 的同一事务创建或接管实例、创建首个 Owner、写入所需默认设置并关闭 bootstrap latch。旧的 `0001_foundation` 数据库已有实例时，`0002_identity` 会进入 `LegacyNeedsOwner`；后续初始化保留旧实例和兼容的已有设置并创建 Owner。固定的 `subscription.behavior` 设置缺失时补入默认值；schema version 或 typed JSON 不兼容时整笔 fail closed。
 
-这仍只是 [WP-02 规划](../04-rebuild/IMPLEMENTATION_PLAN.md#6-wp-02身份会话mfa角色与用户基础) 的第一个纵切，不是身份系统完成。当前没有可用的密码登录端点、登录 challenge、浏览器 session、恢复码、MFA/WebAuthn、CSRF/Origin 校验、用户管理、密码重置、API token 或 RBAC。`GET /api/v1/bootstrap` 在初始化后仍返回空的 `login_methods`，避免把已存密码凭据误报成可用登录方式。[需求追踪矩阵](../04-rebuild/REQUIREMENTS_TRACEABILITY.md) 因此不应仅凭本纵切把 `MMW-AUTH-*` 标为 `implemented` 或 `verified`。
+这仍只是 [WP-02 规划](../04-rebuild/IMPLEMENTATION_PLAN.md#6-wp-02身份会话mfa角色与用户基础) 的第一个纵切，不是身份系统完成。在本页冻结的基线中，还没有可用的密码登录端点、登录 challenge、浏览器 session、恢复码、MFA/WebAuthn、CSRF/Origin 校验、用户管理、密码重置、API token 或 RBAC。`GET /api/v1/bootstrap` 在初始化后仍返回空的 `login_methods`，避免把已存密码凭据误报成可用登录方式。[需求追踪矩阵](../04-rebuild/REQUIREMENTS_TRACEABILITY.md) 因此不应仅凭本纵切把 `MMW-AUTH-*` 标为 `implemented` 或 `verified`。
 
-本文说明的是当前工作树，而不是一个已经发布的版本。此前的 [WP-01 基础纵切](./WP01_FOUNDATION_SLICE.md) 和 [WP-01 存储/密钥纵切](./WP01_STORAGE_SECRET_SLICE.md) 仍是它的前置基础。
+本文说明的是 bootstrap 纵切验收时的历史快照，不是当前工作树的全貌，也不是一个单独发布版本。此前的 [WP-01 基础纵切](./WP01_FOUNDATION_SLICE.md) 和 [WP-01 存储/密钥纵切](./WP01_STORAGE_SECRET_SLICE.md) 仍是它的前置基础。
 
 ## 2. 模块与函数责任
 
@@ -57,7 +57,7 @@ Master 自动生成 `principal_label = "usr_" + owner UUIDv7`，而不是接受�
 | `SetupCapability::authorize` | 检查未消费、未过期、格式正确，并对固定长度 digest 做不提前返回的比较 | token 不进入 tracing span；无效 capability 不占用 bootstrap 的 Argon2/全局尝试间隔 |
 | `SetupCapability::consume` | 数据库事务成功后把本进程 capability 标为已消费 | 数据库 `ready` latch 是跨重启、跨副本的一次性边界；内存标记是同进程快速拒绝层 |
 
-当前参数是硬编码的安全基线，还没有实现 [安全设计](../04-rebuild/SECURITY.md#4-身份密码和会话) 要求的 VPS 目标级 250～500 ms 校准、按旧 PHC 参数透明 rehash、本地泄漏密码拒绝集或可运维的参数升级策略。`verify` 已提供底层能力，但不能据此声称登录、恒定外观错误或账号枚举防护已经完成。
+该历史基线的参数是硬编码安全值，当时还没有实现 [安全设计](../04-rebuild/SECURITY.md#4-身份密码和会话) 要求的 VPS 目标级 250～500 ms 校准、按旧 PHC 参数透明 rehash、本地泄漏密码拒绝集或可运维的参数升级策略。透明 rehash 后来已进入 C1 候选；其余校准和本地拒绝集仍是后续工作。
 
 密码从 `BootstrapRequest` 反序列化后会立即通过 `std::mem::take` 移入 `Zeroizing<String>`；`BootstrapCommand`、`PasswordHash` 和 `UserAccount` 均不提供默认 debug 输出。HTTP tracing span 只记录 method/path，不记录请求 body。这里仍是 best-effort：Axum body buffer、Serde 分配、Argon2 实现内部以及 allocator 已释放区域不保证被全部擦除，生产环境还需要 core-dump 策略和结构化日志审计。
 
@@ -160,7 +160,7 @@ mutex guard 持有到哈希和数据库提交结束，同一进程不会并行�
 
 - TanStack Query 调用 `getBootstrapState`；页面不自行猜测初始化状态。当前公开 projection 仍把空库 `Uninitialized` 与历史库 `LegacyNeedsOwner` 都表示成 `initialized=false`，因此页面使用“完成所需初始化写入”的中性文案，不声称每次都会新建实例。
 - 未初始化时显示 setup token、实例名、Owner 用户名、密码与本地确认输入；token 必须是 64 位小写十六进制并通过专用 header 发送。成功或失败都立即清空 token、密码和确认字段，避免一次性 capability 与凭据继续驻留在可见表单；成功后再读取服务器状态。
-- 已初始化时关闭表单，明确说明重复请求会被 Master 拒绝；结果文案并列说明空库与历史库两种语义，不猜测本次实际走了哪条路径，也明确说明登录/session 尚未启用。
+- 已初始化时关闭表单，明确说明重复请求会被 Master 拒绝；结果文案并列说明空库与历史库两种语义，不猜测本次实际走了哪条路径。该页面在历史基线中还会说明登录/session 尚未启用。
 - 页面不再用 UTF-16 `String.length` 或原生 password `minlength/maxlength` 猜测密码策略，而是用 `Array.from` 计 Unicode scalar、用 `TextEncoder` 计 UTF-8 bytes，并拒绝孤立 surrogate 与 Unicode control character；实例名也按 trim 后的 Unicode scalar 计数。button 和 form submit handler 共用同一 `canSubmit`，回车提交不能绕过提示层校验。服务端 domain 校验仍是最终权威边界。
 - 错误 UI 只使用 HTTP status、白名单 Problem code 与白名单 JSON pointer；服务端 `detail/title/message/request_id` 不进入 DOM。字段错误使用本地固定文案，403 指向 setup-token 操作，409 自动重新读取状态，429 只显示解析后且不超过 3,600 秒的 `Retry-After`。pointer/code 表使用 `Map`，原型链键不会被当成白名单成员。
 
@@ -191,7 +191,7 @@ mutex guard 持有到哈希和数据库提交结束，同一进程不会并行�
 | 数据库旁路 | DB 只检查 PHC 字符串长度 | 凭据读取始终 domain parse；限制 DB 权限；备份/诊断/审计不得输出 PHC |
 | 历史升级恢复 | 能识别 `LegacyNeedsOwner` 和 inconsistent，但没有 operator repair CLI | 提供只读诊断、备份前置与显式 break-glass repair；禁止文档指导手改 latch |
 
-当前 rate limiter 仅保护 bootstrap，不是登录限速，也没有账号枚举 timing bucket。不存在 session cookie，所以现在也没有可声称通过的 session fixation、logout、absolute/idle expiry、revocation、recent-auth、CSRF 或 CORS 安全性质。
+该历史基线的 rate limiter 仅保护 bootstrap，不是登录限速，也没有账号枚举 timing bucket；当时还不存在 session Cookie，因此该页不能声称 session fixation、logout、absolute/idle expiry、revocation、recent-auth、CSRF 或 CORS 已通过。后续纵切的实现与证据必须以各自文档为准。
 
 ## 4. 数据库与迁移测试合同
 

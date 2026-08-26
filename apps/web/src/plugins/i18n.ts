@@ -12,6 +12,8 @@ export const i18n = createI18n({
       },
       nav: {
         dashboard: '总览',
+        password: '修改密码',
+        security: '账户安全',
         system: '系统',
       },
     },
@@ -22,6 +24,8 @@ export const i18n = createI18n({
       },
       nav: {
         dashboard: 'Dashboard',
+        password: 'Change password',
+        security: 'Account security',
         system: 'System',
       },
     },

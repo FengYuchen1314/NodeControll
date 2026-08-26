@@ -11,7 +11,32 @@ import { useSessionStore, type SessionStatus } from '../stores/session'
 
 const redirectBase = 'https://nodecontroll.invalid'
 const controlCharacterPattern = /\p{Cc}/u
-const guestPaths = new Set(['/login', '/setup'])
+const redirectLoopPaths = new Set(['/login', '/reauth', '/setup'])
+
+const redirectPathIsAmbiguous = (path: string) =>
+  path.includes('//') || path.includes('\\') || controlCharacterPattern.test(path)
+
+const fullyDecodedPath = (path: string) => {
+  let decoded = path
+  for (let pass = 0; pass < 4; pass += 1) {
+    const next = decodeURIComponent(decoded)
+    if (redirectPathIsAmbiguous(next)) return undefined
+    if (next === decoded) return next
+    decoded = next
+  }
+  return decoded
+}
+
+const encodedSuffixIsSafe = (value: string) => {
+  let decoded = value
+  for (let pass = 0; pass < 4; pass += 1) {
+    const next = decodeURIComponent(decoded)
+    if (next.includes('\\') || controlCharacterPattern.test(next)) return false
+    if (next === decoded) return true
+    decoded = next
+  }
+  return true
+}
 
 export function safeRedirectPath(value: unknown): string {
   if (
@@ -28,13 +53,11 @@ export function safeRedirectPath(value: unknown): string {
   try {
     const target = new URL(value, redirectBase)
     if (target.origin !== redirectBase) return '/'
-    const decodedPath = decodeURIComponent(target.pathname)
+    const decodedPath = fullyDecodedPath(target.pathname)
     if (
-      decodedPath.startsWith('//') ||
-      decodedPath.startsWith('/\\') ||
-      decodedPath.includes('\\') ||
-      controlCharacterPattern.test(decodedPath) ||
-      guestPaths.has(target.pathname)
+      !decodedPath ||
+      !encodedSuffixIsSafe(`${target.search}${target.hash}`) ||
+      redirectLoopPaths.has(decodedPath.replace(/\/+$/, '').toLowerCase())
     ) {
       return '/'
     }
@@ -47,11 +70,15 @@ export function safeRedirectPath(value: unknown): string {
 export function accessRedirect(
   to: Pick<RouteLocationNormalized, 'fullPath' | 'meta' | 'name' | 'query'>,
   status: SessionStatus,
+  security: { passwordChangeRequired: boolean; recentAuthValid: boolean } = {
+    passwordChangeRequired: false,
+    recentAuthValid: false,
+  },
 ) {
   if (status === 'setup-required') {
     return to.name === 'setup' ? undefined : { name: 'setup' }
   }
-  if (status === 'anonymous') {
+  if (status === 'anonymous' || status === 'relogin-required') {
     if (to.name === 'login') return undefined
     const redirect = to.meta.requiresAuth ? safeRedirectPath(to.fullPath) : undefined
     return {
@@ -59,8 +86,24 @@ export function accessRedirect(
       ...(redirect && redirect !== '/' ? { query: { redirect } } : {}),
     }
   }
-  if (status === 'authenticated' && (to.name === 'login' || to.name === 'setup')) {
-    return { path: to.name === 'login' ? safeRedirectPath(to.query.redirect) : '/' }
+  if (status === 'authenticated') {
+    if (security.passwordChangeRequired && to.meta.allowDuringPasswordChange !== true) {
+      const redirect = to.meta.requiresAuth ? safeRedirectPath(to.fullPath) : undefined
+      return {
+        name: 'password-change',
+        ...(redirect && redirect !== '/' ? { query: { redirect } } : {}),
+      }
+    }
+    if (to.meta.requiresRecentAuth && !security.recentAuthValid) {
+      const redirect = safeRedirectPath(to.fullPath)
+      return {
+        name: 'reauth',
+        ...(redirect !== '/' ? { query: { redirect } } : {}),
+      }
+    }
+    if (to.meta.guestOnly) {
+      return { path: to.name === 'login' ? safeRedirectPath(to.query.redirect) : '/' }
+    }
   }
   return undefined
 }
@@ -97,6 +140,37 @@ export function createAppRouter(
         meta: { guestOnly: true, title: '初始化' },
       },
       {
+        path: '/reauth',
+        name: 'reauth',
+        component: () => import('../views/ReauthenticatePage.vue'),
+        meta: {
+          allowDuringPasswordChange: true,
+          requiresAuth: true,
+          title: '确认身份',
+        },
+      },
+      {
+        path: '/profile/security',
+        name: 'profile-security',
+        component: () => import('../views/ProfileSecurityPage.vue'),
+        meta: {
+          allowDuringPasswordChange: true,
+          requiresAuth: true,
+          title: '账户安全',
+        },
+      },
+      {
+        path: '/profile/security/password',
+        name: 'password-change',
+        component: () => import('../views/ChangePasswordPage.vue'),
+        meta: {
+          allowDuringPasswordChange: true,
+          requiresAuth: true,
+          requiresRecentAuth: true,
+          title: '修改密码',
+        },
+      },
+      {
         path: '/:pathMatch(.*)*',
         redirect: '/',
       },
@@ -106,7 +180,13 @@ export function createAppRouter(
   appRouter.beforeEach(async (to) => {
     const session = useSessionStore(storePinia)
     await session.ensureLoaded()
-    return accessRedirect(to, session.status) ?? true
+    session.syncRecentAuthClock()
+    return (
+      accessRedirect(to, session.status, {
+        passwordChangeRequired: session.passwordChangeRequired,
+        recentAuthValid: session.recentAuthValid,
+      }) ?? true
+    )
   })
 
   return appRouter

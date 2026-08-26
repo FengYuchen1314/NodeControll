@@ -60,10 +60,12 @@ Master 与 Agent、Agent 与 sing-box、Master 与外部 fetcher 都是边界，
 ## 4. 身份、密码和会话
 
 - 密码用 Argon2id，参数在 VPS 目标级校准为约 250–500ms、合理内存并写入 hash；每次登录按 hash 参数透明升级。长度允许至少 64 字符，支持 paste/password manager，不规定字符组成；检查常见/泄漏密码使用本地可更新拒绝集，不向外部发送密码。
-- 首次 owner、改密码、关闭 MFA、生成恢复码、secret export、restore、CA/peer rotation 需要 recent authentication。WebAuthn 优先，TOTP 可用，恢复码一次性 hash 保存。
+- 空实例 bootstrap 由本机一次性 setup capability 授权，是没有既有身份时的唯一例外。实例建立后，新增/晋升/转移 owner、改密码、关闭 MFA、生成恢复码、secret export、restore、CA/peer rotation 都需要 recent authentication。WebAuthn 优先，TOTP 可用，恢复码一次性 hash 保存；精确 rotation 与 challenge 合同见 [WP02_C_AUTHENTICATION_SECURITY_CONTRACT.md](../05-implementation/WP02_C_AUTHENTICATION_SECURITY_CONTRACT.md)。
 - 登录失败不透露账号/MFA 是否存在。rate limiter 使用规范化账号 keyed bucket + IP/prefix bucket；反向代理 IP 只信任配置 CIDR。
-- session ID 至少 256 bit CSPRNG，数据库仅存 hash；登录/提权/密码修改 rotation。absolute + idle expiry；撤销在服务端实时检查，不使用无法即时撤销的长寿命浏览器 JWT。
-- cookie `__Host-` 前缀、Secure、HttpOnly、Path=/、SameSite=Lax；跨站部署若必须 `None`，需要 HTTPS、明确 Origin allowlist 和更严格 CSRF。
+- 浏览器 session credential 使用 256 bit CSPRNG，数据库只存带用途和版本的 HMAC；内部 session row ID 是不可充当凭据的 UUIDv7。登录、提权和密码修改都 rotation。absolute + idle expiry；撤销在服务端实时检查，不使用无法即时撤销的长寿命浏览器 JWT。
+- 两枚 cookie 都使用 `__Host-` 前缀、Secure、Path=/、SameSite=Lax；session cookie 为 HttpOnly，CSRF cookie 则供同源前端读取并复制到 header。跨站部署若必须 `None`，需要 HTTPS、明确 Origin allowlist 和更严格 CSRF。
+- 同源标签页共享 Cookie 但不共享 Pinia 状态。所有凭据 mutation 用 Web Locks exclusive 覆盖完整请求与响应校验，受保护读取用 shared；唯一 localStorage journal 只保存非秘密协调元数据，包括协议版本、epoch、规范十进制 `baseSeq/seq`、op/sender ID、operation、phase 与 disposition，BroadcastChannel/storage event 只唤醒。未知结果、journal 损坏、revision 回滚或同值篡改、跳号和未观察到的 terminal 都先关闭受保护 DOM。journal 缺失时，fresh setup/anonymous 且无 CSRF Cookie 是合法初始态；已有凭据迹象或 authenticated/unavailable/relogin-required 投影时必须隔离。显式登录成功或权威清理 204 才能恢复。
+- 任何 Problem，包括旧凭据的 `401 SESSION_INVALID`，都不得写 `Set-Cookie`；迟到错误响应不能清掉另一个标签页刚轮换出的新 Cookie。设置、轮换和清除 Cookie 只允许来自路由明确声明的成功响应。
 - personal/service token 使用高熵随机值、前缀识别、仅 hash、scope/CIDR/expiry；创建一次性回显。token 永远不能恢复明文。
 
 ## 5. 授权与资源隔离
@@ -154,7 +156,7 @@ MCP 将所有 tool 调用视为不可信自动化：tool schema 参数严格；r
 
 ## 15. 供应链与发布
 
-- Rust/Node/Go module lock/pin；容器用 digest；VPS 构建无漂移安装，保存工具链/version/digest。
+- Rust/Node/Go module lock/pin；容器用 digest；公开 Actions 负责编译 release，VPS 以无漂移私有依赖输入运行测试和制品验收，保存工具链/version/digest。
 - 生成 CycloneDX/SPDX SBOM、第三方许可证、sing-box source tag/commit/source offer。GPL sing-box 作为独立进程/制品，不隐藏修改；目标是不维护 fork。
 - 依赖漏洞扫描需要 severity、reachable assessment、owner、deadline 和 waiver；禁止无人负责的永久 ignore。
 - release artifact checksum/signature/provenance；部署只认项目 release manifest allowlist。

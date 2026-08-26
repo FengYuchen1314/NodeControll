@@ -117,6 +117,7 @@ setup_token_ttl_seconds = 1800
 [auth]
 session_idle_seconds = 1800
 session_absolute_seconds = 86400
+recent_auth_seconds = 300
 login_window_seconds = 300
 login_block_seconds = 900
 login_account_limit = 5
@@ -126,7 +127,7 @@ password_hash_concurrency = 4
 digest_key_version = 1
 ```
 
-`login_block_seconds` 必须大于或等于 `login_window_seconds`；否则固定窗口尚未结束，封禁却先失效，计数和 `Retry-After` 会出现矛盾，Master 因此在启动前拒绝该配置。`password_hash_concurrency` 的有效范围是 1～64。
+`recent_auth_seconds` 的有效范围是 60～3600 秒，并且不得长于 absolute session lifetime。`login_block_seconds` 必须大于或等于 `login_window_seconds`；否则固定窗口尚未结束，封禁却先失效，计数和 `Retry-After` 会出现矛盾，Master 因此在启动前拒绝该配置。`password_hash_concurrency` 的有效范围是 1～64。
 
 首次启动前，安装器或操作者分别生成两个独立的 32-byte 随机值，以 64 位小写十六进制写入 owner-only regular file。root key 是长期数据密钥；setup token 只用于夺取首个 Owner，不能复用同一值。未初始化或 0001 legacy 数据库若不能安全读取 setup-token 文件，Master 在 bind HTTP 前失败；已经 Ready 的数据库不再要求该文件。浏览器通过 `x-nodecontroll-setup-token` header 提交，不放 URL、query、日志或 shell 参数。默认窗口是进程启动后 30 分钟、最大 60 分钟；过期且数据库仍未初始化时需要重启 Master。成功后数据库 latch 永久关闭 bootstrap，操作者应删除 setup-token 文件；Master 不自动删除部署者的 credential mount。反向代理必须使用 TLS，且不得记录该 header。
 
@@ -251,12 +252,12 @@ release candidate 从一次 `main` push 开始。Actions 对 clean checkout 使�
 
 VPS 只接受与该 push 完全相同的 commit。checkout 必须位于 `/opt/nodecontroll/checkouts/<sha>`、是含独立 `.git` 的新 clone，初始 tracked/untracked 与 ignored 输入都为空；verifier 原子 claim 后不允许任何成功或失败重试复用。raw tar 位于 `/opt/nodecontroll/artifacts/github-actions/<sha>/`，进入 run 后先固化为 `provenance/` 下的 0444 快照；后续不再读取可变下载路径。verifier 从 GitHub API 核对仓库、workflow path、push/main、run conclusion/attempt、head SHA、run ID、artifact ID 与快照 digest。archive 在解包前检查规范路径与 `./` 前缀、重复/别名 member、声明父目录、类型、PAX/sparse 和压缩/单文件/解压总 size；解包后再检查 `BUILD-METADATA`、`CONTENTS.sha256`、license/Rust runtime notices/SBOM 和文件全集。Master/Agent 还要通过 x86-64 ELF、动态库 allowlist、解释器和最高 GLIBC 2.36 检查。
 
-同一 fresh checkout 先在固定 Node image ID 下执行 `pnpm install --frozen-lockfile`。独立门禁随后从 fresh `node_modules/.pnpm` 枚举精确 name/version identity，并与 artifact inventory 的 425 个 npm identity 做集合双向相等检查；额外或缺失 identity 都失败。`node_modules`、`.pnpm` 与实际包根必须是非 symlink 目录，canonical realpath 必须留在各自上级边界内，因此脏 virtual store、symlink 和目录逃逸不能进入许可证闭包。
+同一 fresh checkout 先在固定 Node image ID 下执行 `pnpm install --frozen-lockfile`。独立门禁随后从 fresh `node_modules/.pnpm` 枚举精确 name/version identity，并与本次 artifact inventory 声明的完整 npm identity 集合做双向相等检查；额外或缺失 identity 都失败。`node_modules`、`.pnpm` 与实际包根必须是非 symlink 目录，canonical realpath 必须留在各自上级边界内，因此脏 virtual store、symlink 和目录逃逸不能进入许可证闭包。
 
 `pnpm-lock.yaml` 只接受审阅过的 v9 canonical 顶层顺序/全集、精确 `'9.0'` 版本值和 block-mapping sections；重复、quoted 或未知顶层 key、非规范顶层 YAML、重复 package/integrity 都拒绝。repository metadata 必须规范化为 absolute `http(s)`/`ssh`/`git` URI，非法或不安全值失败。CycloneDX `license.name` 仅保存收集器规范化后的包声明许可证字符串，不表示规范 SPDX `id` 判定；正文、来源、checksum 和精确 override 才是法律证据。
 
-notices 重收集使用从固定 Node image ID 提取的 Node/pnpm runtime，并在固定 Rust image ID 中运行。容器断网，rootfs、source 和共享 Cargo cache 只读；run-scoped pnpm store 与本轮重建目录可写。Actions notices 与 VPS 结果按目录/文件全集、逐文件 size、SHA-256 和实际 bytes 双向比对。SBOM 另由固定 CycloneDX CLI 0.33.1 校验官方 v1.6 schema，CLI 完整 SHA-256 固定为 `bfc8b2538da86fe239bc53658bbb63c1c8c510a293c1e6891aa5bea5d3c58746`。这些拒绝路径已有发布前单项验证；只有同 SHA Actions artifact 的 provenance、archive、SBOM 与重收集门全部通过后，才运行 VPS 静态、单元、双数据库、Web 和 runtime smoke。正式 artifact/VPS verifier run 尚未发生。
+notices 重收集使用从固定 Node image ID 提取的 Node/pnpm runtime，并在固定 Rust image ID 中运行。容器断网，rootfs、source 和共享 Cargo cache 只读；run-scoped pnpm store 与本轮重建目录可写。Actions notices 与 VPS 结果按目录/文件全集、逐文件 size、SHA-256 和实际 bytes 双向比对。SBOM 另由固定 CycloneDX CLI 0.33.1 校验官方 v1.6 schema，CLI 完整 SHA-256 固定为 `bfc8b2538da86fe239bc53658bbb63c1c8c510a293c1e6891aa5bea5d3c58746`。这些拒绝路径已有发布前单项验证，较早公开基线也已完成正式 artifact/VPS verifier run；每个新 SHA 仍须以同 SHA Actions artifact 重新通过 provenance、archive、SBOM 与重收集门，当前 C1 SHA 尚未发生。
 
-当前 P5 verifier 的落盘范围只有 `manifest.json`、`commands.tsv`、逐阶段 `logs/`、GitHub API 与 raw-tar 快照 `provenance/`、本轮解包的 `compiled/`、`checksums.txt`，以及成功时的 `COMPLETED_AT` 或阶段失败时的 `FAILED_STAGE`。runtime smoke 结束后先停止 Master、冻结最终日志，再扫描 setup token、root key、已知密码和 PHC 前缀；失败清理无法完成同等证明时留下 `SECRET_SCAN_FAILED`。JUnit、coverage、HTML reports、Playwright traces、安全、性能、Compose/native、Agent/core/Nginx/tc、备份与升级回滚证据尚未由当前脚本生成；这些目录和结论要等相应工作包真正实现后再加入。
+当前 P5 verifier 的落盘范围包括 schema 3 `manifest.json`、`commands.tsv`、逐阶段 `logs/`、GitHub API 与 raw-tar 快照 `provenance/`、本轮解包的 `compiled/`、C1 HTTPS rotation/logout 的冻结 `browser/` evidence、`checksums.txt`，以及成功时的 `COMPLETED_AT` 或阶段失败时的 `FAILED_STAGE`。runtime smoke 结束后先停止 Master、冻结最终日志，再扫描 setup token、root key、已知密码和 PHC 前缀；失败清理无法完成同等证明时留下 `SECRET_SCAN_FAILED`。JUnit、coverage、HTML reports、完整 Playwright traces/screenshots、安全、性能、Compose/native、Agent/core/Nginx/tc、备份与升级回滚证据尚未由当前脚本生成；这些目录和结论要等相应工作包真正实现后再加入。
 
 部署完成仍要求 single-host Compose/native 和 split Master/Agent 各从零安装一次；任意自有域名、无官方服务运行；升级、Agent rotation、core rollback、backup restore、uninstall-preserve 都有可重复脚本、日志和验收报告。P5 的最小 provenance 与 smoke 不能替代这些发布门。

@@ -41,26 +41,57 @@ readonly NODE_IMAGE="nodecontroll-builder-node:24.19.0-pnpm11.24.0"
 readonly NODE_IMAGE_ID="sha256:06628671caed76e73560464d4ce47cacb202fcf28d090c0d24f2ead1cc23afcb"
 readonly POSTGRES_IMAGE="postgres@sha256:1c59e2c3c818eaa0f0628f695b36e7c9e362d6b219b36a54a32df645cbd7e1af"
 readonly POSTGRES_IMAGE_ID="sha256:1c59e2c3c818eaa0f0628f695b36e7c9e362d6b219b36a54a32df645cbd7e1af"
+readonly PLAYWRIGHT_IMAGE="mcr.microsoft.com/playwright@sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07"
+readonly PLAYWRIGHT_IMAGE_ID="sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07"
+readonly PLAYWRIGHT_PACKAGE_VERSION="1.62.0"
+readonly PLAYWRIGHT_NODE_VERSION="v24.19.0"
+readonly PLAYWRIGHT_BROWSER_VERSION="151.0.7922.34"
+readonly PLAYWRIGHT_EXECUTABLE_SHA256="0b20b130e7edd9dd51873be867761295fe0cfad490c2b9a64f95bd3cfc08fa71"
 readonly RUN_ID="$(date -u +%Y%m%dT%H%M%S%NZ)-p5"
 readonly RUN_DIR="${RUNS_ROOT}/${RUN_ID}"
 readonly ACTIONS_ARTIFACT_SNAPSHOT="${RUN_DIR}/provenance/nodecontroll-linux-x86_64-glibc2.36.tar.gz"
 readonly SMOKE_CONTAINER="nc-verify-${RUN_ID,,}"
+readonly E2E_MASTER_CONTAINER="nc-e2e-master-${RUN_ID,,}"
+readonly E2E_BROWSER_CONTAINER="nc-e2e-browser-${RUN_ID,,}"
 readonly POSTGRES_CONTAINER="nc-postgres-${RUN_ID,,}"
 readonly TEST_NETWORK="nc-test-${RUN_ID,,}"
 readonly TEST_SECRET_FILE="${TASK_ROOT}/tmp/${RUN_ID}.root-key"
 readonly TEST_SETUP_TOKEN_FILE="${TASK_ROOT}/tmp/${RUN_ID}.setup-token"
-readonly LICENSE_NODE_RUNTIME="${TASK_ROOT}/tmp/${RUN_ID}.license-node"
+readonly E2E_NODE_RUNTIME="${TASK_ROOT}/tmp/${RUN_ID}.e2e-node"
 readonly NODE_WORKSPACE="${TASK_ROOT}/tmp/${RUN_ID}.node-workspace"
 readonly NODE_PNPM_STORE="${TASK_ROOT}/tmp/${RUN_ID}.pnpm-store"
 readonly PRIVATE_CARGO_HOME="${TASK_ROOT}/tmp/${RUN_ID}.cargo-home"
 readonly PRIVATE_CARGO_TEST_TARGET="${TASK_ROOT}/tmp/${RUN_ID}.cargo-test-target"
-readonly PRIVATE_CARGO_RELEASE_TARGET="${TASK_ROOT}/tmp/${RUN_ID}.cargo-release-target"
-readonly LICENSE_REBUILD_DIR="${RUN_DIR}/provenance/rebuilt-notices"
 readonly SOURCE_VERIFIER="${RUN_DIR}/provenance/verify_tracked_source.py"
 readonly CARGO_INPUT_CLOSURE="${RUN_DIR}/provenance/cargo-home-inputs.json"
 readonly PNPM_INPUT_CLOSURE="${RUN_DIR}/provenance/pnpm-store-inputs.json"
-readonly VPS_RELEASE_ROOT="${RUN_DIR}/provenance/vps-release"
-readonly VPS_OPENAPI="${RUN_DIR}/provenance/vps-openapi.json"
+readonly AUTH_E2E_ROOT="${RUN_DIR}/browser"
+readonly AUTH_E2E_DATABASE_FILE="${AUTH_E2E_ROOT}/database"
+readonly AUTH_E2E_DATABASE_TEMP="${AUTH_E2E_ROOT}/.database.temporary"
+readonly AUTH_E2E_DATABASE_DUMP_DIR="${AUTH_E2E_ROOT}/database-dump"
+readonly AUTH_E2E_DATABASE_DUMP="${AUTH_E2E_DATABASE_DUMP_DIR}/control.sql"
+readonly AUTH_E2E_DATABASE_DUMP_TEMP="${AUTH_E2E_DATABASE_DUMP_DIR}/.control.sql.temporary"
+readonly AUTH_E2E_RUNTIME_LOGS="${AUTH_E2E_ROOT}/runtime-logs"
+readonly AUTH_E2E_MASTER_LOG="${AUTH_E2E_RUNTIME_LOGS}/master-runtime.log"
+readonly AUTH_E2E_TEST_ARTIFACTS="${AUTH_E2E_ROOT}/test-artifacts"
+readonly AUTH_E2E_TLS_CERTIFICATE="${AUTH_E2E_TEST_ARTIFACTS}/tls-certificate.pem"
+readonly AUTH_E2E_GATE_ATTESTATION="${AUTH_E2E_TEST_ARTIFACTS}/gate-attestation.json"
+readonly AUTH_E2E_GATE_ATTESTATION_TEMP="${AUTH_E2E_TEST_ARTIFACTS}/.gate-attestation.json.temporary"
+readonly AUTH_E2E_HANDSHAKE="${AUTH_E2E_ROOT}/handshake"
+readonly AUTH_E2E_BEHAVIOR_MARKER="${AUTH_E2E_HANDSHAKE}/behavior-ready"
+readonly AUTH_E2E_SCAN_MARKER="${AUTH_E2E_HANDSHAKE}/scan-ready"
+readonly AUTH_E2E_SCAN_MARKER_TEMP="${AUTH_E2E_HANDSHAKE}/.scan-ready.verifier-temporary"
+readonly AUTH_E2E_EVIDENCE="${AUTH_E2E_HANDSHAKE}/evidence.json"
+readonly AUTH_E2E_BROWSER_LOG="${AUTH_E2E_ROOT}/gate-runtime.log"
+readonly AUTH_E2E_CLOSURE="${RUN_DIR}/provenance/browser-e2e-closure.json"
+readonly AUTH_E2E_TEMP_ROOT="${TASK_ROOT}/tmp/${RUN_ID}.auth-e2e"
+readonly AUTH_E2E_LIVE_DATABASE_DIR="${AUTH_E2E_TEMP_ROOT}/live-database"
+readonly AUTH_E2E_LIVE_DATABASE_FILE="${AUTH_E2E_LIVE_DATABASE_DIR}/control.db"
+readonly AUTH_E2E_ROOT_KEY_FILE="${AUTH_E2E_TEMP_ROOT}/root-key"
+readonly AUTH_E2E_SETUP_TOKEN_FILE="${AUTH_E2E_TEMP_ROOT}/setup-token"
+readonly AUTH_E2E_PASSWORD_FILE="${AUTH_E2E_TEMP_ROOT}/password"
+readonly AUTH_E2E_TLS_KEY_FILE="${AUTH_E2E_TEMP_ROOT}/tls-key.pem"
+readonly AUTH_E2E_TLS_CERTIFICATE_TEMP="${AUTH_E2E_TEMP_ROOT}/tls-certificate.pem"
 readonly CYCLONEDX_CLI_VERSION="0.33.1"
 readonly CYCLONEDX_CLI_SHA256="bfc8b2538da86fe239bc53658bbb63c1c8c510a293c1e6891aa5bea5d3c58746"
 readonly CYCLONEDX_CLI_URL="https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.33.1/cyclonedx-linux-x64"
@@ -68,7 +99,6 @@ readonly CYCLONEDX_CLI_FILE="${TASK_ROOT}/tmp/${RUN_ID}.cyclonedx-cli"
 readonly ACTIONS_ARTIFACT_INPUT="${NODECONTROLL_ACTIONS_ARTIFACT:-}"
 readonly GITHUB_RUN_ID="${NODECONTROLL_GITHUB_RUN_ID:-}"
 readonly GITHUB_ARTIFACT_ID="${NODECONTROLL_GITHUB_ARTIFACT_ID:-}"
-readonly GITHUB_REPOSITORY="FengYuchen1314/NodeControll"
 
 if [[ "$(pwd -P)" != "${WORKTREE}" ]]; then
   echo "run this script from ${WORKTREE}" >&2
@@ -143,23 +173,22 @@ case "${TEST_SETUP_TOKEN_FILE}" in
     exit 2
     ;;
 esac
-case "${LICENSE_NODE_RUNTIME}" in
-  /opt/nodecontroll/tmp/*.license-node) ;;
+case "${E2E_NODE_RUNTIME}" in
+  /opt/nodecontroll/tmp/*.e2e-node) ;;
   *)
-    echo "refusing unexpected temporary license-runtime path: ${LICENSE_NODE_RUNTIME}" >&2
+    echo "refusing unexpected temporary E2E Node runtime path: ${E2E_NODE_RUNTIME}" >&2
     exit 2
     ;;
 esac
-if [[ -e "${LICENSE_NODE_RUNTIME}" || -L "${LICENSE_NODE_RUNTIME}" ]]; then
-  echo "refusing pre-existing temporary license-runtime path: ${LICENSE_NODE_RUNTIME}" >&2
+if [[ -e "${E2E_NODE_RUNTIME}" || -L "${E2E_NODE_RUNTIME}" ]]; then
+  echo "refusing pre-existing temporary E2E Node runtime path: ${E2E_NODE_RUNTIME}" >&2
   exit 2
 fi
 for isolated_path in "${NODE_WORKSPACE}" "${NODE_PNPM_STORE}" "${PRIVATE_CARGO_HOME}" \
-  "${PRIVATE_CARGO_TEST_TARGET}" "${PRIVATE_CARGO_RELEASE_TARGET}"; do
+  "${PRIVATE_CARGO_TEST_TARGET}"; do
   case "${isolated_path}" in
     /opt/nodecontroll/tmp/*.node-workspace | /opt/nodecontroll/tmp/*.pnpm-store | \
-    /opt/nodecontroll/tmp/*.cargo-home | /opt/nodecontroll/tmp/*.cargo-test-target | \
-    /opt/nodecontroll/tmp/*.cargo-release-target) ;;
+    /opt/nodecontroll/tmp/*.cargo-home | /opt/nodecontroll/tmp/*.cargo-test-target) ;;
     *)
       echo "refusing unexpected isolated build path: ${isolated_path}" >&2
       exit 2
@@ -170,6 +199,17 @@ for isolated_path in "${NODE_WORKSPACE}" "${NODE_PNPM_STORE}" "${PRIVATE_CARGO_H
     exit 2
   fi
 done
+case "${AUTH_E2E_TEMP_ROOT}" in
+  /opt/nodecontroll/tmp/*.auth-e2e) ;;
+  *)
+    echo "refusing unexpected auth E2E temporary root: ${AUTH_E2E_TEMP_ROOT}" >&2
+    exit 2
+    ;;
+esac
+if [[ -e "${AUTH_E2E_TEMP_ROOT}" || -L "${AUTH_E2E_TEMP_ROOT}" ]]; then
+  echo "refusing pre-existing auth E2E temporary root: ${AUTH_E2E_TEMP_ROOT}" >&2
+  exit 2
+fi
 case "${CYCLONEDX_CLI_FILE}" in
   /opt/nodecontroll/tmp/*.cyclonedx-cli) ;;
   *)
@@ -182,17 +222,262 @@ if [[ -e "${CYCLONEDX_CLI_FILE}" || -L "${CYCLONEDX_CLI_FILE}" ]]; then
   exit 2
 fi
 
+capture_container_log_new() {
+  local container="$1"
+  local destination="$2"
+  local temporary="${destination}.capturing"
+  if [[ -e "${destination}" || -L "${destination}" || -e "${temporary}" || -L "${temporary}" ]]; then
+    echo "refusing to overwrite container log: ${destination}" >&2
+    return 2
+  fi
+  umask 077
+  docker logs "${container}" > "${temporary}" 2>&1 || {
+    rm -f -- "${temporary}"
+    return 1
+  }
+  if ! python3 - "${temporary}" <<'PY'
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+with path.open("rb+") as stream:
+    os.fsync(stream.fileno())
+PY
+  then
+    rm -f -- "${temporary}"
+    return 1
+  fi
+  if ! ln -- "${temporary}" "${destination}"; then
+    rm -f -- "${temporary}"
+    return 1
+  fi
+  if ! rm -f -- "${temporary}"; then
+    rm -f -- "${destination}" "${temporary}"
+    remove_failed_secret_scan_target "${destination}" "auth E2E log publication" || true
+    return 1
+  fi
+  if ! python3 - "$(dirname "${destination}")" <<'PY'
+import os
+import pathlib
+import sys
+
+directory = os.open(pathlib.Path(sys.argv[1]), os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
+  then
+    remove_failed_secret_scan_target "${destination}" "auth E2E log directory fsync" || true
+    return 1
+  fi
+}
+
+capture_container_log_precreated() {
+  local container="$1"
+  local destination="$2"
+  [[ -f "${destination}" && ! -L "${destination}" \
+    && "$(stat -c '%a' "${destination}")" == "600" \
+    && "$(stat -c '%s' "${destination}")" -eq 0 \
+    && "$(readlink -f "${destination}")" == "${destination}" ]] || {
+    echo "gate log must be a canonical empty private pre-created file" >&2
+    return 2
+  }
+  if ! docker logs "${container}" > "${destination}" 2>&1; then
+    remove_failed_secret_scan_target "${destination}" "auth E2E browser log capture" || true
+    return 1
+  fi
+  if ! python3 - "${destination}" <<'PY'
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+with path.open("rb+") as stream:
+    os.fsync(stream.fileno())
+directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
+  then
+    remove_failed_secret_scan_target "${destination}" "auth E2E browser log fsync" || true
+    return 1
+  fi
+}
+
+scan_auth_e2e_fixture_secrets() {
+  local target="$1"
+  [[ -f "${target}" && -r "${target}" && ! -L "${target}" \
+    && -f "${AUTH_E2E_ROOT_KEY_FILE}" && -r "${AUTH_E2E_ROOT_KEY_FILE}" \
+    && -f "${AUTH_E2E_SETUP_TOKEN_FILE}" && -r "${AUTH_E2E_SETUP_TOKEN_FILE}" \
+    && -f "${AUTH_E2E_PASSWORD_FILE}" && -r "${AUTH_E2E_PASSWORD_FILE}" \
+    && -f "${AUTH_E2E_TLS_KEY_FILE}" && -r "${AUTH_E2E_TLS_KEY_FILE}" ]] || return 2
+  python3 - \
+    "${target}" \
+    "${AUTH_E2E_ROOT_KEY_FILE}" \
+    "${AUTH_E2E_SETUP_TOKEN_FILE}" \
+    "${AUTH_E2E_PASSWORD_FILE}" \
+    "${AUTH_E2E_TLS_KEY_FILE}" <<'PY'
+import base64
+import json
+import pathlib
+import sys
+import urllib.parse
+
+target, root_key_file, setup_token_file, password_file, tls_key_file = map(
+    pathlib.Path, sys.argv[1:]
+)
+body = target.read_bytes()
+single_line_secrets = [
+    root_key_file.read_bytes().strip(),
+    setup_token_file.read_bytes().strip(),
+    password_file.read_bytes().strip(),
+]
+tls_pem = tls_key_file.read_bytes()
+if any(not value for value in single_line_secrets) or not tls_pem:
+    raise SystemExit("auth E2E secret fixture is empty")
+
+canaries = set(single_line_secrets)
+canaries.add(tls_pem)
+pem_body_lines = [
+    line.strip()
+    for line in tls_pem.splitlines()
+    if line and not line.startswith(b"-----") and len(line.strip()) >= 16
+]
+canaries.update(pem_body_lines)
+joined_pem_body = b"".join(pem_body_lines)
+if joined_pem_body:
+    canaries.add(joined_pem_body)
+    try:
+        canaries.add(base64.b64decode(joined_pem_body, validate=True))
+    except ValueError as error:
+        raise SystemExit("TLS private key PEM body is invalid") from error
+
+for secret in list(canaries):
+    if len(secret) < 16:
+        continue
+    try:
+        text = secret.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    if text is not None:
+        canaries.add(json.dumps(text, ensure_ascii=False).encode("utf-8"))
+        canaries.add(urllib.parse.quote(text, safe="").encode("ascii"))
+    canaries.add(base64.b64encode(secret))
+    canaries.add(base64.urlsafe_b64encode(secret).rstrip(b"="))
+
+if any(len(canary) >= 16 and canary in body for canary in canaries):
+    raise SystemExit(f"auth E2E fixture secret found in {target}")
+PY
+}
+
+remove_failed_secret_scan_target() {
+  local target="$1"
+  local label="$2"
+  case "${target}" in
+    "${RUN_DIR}/logs/"* | "${AUTH_E2E_ROOT}/"*) ;;
+    *)
+      echo "refusing to remove unexpected failed secret-scan target: ${target}" >&2
+      return 2
+      ;;
+  esac
+  if ! rm -f -- "${target}"; then
+    printf '%s\n' "${label} secret scan failed; contaminated evidence could not be removed" \
+      > "${RUN_DIR}/SECRET_SCAN_FAILED"
+    echo "could not remove failed secret-scan target: ${target}" >&2
+    return 2
+  fi
+  printf '%s\n' "${label} secret scan failed; contaminated evidence was removed" \
+    > "${RUN_DIR}/SECRET_SCAN_FAILED"
+}
+
+scan_auth_e2e_fixture_secrets_or_remove() {
+  local target="$1"
+  local status
+  if scan_auth_e2e_fixture_secrets "${target}"; then
+    return 0
+  else
+    status="$?"
+  fi
+  remove_failed_secret_scan_target "${target}" "auth E2E" || return 2
+  return "${status}"
+}
+
+cleanup_auth_e2e() {
+  local cleanup_log
+  if docker inspect "${E2E_BROWSER_CONTAINER}" >/dev/null 2>&1; then
+    docker stop --time 2 "${E2E_BROWSER_CONTAINER}" >/dev/null 2>&1 || true
+    cleanup_log="${RUN_DIR}/logs/auth-e2e-browser-cleanup.log"
+    if [[ ! -e "${cleanup_log}" && ! -L "${cleanup_log}" ]]; then
+      if ! capture_container_log_new "${E2E_BROWSER_CONTAINER}" "${cleanup_log}"; then
+        printf '%s\n' "auth E2E browser cleanup log capture failed" \
+          > "${RUN_DIR}/SECRET_SCAN_FAILED" || true
+      elif [[ -f "${cleanup_log}" ]]; then
+        scan_auth_e2e_fixture_secrets_or_remove "${cleanup_log}" || true
+      fi
+    fi
+    if [[ -f "${AUTH_E2E_BROWSER_LOG}" || -L "${AUTH_E2E_BROWSER_LOG}" ]]; then
+      scan_auth_e2e_fixture_secrets_or_remove "${AUTH_E2E_BROWSER_LOG}" || true
+    fi
+  fi
+  docker rm --force "${E2E_BROWSER_CONTAINER}" >/dev/null 2>&1 || true
+
+  if docker inspect "${E2E_MASTER_CONTAINER}" >/dev/null 2>&1; then
+    docker stop --time 5 "${E2E_MASTER_CONTAINER}" >/dev/null 2>&1 || true
+    cleanup_log="${RUN_DIR}/logs/auth-e2e-master-cleanup.log"
+    if [[ ! -e "${cleanup_log}" && ! -L "${cleanup_log}" ]]; then
+      if ! capture_container_log_new "${E2E_MASTER_CONTAINER}" "${cleanup_log}"; then
+        printf '%s\n' "auth E2E Master cleanup log capture failed" \
+          > "${RUN_DIR}/SECRET_SCAN_FAILED" || true
+      elif [[ -f "${cleanup_log}" ]]; then
+        scan_auth_e2e_fixture_secrets_or_remove "${cleanup_log}" || true
+      fi
+    fi
+    if [[ -f "${AUTH_E2E_MASTER_LOG}" || -L "${AUTH_E2E_MASTER_LOG}" ]]; then
+      scan_auth_e2e_fixture_secrets_or_remove "${AUTH_E2E_MASTER_LOG}" || true
+    fi
+  fi
+  docker rm --force "${E2E_MASTER_CONTAINER}" >/dev/null 2>&1 || true
+
+  rm -f -- \
+    "${AUTH_E2E_DATABASE_TEMP}" \
+    "${AUTH_E2E_DATABASE_TEMP}-wal" \
+    "${AUTH_E2E_DATABASE_TEMP}-shm" \
+    "${AUTH_E2E_DATABASE_TEMP}-journal" \
+    "${AUTH_E2E_DATABASE_DUMP_TEMP}" \
+    "${AUTH_E2E_GATE_ATTESTATION_TEMP}" \
+    "${AUTH_E2E_SCAN_MARKER_TEMP}"
+
+  case "${AUTH_E2E_TEMP_ROOT}" in
+    /opt/nodecontroll/tmp/*.auth-e2e)
+      rm -f -- \
+        "${AUTH_E2E_ROOT_KEY_FILE}" \
+        "${AUTH_E2E_SETUP_TOKEN_FILE}" \
+        "${AUTH_E2E_PASSWORD_FILE}" \
+        "${AUTH_E2E_TLS_KEY_FILE}" \
+        "${AUTH_E2E_TLS_CERTIFICATE_TEMP}" \
+        "${AUTH_E2E_LIVE_DATABASE_FILE}" \
+        "${AUTH_E2E_LIVE_DATABASE_FILE}-wal" \
+        "${AUTH_E2E_LIVE_DATABASE_FILE}-shm" \
+        "${AUTH_E2E_LIVE_DATABASE_FILE}-journal"
+      rmdir -- "${AUTH_E2E_LIVE_DATABASE_DIR}" >/dev/null 2>&1 || true
+      rmdir -- "${AUTH_E2E_TEMP_ROOT}" >/dev/null 2>&1 || true
+      ;;
+  esac
+}
+
 cleanup() {
   local runtime_log="${RUN_DIR}/logs/master-runtime.log"
   local runtime_log_tmp="${RUN_DIR}/logs/master-runtime.log.capturing"
+  cleanup_auth_e2e
   if docker inspect "${SMOKE_CONTAINER}" >/dev/null 2>&1; then
     docker stop "${SMOKE_CONTAINER}" >/dev/null 2>&1 || true
     if docker logs "${SMOKE_CONTAINER}" > "${runtime_log_tmp}" 2>&1; then
       if mv -f -- "${runtime_log_tmp}" "${runtime_log}"; then
-        if ! scan_runtime_secrets "${runtime_log}"; then
-          printf '%s\n' "runtime log secret scan failed during cleanup" \
-            > "${RUN_DIR}/SECRET_SCAN_FAILED" || true
-        fi
+        scan_runtime_secrets_or_remove "${runtime_log}" || true
       else
         printf '%s\n' "runtime log secret scan failed during cleanup" \
           > "${RUN_DIR}/SECRET_SCAN_FAILED" || true
@@ -208,20 +493,67 @@ cleanup() {
   docker network rm "${TEST_NETWORK}" >/dev/null 2>&1 || true
   rm -f "${TEST_SECRET_FILE}" "${TEST_SETUP_TOKEN_FILE}"
   rm -f -- "${CYCLONEDX_CLI_FILE}"
-  case "${LICENSE_NODE_RUNTIME}" in
-    /opt/nodecontroll/tmp/*.license-node)
-      rm -rf -- "${LICENSE_NODE_RUNTIME}"
+  case "${E2E_NODE_RUNTIME}" in
+    /opt/nodecontroll/tmp/*.e2e-node)
+      rm -rf -- "${E2E_NODE_RUNTIME}"
       ;;
   esac
   for isolated_path in "${NODE_WORKSPACE}" "${NODE_PNPM_STORE}" "${PRIVATE_CARGO_HOME}" \
-    "${PRIVATE_CARGO_TEST_TARGET}" "${PRIVATE_CARGO_RELEASE_TARGET}"; do
+    "${PRIVATE_CARGO_TEST_TARGET}"; do
     case "${isolated_path}" in
       /opt/nodecontroll/tmp/*.node-workspace | /opt/nodecontroll/tmp/*.pnpm-store | \
-      /opt/nodecontroll/tmp/*.cargo-home | /opt/nodecontroll/tmp/*.cargo-test-target | \
-      /opt/nodecontroll/tmp/*.cargo-release-target)
+      /opt/nodecontroll/tmp/*.cargo-home | /opt/nodecontroll/tmp/*.cargo-test-target)
         rm -rf -- "${isolated_path}"
         ;;
     esac
+  done
+}
+
+verify_cleanup_complete() {
+  local container path
+  if [[ -e "${RUN_DIR}/SECRET_SCAN_FAILED" || -L "${RUN_DIR}/SECRET_SCAN_FAILED" ]]; then
+    echo "verifier cleanup recorded a failed secret scan" >&2
+    return 1
+  fi
+  for container in \
+    "${SMOKE_CONTAINER}" \
+    "${E2E_MASTER_CONTAINER}" \
+    "${E2E_BROWSER_CONTAINER}" \
+    "${POSTGRES_CONTAINER}"; do
+    if docker inspect "${container}" >/dev/null 2>&1; then
+      echo "verifier cleanup left container ${container}" >&2
+      return 1
+    fi
+  done
+  if docker network inspect "${TEST_NETWORK}" >/dev/null 2>&1; then
+    echo "verifier cleanup left network ${TEST_NETWORK}" >&2
+    return 1
+  fi
+  for path in \
+    "${TEST_SECRET_FILE}" \
+    "${TEST_SETUP_TOKEN_FILE}" \
+    "${CYCLONEDX_CLI_FILE}" \
+    "${E2E_NODE_RUNTIME}" \
+    "${NODE_WORKSPACE}" \
+    "${NODE_PNPM_STORE}" \
+    "${PRIVATE_CARGO_HOME}" \
+    "${PRIVATE_CARGO_TEST_TARGET}" \
+    "${AUTH_E2E_TEMP_ROOT}" \
+    "${AUTH_E2E_DATABASE_TEMP}" \
+    "${AUTH_E2E_DATABASE_TEMP}-wal" \
+    "${AUTH_E2E_DATABASE_TEMP}-shm" \
+    "${AUTH_E2E_DATABASE_TEMP}-journal" \
+    "${AUTH_E2E_DATABASE_DUMP_TEMP}" \
+    "${AUTH_E2E_GATE_ATTESTATION_TEMP}" \
+    "${AUTH_E2E_SCAN_MARKER_TEMP}" \
+    "${AUTH_E2E_MASTER_LOG}.capturing" \
+    "${RUN_DIR}/logs/auth-e2e-browser-cleanup.log.capturing" \
+    "${RUN_DIR}/logs/auth-e2e-master-cleanup.log.capturing" \
+    "${RUN_DIR}/logs/master-runtime.log.capturing"; do
+    if [[ -e "${path}" || -L "${path}" ]]; then
+      echo "verifier cleanup left temporary path ${path}" >&2
+      return 1
+    fi
   done
 }
 
@@ -361,11 +693,520 @@ if any(value in log for value in forbidden_values):
 PY
 }
 
+scan_runtime_secrets_or_remove() {
+  local target="$1"
+  local status
+  if scan_runtime_secrets "${target}"; then
+    return 0
+  else
+    status="$?"
+  fi
+  remove_failed_secret_scan_target "${target}" "Master runtime" || return 2
+  return "${status}"
+}
+
 stop_and_capture_master() {
   local log_file="$1"
   docker stop "${SMOKE_CONTAINER}" >/dev/null || return
-  docker logs "${SMOKE_CONTAINER}" > "${log_file}" 2>&1 || return
+  if ! docker logs "${SMOKE_CONTAINER}" > "${log_file}" 2>&1; then
+    rm -f -- "${log_file}"
+    return 1
+  fi
   docker rm "${SMOKE_CONTAINER}" >/dev/null || return
+}
+
+prepare_auth_e2e_fixtures() {
+  if [[ -e "${AUTH_E2E_ROOT}" || -L "${AUTH_E2E_ROOT}" \
+    || -e "${AUTH_E2E_TEMP_ROOT}" || -L "${AUTH_E2E_TEMP_ROOT}" ]]; then
+    echo "auth E2E output and temporary roots must not pre-exist" >&2
+    return 2
+  fi
+  umask 077
+  mkdir --mode=0700 -- \
+    "${AUTH_E2E_ROOT}" \
+    "${AUTH_E2E_DATABASE_DUMP_DIR}" \
+    "${AUTH_E2E_RUNTIME_LOGS}" \
+    "${AUTH_E2E_TEST_ARTIFACTS}" \
+    "${AUTH_E2E_HANDSHAKE}" \
+    "${AUTH_E2E_TEMP_ROOT}" \
+    "${AUTH_E2E_LIVE_DATABASE_DIR}"
+  : > "${AUTH_E2E_BROWSER_LOG}"
+  chmod 0600 -- "${AUTH_E2E_BROWSER_LOG}"
+
+  for secret_file in \
+    "${AUTH_E2E_ROOT_KEY_FILE}" \
+    "${AUTH_E2E_SETUP_TOKEN_FILE}" \
+    "${AUTH_E2E_PASSWORD_FILE}"; do
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "${secret_file}"
+    [[ -f "${secret_file}" && ! -L "${secret_file}" \
+      && "$(stat -c '%a' "${secret_file}")" == "600" \
+      && "$(wc -c < "${secret_file}")" -eq 64 ]] || return 2
+  done
+
+  command -v openssl >/dev/null
+  openssl req \
+    -x509 \
+    -newkey rsa:3072 \
+    -sha256 \
+    -nodes \
+    -days 1 \
+    -subj '/CN=127.0.0.1' \
+    -addext 'subjectAltName=IP:127.0.0.1' \
+    -keyout "${AUTH_E2E_TLS_KEY_FILE}" \
+    -out "${AUTH_E2E_TLS_CERTIFICATE_TEMP}"
+  chmod 0600 -- "${AUTH_E2E_TLS_KEY_FILE}" "${AUTH_E2E_TLS_CERTIFICATE_TEMP}"
+  [[ -f "${AUTH_E2E_TLS_KEY_FILE}" && ! -L "${AUTH_E2E_TLS_KEY_FILE}" \
+    && -f "${AUTH_E2E_TLS_CERTIFICATE_TEMP}" && ! -L "${AUTH_E2E_TLS_CERTIFICATE_TEMP}" ]] || return 2
+  openssl pkey -in "${AUTH_E2E_TLS_KEY_FILE}" -check -noout
+  openssl x509 -in "${AUTH_E2E_TLS_CERTIFICATE_TEMP}" -checkend 0 -noout
+  openssl x509 -in "${AUTH_E2E_TLS_CERTIFICATE_TEMP}" -noout -ext subjectAltName \
+    | grep -F 'IP Address:127.0.0.1' >/dev/null
+  cmp \
+    <(openssl pkey -in "${AUTH_E2E_TLS_KEY_FILE}" -pubout 2>/dev/null) \
+    <(openssl x509 -in "${AUTH_E2E_TLS_CERTIFICATE_TEMP}" -pubkey -noout)
+  install -m 0400 -- "${AUTH_E2E_TLS_CERTIFICATE_TEMP}" "${AUTH_E2E_TLS_CERTIFICATE}"
+
+  python3 - \
+    "${AUTH_E2E_GATE_ATTESTATION}" \
+    "${SOURCE_REVISION}" \
+    "${PLAYWRIGHT_IMAGE_ID}" \
+    "${RUN_ID}" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+destination, revision, image_id, run_id = sys.argv[1:]
+path = pathlib.Path(destination)
+temporary = path.with_name(f".{path.name}.temporary")
+payload = {
+    "browser_image_digest": image_id,
+    "run_id": run_id,
+    "source_revision": revision,
+}
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+    stream.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    stream.flush()
+    os.fsync(stream.fileno())
+os.link(temporary, path)
+temporary.unlink()
+PY
+  chmod 0600 -- "${AUTH_E2E_GATE_ATTESTATION}"
+}
+
+start_auth_e2e_master() {
+  [[ -d "${AUTH_E2E_LIVE_DATABASE_DIR}" && ! -L "${AUTH_E2E_LIVE_DATABASE_DIR}" \
+    && -z "$(find "${AUTH_E2E_LIVE_DATABASE_DIR}" -mindepth 1 -print -quit)" ]] || return 2
+  docker run --detach \
+    --name "${E2E_MASTER_CONTAINER}" \
+    --network host \
+    --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+    --stop-timeout 10 \
+    -e NODECONTROLL__HTTP__LISTEN=127.0.0.1:18081 \
+    -e NODECONTROLL__HTTP__PUBLIC_ORIGIN=https://127.0.0.1:18443 \
+    -e NODECONTROLL__DATABASE__URL='sqlite:///var/lib/nodecontroll/control.db?mode=rwc' \
+    -e NODECONTROLL__SECRETS__ROOT_KEY_FILE=/run/secrets/nodecontroll-root-key \
+    -e NODECONTROLL__SECRETS__SETUP_TOKEN_FILE=/run/secrets/nodecontroll-setup-token \
+    -v "${AUTH_E2E_ROOT_KEY_FILE}:/run/secrets/nodecontroll-root-key:ro" \
+    -v "${AUTH_E2E_SETUP_TOKEN_FILE}:/run/secrets/nodecontroll-setup-token:ro" \
+    -v "${AUTH_E2E_LIVE_DATABASE_DIR}:/var/lib/nodecontroll" \
+    -v "${ACTIONS_ARTIFACT_ROOT}:/compiled:ro" \
+    -w /compiled \
+    "${RUST_IMAGE_ID}" \
+    /compiled/bin/nodecontroll-master
+}
+
+start_auth_e2e_browser() {
+  [[ -d "${E2E_NODE_RUNTIME}/usr/local" && ! -L "${E2E_NODE_RUNTIME}/usr/local" ]] || return 2
+  docker run --detach \
+    --name "${E2E_BROWSER_CONTAINER}" \
+    --network host \
+    --ipc host \
+    --init \
+    --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+    -e CI=true \
+    -e HOME=/tmp/browser-home \
+    -e XDG_CACHE_HOME=/tmp/browser-cache \
+    -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    -e NODECONTROLL_E2E_BASE_URL=https://127.0.0.1:18443/ \
+    -e NODECONTROLL_E2E_UPSTREAM_URL=http://127.0.0.1:18081/ \
+    -e NODECONTROLL_E2E_DIST_DIR=/evidence/compiled/web \
+    -e NODECONTROLL_E2E_RUN_ROOT=/evidence \
+    -e NODECONTROLL_E2E_TLS_KEY_FILE=/run/auth-e2e/tls-key.pem \
+    -e NODECONTROLL_E2E_TLS_CERT_FILE=/run/auth-e2e/tls-certificate.pem \
+    -e NODECONTROLL_E2E_SETUP_TOKEN_FILE=/run/auth-e2e/setup-token \
+    -e NODECONTROLL_E2E_PASSWORD_FILE=/run/auth-e2e/password \
+    -e NODECONTROLL_E2E_ROOT_KEY_FILE=/run/auth-e2e/root-key \
+    -e NODECONTROLL_E2E_RUN_ID="${RUN_ID}" \
+    -e NODECONTROLL_E2E_SOURCE_REVISION="${SOURCE_REVISION}" \
+    -e NODECONTROLL_E2E_BROWSER_IMAGE_DIGEST="${PLAYWRIGHT_IMAGE_ID}" \
+    -e NODECONTROLL_E2E_EVIDENCE_FILE=/evidence/browser/handshake/evidence.json \
+    -e NODECONTROLL_E2E_BEHAVIOR_READY_FILE=/evidence/browser/handshake/behavior-ready \
+    -e NODECONTROLL_E2E_SCAN_READY_FILE=/evidence/browser/handshake/scan-ready \
+    -e NODECONTROLL_E2E_GATE_LOG_FILE=/evidence/browser/gate-runtime.log \
+    -v "${NODE_WORKSPACE}:/workspace:ro" \
+    -v "${RUN_DIR}:/evidence:ro" \
+    -v "${AUTH_E2E_HANDSHAKE}:/evidence/browser/handshake:rw" \
+    -v "${E2E_NODE_RUNTIME}/usr/local:/node-runtime:ro" \
+    -v "${AUTH_E2E_TLS_KEY_FILE}:/run/auth-e2e/tls-key.pem:ro" \
+    -v "${AUTH_E2E_TLS_CERTIFICATE}:/run/auth-e2e/tls-certificate.pem:ro" \
+    -v "${AUTH_E2E_SETUP_TOKEN_FILE}:/run/auth-e2e/setup-token:ro" \
+    -v "${AUTH_E2E_PASSWORD_FILE}:/run/auth-e2e/password:ro" \
+    -v "${AUTH_E2E_ROOT_KEY_FILE}:/run/auth-e2e/root-key:ro" \
+    -w /workspace/apps/web \
+    "${PLAYWRIGHT_IMAGE}" \
+    /node-runtime/bin/node /workspace/apps/web/e2e/auth-rotation.mjs
+}
+
+wait_auth_e2e_behavior_ready() {
+  local deadline=$((SECONDS + 120)) state
+  while (( SECONDS < deadline )); do
+    state="$(docker inspect "${E2E_BROWSER_CONTAINER}" --format '{{.State.Running}} {{.State.ExitCode}}' 2>/dev/null)" || return 1
+    if [[ -e "${AUTH_E2E_BEHAVIOR_MARKER}" || -L "${AUTH_E2E_BEHAVIOR_MARKER}" ]]; then
+      [[ "${state}" == true\ * \
+        && -f "${AUTH_E2E_BEHAVIOR_MARKER}" \
+        && ! -L "${AUTH_E2E_BEHAVIOR_MARKER}" \
+        && "$(stat -c '%a' "${AUTH_E2E_BEHAVIOR_MARKER}")" == "600" ]] || return 2
+      cmp -s -- "${AUTH_E2E_BEHAVIOR_MARKER}" <(printf '%s\n' "${RUN_ID}") || return 2
+      return 0
+    fi
+    [[ "${state}" == true\ * ]] || {
+      echo "auth E2E browser exited before behavior-ready: ${state}" >&2
+      return 1
+    }
+    sleep 0.1
+  done
+  echo "timed out waiting for auth E2E behavior-ready" >&2
+  return 1
+}
+
+freeze_auth_e2e_artifacts() {
+  local state
+  docker stop --time 10 "${E2E_MASTER_CONTAINER}" >/dev/null
+  state="$(docker inspect "${E2E_MASTER_CONTAINER}" --format '{{.State.Running}} {{.State.ExitCode}}')"
+  [[ "${state}" == "false 0" ]] || {
+    echo "auth E2E Master did not stop cleanly: ${state}" >&2
+    return 1
+  }
+  capture_container_log_new "${E2E_MASTER_CONTAINER}" "${AUTH_E2E_MASTER_LOG}"
+  docker rm "${E2E_MASTER_CONTAINER}" >/dev/null
+  scan_auth_e2e_fixture_secrets_or_remove "${AUTH_E2E_MASTER_LOG}"
+
+  python3 - \
+    "${AUTH_E2E_LIVE_DATABASE_FILE}" \
+    "${AUTH_E2E_DATABASE_FILE}" \
+    "${AUTH_E2E_DATABASE_DUMP}" <<'PY'
+import os
+import pathlib
+import sqlite3
+import stat
+import sys
+
+source_path, snapshot_path, dump_path = map(pathlib.Path, sys.argv[1:])
+source_metadata = source_path.lstat()
+if not stat.S_ISREG(source_metadata.st_mode) or stat.S_ISLNK(source_metadata.st_mode):
+    raise SystemExit("live auth E2E database is not a regular file")
+for output in (snapshot_path, dump_path):
+    if output.exists() or output.is_symlink():
+        raise SystemExit(f"refusing to overwrite auth E2E database evidence: {output}")
+    parent_metadata = output.parent.lstat()
+    if not stat.S_ISDIR(parent_metadata.st_mode) or stat.S_ISLNK(parent_metadata.st_mode):
+        raise SystemExit(f"database evidence parent is not a real directory: {output.parent}")
+
+source = sqlite3.connect(f"file:{source_path}?mode=rw", uri=True)
+try:
+    checkpoint = source.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    if checkpoint is None or checkpoint[0] != 0:
+        raise SystemExit(f"auth E2E WAL checkpoint remained busy: {checkpoint!r}")
+    if source.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+        raise SystemExit("live auth E2E database failed integrity_check")
+    if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise SystemExit("live auth E2E database failed foreign_key_check")
+    snapshot_temporary = snapshot_path.with_name(f".{snapshot_path.name}.temporary")
+    if snapshot_temporary.exists() or snapshot_temporary.is_symlink():
+        raise SystemExit("auth E2E snapshot temporary path already exists")
+    destination = sqlite3.connect(snapshot_temporary)
+    try:
+        source.backup(destination)
+        journal_mode = destination.execute("PRAGMA journal_mode=DELETE").fetchone()
+        if journal_mode is None or str(journal_mode[0]).lower() != "delete":
+            raise SystemExit(
+                f"auth E2E database snapshot could not leave WAL mode: {journal_mode!r}"
+            )
+        if destination.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+            raise SystemExit("auth E2E database snapshot failed integrity_check")
+        if destination.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise SystemExit("auth E2E database snapshot failed foreign_key_check")
+    finally:
+        destination.close()
+finally:
+    source.close()
+
+for suffix in ("-wal", "-shm", "-journal"):
+    sidecar = pathlib.Path(str(snapshot_temporary) + suffix)
+    if sidecar.exists() or sidecar.is_symlink():
+        raise SystemExit(f"auth E2E temporary snapshot contains a forbidden sidecar: {sidecar}")
+
+with snapshot_temporary.open("rb+") as stream:
+    os.fsync(stream.fileno())
+os.link(snapshot_temporary, snapshot_path)
+snapshot_temporary.unlink()
+for suffix in ("-wal", "-shm", "-journal"):
+    sidecar = pathlib.Path(str(snapshot_path) + suffix)
+    if sidecar.exists() or sidecar.is_symlink():
+        raise SystemExit(f"auth E2E snapshot contains a forbidden sidecar: {sidecar}")
+
+dump_temporary = dump_path.with_name(f".{dump_path.name}.temporary")
+descriptor = os.open(dump_temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+snapshot = sqlite3.connect(f"file:{snapshot_path}?mode=ro&immutable=1", uri=True)
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+        for line in snapshot.iterdump():
+            stream.write(line)
+            stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+finally:
+    snapshot.close()
+if dump_temporary.stat().st_size == 0:
+    raise SystemExit("auth E2E database dump is empty")
+os.link(dump_temporary, dump_path)
+dump_temporary.unlink()
+for suffix in ("-wal", "-shm", "-journal"):
+    sidecar = pathlib.Path(str(snapshot_path) + suffix)
+    if sidecar.exists() or sidecar.is_symlink():
+        raise SystemExit(f"auth E2E dump created a forbidden sidecar: {sidecar}")
+for directory in (snapshot_path.parent, dump_path.parent):
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+PY
+  python3 - \
+    "${ACTIONS_ARTIFACT_ROOT}/bin" \
+    "${AUTH_E2E_DATABASE_FILE}" \
+    "${AUTH_E2E_DATABASE_DUMP}" \
+    "${ACTIONS_ARTIFACT_ROOT}/openapi/nodecontroll-v1.json" \
+    "${AUTH_E2E_RUNTIME_LOGS}" \
+    "${AUTH_E2E_TEST_ARTIFACTS}" \
+    "${ACTIONS_ARTIFACT_ROOT}/web" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+def freeze(path):
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        raise SystemExit(f"auth E2E scan target contains a symlink: {path}")
+    if stat.S_ISREG(metadata.st_mode):
+        os.chmod(path, stat.S_IMODE(metadata.st_mode) & ~0o222, follow_symlinks=False)
+        return
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit(f"auth E2E scan target contains a special root: {path}")
+    directories = []
+    for current_root, directory_names, file_names in os.walk(path, topdown=True, followlinks=False):
+        directory_names.sort()
+        file_names.sort()
+        current = pathlib.Path(current_root)
+        directories.append(current)
+        for name in directory_names:
+            child = current / name
+            child_metadata = child.lstat()
+            if not stat.S_ISDIR(child_metadata.st_mode) or stat.S_ISLNK(child_metadata.st_mode):
+                raise SystemExit(f"auth E2E scan target contains a non-directory entry: {child}")
+        for name in file_names:
+            child = current / name
+            child_metadata = child.lstat()
+            if not stat.S_ISREG(child_metadata.st_mode) or stat.S_ISLNK(child_metadata.st_mode):
+                raise SystemExit(f"auth E2E scan target contains a special file: {child}")
+            os.chmod(child, stat.S_IMODE(child_metadata.st_mode) & ~0o222, follow_symlinks=False)
+    for directory in reversed(directories):
+        directory_metadata = directory.lstat()
+        os.chmod(
+            directory,
+            stat.S_IMODE(directory_metadata.st_mode) & ~0o222,
+            follow_symlinks=False,
+        )
+
+for raw_path in sys.argv[1:]:
+    freeze(pathlib.Path(raw_path))
+PY
+}
+
+publish_auth_e2e_scan_ready() {
+  python3 - "${AUTH_E2E_SCAN_MARKER}" "${RUN_ID}" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+run_id = sys.argv[2]
+parent_metadata = path.parent.lstat()
+if not stat.S_ISDIR(parent_metadata.st_mode) or stat.S_ISLNK(parent_metadata.st_mode):
+    raise SystemExit("scan-ready parent must be a real directory")
+if path.exists() or path.is_symlink():
+    raise SystemExit("scan-ready marker must not pre-exist")
+temporary = path.with_name(f".{path.name}.verifier-temporary")
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+    stream.write(run_id + "\n")
+    stream.flush()
+    os.fsync(stream.fileno())
+os.link(temporary, path)
+temporary.unlink()
+directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
+}
+
+wait_auth_e2e_browser_finish() {
+  local deadline=$((SECONDS + 180)) state
+  while (( SECONDS < deadline )); do
+    state="$(docker inspect "${E2E_BROWSER_CONTAINER}" --format '{{.State.Running}} {{.State.ExitCode}}' 2>/dev/null)" || return 1
+    [[ "${state}" == true\ * ]] || break
+    sleep 0.1
+  done
+  [[ "${state:-}" == "false 0" ]] || {
+    echo "auth E2E browser did not finish successfully: ${state:-missing}" >&2
+    return 1
+  }
+  capture_container_log_precreated "${E2E_BROWSER_CONTAINER}" "${AUTH_E2E_BROWSER_LOG}"
+  docker rm "${E2E_BROWSER_CONTAINER}" >/dev/null
+  scan_auth_e2e_fixture_secrets_or_remove "${AUTH_E2E_BROWSER_LOG}"
+  python3 - "${AUTH_E2E_BROWSER_LOG}" <<'PY'
+import pathlib
+import re
+import sys
+
+body = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+if re.fullmatch(
+    r"HTTPS browser rotation passed: evidence\.json \([1-9][0-9]* scanned files\)\n",
+    body,
+) is None:
+    raise SystemExit("auth E2E browser success log contains unexpected output")
+PY
+  chmod 0400 -- "${AUTH_E2E_BROWSER_LOG}"
+}
+
+verify_auth_e2e_evidence() {
+  local certificate_sha
+  certificate_sha="$(sha256sum "${AUTH_E2E_TLS_CERTIFICATE}" | cut -d' ' -f1)"
+  docker run --rm \
+    --network none \
+    --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+    -e HOME=/tmp/node-home \
+    -v "${NODE_WORKSPACE}:/workspace:ro" \
+    -v "${RUN_DIR}:/evidence:ro" \
+    -w /workspace \
+    "${NODE_IMAGE_ID}" \
+    node tools/verify_auth_e2e_evidence.mjs \
+      /evidence/browser/handshake/evidence.json \
+      /evidence \
+      /evidence/browser/handshake/behavior-ready \
+      /evidence/browser/handshake/scan-ready \
+      "${RUN_ID}" \
+      "${SOURCE_REVISION}" \
+      "${PLAYWRIGHT_IMAGE_ID}" \
+      "${PLAYWRIGHT_PACKAGE_VERSION}" \
+      "${PLAYWRIGHT_NODE_VERSION}" \
+      "${PLAYWRIGHT_BROWSER_VERSION}" \
+      "${PLAYWRIGHT_EXECUTABLE_SHA256}" \
+      "${AUTH_E2E_GATE_SHA256}" \
+      "${certificate_sha}"
+}
+
+seal_auth_e2e_artifacts() {
+  python3 - "${AUTH_E2E_ROOT}" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+root_metadata = root.lstat()
+if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode):
+    raise SystemExit("auth E2E evidence root must be a real directory")
+directories = []
+for current_root, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
+    directory_names.sort()
+    file_names.sort()
+    current = pathlib.Path(current_root)
+    directories.append(current)
+    for name in directory_names:
+        metadata = (current / name).lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise SystemExit(f"auth E2E evidence contains non-directory entry: {current / name}")
+    for name in file_names:
+        path = current / name
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise SystemExit(f"auth E2E evidence contains special file: {path}")
+        os.chmod(path, 0o400, follow_symlinks=False)
+for directory in reversed(directories):
+    os.chmod(directory, 0o500, follow_symlinks=False)
+PY
+}
+
+record_auth_e2e_manifest() {
+  python3 - \
+    "${RUN_DIR}/manifest.json" \
+    "${AUTH_E2E_EVIDENCE}" \
+    "${AUTH_E2E_CLOSURE}" \
+    "${AUTH_E2E_TLS_CERTIFICATE}" \
+    "${AUTH_E2E_EVIDENCE#${RUN_DIR}/}" \
+    "${AUTH_E2E_CLOSURE#${RUN_DIR}/}" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+manifest_file, evidence_file, closure_file, certificate_file, evidence_relative, closure_relative = sys.argv[1:]
+manifest_path = pathlib.Path(manifest_file)
+evidence_path = pathlib.Path(evidence_file)
+closure_path = pathlib.Path(closure_file)
+evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+digest = lambda path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+payload["browser_e2e"] = {
+    "closure_file": closure_relative,
+    "closure_sha256": digest(closure_path),
+    "evidence_file": evidence_relative,
+    "evidence_sha256": digest(evidence_path),
+    "scanned_artifact_bytes": evidence["scannedArtifactBytes"],
+    "scanned_artifact_files": evidence["scannedArtifactFiles"],
+    "test": evidence["test"],
+    "tls_certificate_sha256": digest(certificate_file),
+}
+temporary = manifest_path.with_suffix(".json.tmp")
+temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+temporary.replace(manifest_path)
+PY
+}
+
+record_checksums_manifest() {
+  python3 - "${RUN_DIR}/manifest.json" "${RUN_DIR}/checksums.txt" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+manifest_path, checksums_path = map(pathlib.Path, sys.argv[1:])
+payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+payload["checksums_sha256"] = hashlib.sha256(checksums_path.read_bytes()).hexdigest()
+temporary = manifest_path.with_suffix(".json.tmp")
+temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+temporary.replace(manifest_path)
+PY
 }
 
 run_stage() {
@@ -516,7 +1357,7 @@ install_source_verifier() {
 prepare_isolated_build_directories() {
   umask 077
   for directory in "${NODE_WORKSPACE}" "${NODE_PNPM_STORE}" "${PRIVATE_CARGO_HOME}" \
-    "${PRIVATE_CARGO_TEST_TARGET}" "${PRIVATE_CARGO_RELEASE_TARGET}"; do
+    "${PRIVATE_CARGO_TEST_TARGET}"; do
     if [[ -e "${directory}" || -L "${directory}" ]]; then
       echo "isolated build directory must not pre-exist: ${directory}" >&2
       return 2
@@ -537,20 +1378,15 @@ export_node_workspace() {
 }
 
 verify_node_workspace_integrity() {
-  local phase="${1:-dependencies}"
-  if [[ "${phase}" != "dependencies" && "${phase}" != "build" ]]; then
-    echo "invalid Node workspace integrity phase: ${phase}" >&2
-    return 2
-  fi
   python3 "${SOURCE_VERIFIER}" "${SOURCE_REVISION}" "${WORKTREE}" "${NODE_WORKSPACE}"
-  python3 - "${SOURCE_REVISION}" "${WORKTREE}" "${NODE_WORKSPACE}" "${phase}" <<'PY'
+  python3 - "${SOURCE_REVISION}" "${WORKTREE}" "${NODE_WORKSPACE}" <<'PY'
 import os
 import pathlib
 import stat
 import subprocess
 import sys
 
-revision, repository_raw, candidate_raw, phase = sys.argv[1:]
+revision, repository_raw, candidate_raw = sys.argv[1:]
 repository = pathlib.Path(repository_raw).resolve(strict=True)
 candidate = pathlib.Path(candidate_raw).resolve(strict=True)
 environment = os.environ.copy()
@@ -569,8 +1405,6 @@ for item in tracked_files:
     tracked_directories.update(parent.as_posix() for parent in pure.parents if parent.as_posix() != ".")
 
 allowed_roots = [pathlib.PurePosixPath("node_modules"), pathlib.PurePosixPath("apps/web/node_modules")]
-if phase == "build":
-    allowed_roots.append(pathlib.PurePosixPath("apps/web/dist"))
 
 for allowed_root in allowed_roots:
     allowed_path = candidate.joinpath(*allowed_root.parts)
@@ -722,39 +1556,18 @@ verify_artifact_snapshot_integrity() {
 
 extract_pinned_node_runtime() {
   umask 077
-  mkdir --mode=0700 -- "${LICENSE_NODE_RUNTIME}"
+  mkdir --mode=0700 -- "${E2E_NODE_RUNTIME}"
   docker run --rm --entrypoint tar "${NODE_IMAGE_ID}" \
     -C / -cf - \
     usr/local/bin/node \
-    usr/local/bin/pnpm \
-    usr/local/lib/node_modules/pnpm \
-    | tar --extract --file - --directory "${LICENSE_NODE_RUNTIME}"
-  mkdir --mode=0700 -- "${LICENSE_NODE_RUNTIME}/pnpm-store"
+    | tar --extract --file - --directory "${E2E_NODE_RUNTIME}"
 
-  local node_path="${LICENSE_NODE_RUNTIME}/usr/local/bin/node"
-  local pnpm_path="${LICENSE_NODE_RUNTIME}/usr/local/bin/pnpm"
-  local pnpm_target
+  local node_path="${E2E_NODE_RUNTIME}/usr/local/bin/node"
   if [[ ! -f "${node_path}" || -L "${node_path}" || ! -x "${node_path}" ]]; then
     echo "pinned Node image did not yield an executable regular Node binary" >&2
     return 2
   fi
-  if [[ ! -L "${pnpm_path}" ]]; then
-    echo "pinned Node image did not yield the expected pnpm symlink" >&2
-    return 2
-  fi
-  pnpm_target="$(readlink -f "${pnpm_path}")"
-  case "${pnpm_target}" in
-    "${LICENSE_NODE_RUNTIME}"/usr/local/lib/node_modules/pnpm/*) ;;
-    *)
-      echo "pinned pnpm entry point escapes the extracted runtime: ${pnpm_target}" >&2
-      return 2
-      ;;
-  esac
-  if [[ ! -f "${pnpm_target}" || -L "${pnpm_target}" ]]; then
-    echo "pinned pnpm entry point is not a regular file" >&2
-    return 2
-  fi
-  printf '%s\n' "extracted pinned Node.js and pnpm runtime from ${NODE_IMAGE_ID}"
+  printf '%s\n' "extracted pinned Node.js runtime from ${NODE_IMAGE_ID}"
 }
 
 download_pinned_cyclonedx_cli() {
@@ -792,115 +1605,6 @@ download_pinned_cyclonedx_cli() {
       ;;
   esac
   printf '%s\n' "verified CycloneDX CLI ${version_output} sha256:${actual_sha}"
-}
-
-prepare_license_rebuild_directory() {
-  case "${LICENSE_REBUILD_DIR}" in
-    "${RUN_DIR}"/provenance/rebuilt-notices) ;;
-    *)
-      echo "refusing unexpected notices rebuild path: ${LICENSE_REBUILD_DIR}" >&2
-      return 2
-      ;;
-  esac
-  if [[ -e "${LICENSE_REBUILD_DIR}" || -L "${LICENSE_REBUILD_DIR}" ]]; then
-    echo "notices rebuild path must not pre-exist: ${LICENSE_REBUILD_DIR}" >&2
-    return 2
-  fi
-  mkdir --mode=0755 -- "${LICENSE_REBUILD_DIR}"
-  if [[ -n "$(find "${LICENSE_REBUILD_DIR}" -mindepth 1 -print -quit)" ]]; then
-    echo "notices rebuild path is not empty" >&2
-    return 2
-  fi
-}
-
-compare_notice_trees() {
-  local expected_root="$1"
-  local actual_root="$2"
-  python3 - "${expected_root}" "${actual_root}" <<'PY'
-import hashlib
-import os
-import pathlib
-import stat
-import sys
-
-expected_root = pathlib.Path(sys.argv[1])
-actual_root = pathlib.Path(sys.argv[2])
-
-def inventory(root: pathlib.Path, label: str):
-    try:
-        root_stat = root.lstat()
-    except OSError as error:
-        raise SystemExit(f"{label} root is missing or unreadable: {error}") from error
-    if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
-        raise SystemExit(f"{label} root must be a non-symlink directory")
-    directories = set()
-    files = {}
-    stack = [(root, pathlib.PurePosixPath())]
-    while stack:
-        directory, relative_directory = stack.pop()
-        try:
-            entries = sorted(os.scandir(directory), key=lambda item: item.name)
-        except OSError as error:
-            raise SystemExit(f"cannot enumerate {label} path {relative_directory}: {error}") from error
-        for entry in entries:
-            relative = relative_directory / entry.name
-            try:
-                metadata = entry.stat(follow_symlinks=False)
-            except OSError as error:
-                raise SystemExit(f"cannot inspect {label} path {relative}: {error}") from error
-            if stat.S_ISLNK(metadata.st_mode):
-                raise SystemExit(f"{label} contains a symlink: {relative}")
-            if stat.S_ISDIR(metadata.st_mode):
-                directories.add(relative.as_posix())
-                stack.append((pathlib.Path(entry.path), relative))
-                continue
-            if not stat.S_ISREG(metadata.st_mode):
-                raise SystemExit(f"{label} contains a non-regular entry: {relative}")
-            digest = hashlib.sha256()
-            with open(entry.path, "rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            files[relative.as_posix()] = (metadata.st_size, digest.hexdigest(), pathlib.Path(entry.path))
-    if not files:
-        raise SystemExit(f"{label} contains no files")
-    return directories, files
-
-def equal_bytes(left: pathlib.Path, right: pathlib.Path) -> bool:
-    with left.open("rb") as left_stream, right.open("rb") as right_stream:
-        while True:
-            left_chunk = left_stream.read(1024 * 1024)
-            right_chunk = right_stream.read(1024 * 1024)
-            if left_chunk != right_chunk:
-                return False
-            if not left_chunk:
-                return True
-
-expected_directories, expected_files = inventory(expected_root, "Actions notices")
-actual_directories, actual_files = inventory(actual_root, "VPS-rebuilt notices")
-if expected_directories != actual_directories:
-    raise SystemExit(
-        "notices directory closure mismatch: "
-        f"missing={sorted(expected_directories - actual_directories)!r} "
-        f"extra={sorted(actual_directories - expected_directories)!r}"
-    )
-if set(expected_files) != set(actual_files):
-    raise SystemExit(
-        "notices file closure mismatch: "
-        f"missing={sorted(set(expected_files) - set(actual_files))!r} "
-        f"extra={sorted(set(actual_files) - set(expected_files))!r}"
-    )
-for relative in sorted(expected_files):
-    expected_size, expected_hash, expected_path = expected_files[relative]
-    actual_size, actual_hash, actual_path = actual_files[relative]
-    if (expected_size, expected_hash) != (actual_size, actual_hash):
-        raise SystemExit(
-            f"notices content mismatch for {relative}: "
-            f"Actions=({expected_size}, {expected_hash}) VPS=({actual_size}, {actual_hash})"
-        )
-    if not equal_bytes(expected_path, actual_path):
-        raise SystemExit(f"notices byte comparison failed for {relative}")
-print(f"reproduced {len(expected_files)} notices files byte-for-byte")
-PY
 }
 
 validate_archive_members() {
@@ -2052,38 +2756,6 @@ print(f"verified Agent artifact identity at application version {sys.argv[2]}")
 PY
 }
 
-prepare_vps_release() {
-  if [[ -e "${VPS_RELEASE_ROOT}" || -L "${VPS_RELEASE_ROOT}" ]]; then
-    echo "VPS release output destination must not pre-exist" >&2
-    return 2
-  fi
-  mkdir --mode=0755 -- "${VPS_RELEASE_ROOT}" "${VPS_RELEASE_ROOT}/bin"
-  install -m 0755 -- "${PRIVATE_CARGO_RELEASE_TARGET}/release/nodecontroll-master" \
-    "${VPS_RELEASE_ROOT}/bin/nodecontroll-master"
-  install -m 0755 -- "${PRIVATE_CARGO_RELEASE_TARGET}/release/nodecontroll-agent" \
-    "${VPS_RELEASE_ROOT}/bin/nodecontroll-agent"
-}
-
-export_vps_openapi() {
-  local temporary="${VPS_OPENAPI}.tmp"
-  if [[ -e "${VPS_OPENAPI}" || -L "${VPS_OPENAPI}" || -e "${temporary}" || -L "${temporary}" ]]; then
-    echo "VPS OpenAPI output destination must not pre-exist" >&2
-    return 2
-  fi
-  docker run --rm \
-    --network none \
-    --read-only \
-    --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
-    -v "${PRIVATE_CARGO_RELEASE_TARGET}:/cargo-target:ro" \
-    "${RUST_IMAGE_ID}" \
-    /cargo-target/release/export-openapi > "${temporary}"
-  if [[ ! -s "${temporary}" || -L "${temporary}" ]]; then
-    echo "VPS release OpenAPI exporter produced no regular output" >&2
-    return 2
-  fi
-  mv -- "${temporary}" "${VPS_OPENAPI}"
-}
-
 verify_build_metadata() {
   local metadata_file="$1"
   local expected_run_id="$2"
@@ -2199,6 +2871,8 @@ assert_image "${RUST_IMAGE}" "${RUST_IMAGE_ID}"
 assert_image "${NODE_IMAGE}" "${NODE_IMAGE_ID}"
 assert_image "${POSTGRES_IMAGE}" "${POSTGRES_IMAGE_ID}"
 assert_repo_digest "${POSTGRES_IMAGE}" "${POSTGRES_IMAGE}"
+assert_image "${PLAYWRIGHT_IMAGE}" "${PLAYWRIGHT_IMAGE_ID}"
+assert_repo_digest "${PLAYWRIGHT_IMAGE}" "${PLAYWRIGHT_IMAGE}"
 
 readonly SOURCE_REVISION="$(git --no-replace-objects rev-parse --verify HEAD)"
 if [[ ! "${SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]; then
@@ -2235,6 +2909,18 @@ readonly LICENSE_COLLECTOR_BLOB="$(git --no-replace-objects rev-parse --verify "
 readonly LICENSE_COLLECTOR_SHA256="$(git --no-replace-objects cat-file blob "${LICENSE_COLLECTOR_BLOB}" | sha256sum | cut -d' ' -f1)"
 if [[ ! "${LICENSE_COLLECTOR_BLOB}" =~ ^[0-9a-f]{40}$ || ! "${LICENSE_COLLECTOR_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
   echo "could not pin the license collector source identity" >&2
+  exit 2
+fi
+
+readonly AUTH_E2E_GATE_BLOB="$(git --no-replace-objects rev-parse --verify "${SOURCE_REVISION}:apps/web/e2e/auth-rotation.mjs")"
+readonly AUTH_E2E_GATE_SHA256="$(git --no-replace-objects cat-file blob "${AUTH_E2E_GATE_BLOB}" | sha256sum | cut -d' ' -f1)"
+readonly AUTH_E2E_VALIDATOR_BLOB="$(git --no-replace-objects rev-parse --verify "${SOURCE_REVISION}:tools/verify_auth_e2e_evidence.mjs")"
+readonly AUTH_E2E_VALIDATOR_SHA256="$(git --no-replace-objects cat-file blob "${AUTH_E2E_VALIDATOR_BLOB}" | sha256sum | cut -d' ' -f1)"
+if [[ ! "${AUTH_E2E_GATE_BLOB}" =~ ^[0-9a-f]{40}$ \
+  || ! "${AUTH_E2E_GATE_SHA256}" =~ ^[0-9a-f]{64}$ \
+  || ! "${AUTH_E2E_VALIDATOR_BLOB}" =~ ^[0-9a-f]{40}$ \
+  || ! "${AUTH_E2E_VALIDATOR_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "could not pin the auth E2E gate and evidence validator source identity" >&2
   exit 2
 fi
 
@@ -2308,7 +2994,11 @@ python3 - "${RUN_DIR}/manifest.json" "${RUN_ID}" "${STARTED_AT}" "${SOURCE_REVIS
   "${RUST_IMAGE_ID}" "${NODE_IMAGE_ID}" "${POSTGRES_IMAGE_ID}" "${ACTIONS_ARTIFACT}" "${ACTIONS_ARTIFACT_SNAPSHOT}" \
   "${ACTIONS_ARTIFACT_SHA}" "${CARGO_LOCK_SHA}" "${PNPM_LOCK_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_ARTIFACT_ID}" \
   "${LICENSE_COLLECTOR_BLOB}" "${LICENSE_COLLECTOR_SHA256}" "${CYCLONEDX_CLI_VERSION}" "${CYCLONEDX_CLI_SHA256}" \
-  "${SOURCE_VERIFIER_BLOB}" "${SOURCE_VERIFIER_SHA256}" "${APPLICATION_VERSION}" "${SOURCE_DATE_EPOCH}" <<'PY'
+  "${SOURCE_VERIFIER_BLOB}" "${SOURCE_VERIFIER_SHA256}" "${APPLICATION_VERSION}" "${SOURCE_DATE_EPOCH}" \
+  "${PLAYWRIGHT_IMAGE}" "${PLAYWRIGHT_IMAGE_ID}" "${PLAYWRIGHT_PACKAGE_VERSION}" "${PLAYWRIGHT_NODE_VERSION}" \
+  "${PLAYWRIGHT_BROWSER_VERSION}" "${PLAYWRIGHT_EXECUTABLE_SHA256}" \
+  "${AUTH_E2E_GATE_BLOB}" "${AUTH_E2E_GATE_SHA256}" \
+  "${AUTH_E2E_VALIDATOR_BLOB}" "${AUTH_E2E_VALIDATOR_SHA256}" <<'PY'
 import json
 import pathlib
 import platform
@@ -2318,9 +3008,12 @@ import sys
  artifact_source, artifact_snapshot, artifact_sha, cargo_lock, pnpm_lock,
  github_run_id, github_artifact_id, collector_blob, collector_sha,
  cyclonedx_version, cyclonedx_sha, verifier_blob, verifier_sha,
- application_version, source_date_epoch) = sys.argv[1:]
+ application_version, source_date_epoch, playwright_image, playwright_image_id,
+ playwright_version, playwright_node_version, browser_version, browser_executable_sha,
+ auth_e2e_gate_blob, auth_e2e_gate_sha, auth_e2e_validator_blob,
+ auth_e2e_validator_sha) = sys.argv[1:]
 payload = {
-    "schema_version": 2,
+    "schema_version": 3,
     "run_id": run_id,
     "status": "running",
     "started_at": started_at,
@@ -2340,10 +3033,19 @@ payload = {
         "artifact_id": int(github_artifact_id),
         "artifact_sha256": artifact_sha,
     },
-    "builders": {
+    "verification_images": {
         "rust": rust_builder,
         "node": node_builder,
         "postgres": postgres_image,
+        "playwright": {
+            "browser_executable_sha256": browser_executable_sha,
+            "browser_version": browser_version,
+            "image": playwright_image,
+            "image_id": playwright_image_id,
+            "node_runtime_image_id": node_builder,
+            "node_version": playwright_node_version,
+            "package_version": playwright_version,
+        },
     },
     "artifact_source_file": artifact_source,
     "artifact_file": artifact_snapshot,
@@ -2358,10 +3060,18 @@ payload = {
         "sha256": verifier_sha,
     },
     "validators": {
+        "auth_e2e_evidence": {
+            "git_blob": auth_e2e_validator_blob,
+            "sha256": auth_e2e_validator_sha,
+        },
         "cyclonedx_cli": {
             "version": cyclonedx_version,
             "sha256": cyclonedx_sha,
         },
+    },
+    "auth_e2e_gate": {
+        "git_blob": auth_e2e_gate_blob,
+        "sha256": auth_e2e_gate_sha,
     },
     "host": {
         "system": platform.system(),
@@ -2488,31 +3198,6 @@ readonly RUST_RUN=(
   "${RUST_IMAGE_ID}"
 )
 
-readonly RUST_RELEASE_RUN=(
-  docker run --rm
-  --network none
-  --read-only
-  --tmpfs /tmp:rw,nosuid,nodev,mode=1777
-  --tmpfs /cargo-home:rw,nosuid,nodev,mode=0755
-  -e HOME=/tmp/rust-home
-  -e CARGO_HOME=/cargo-home
-  -e RUSTUP_HOME=/usr/local/rustup
-  -e RUSTUP_TOOLCHAIN=1.98.0
-  -e CARGO_TARGET_DIR=/cargo-target
-  -e CARGO_NET_OFFLINE=true
-  -e CARGO_INCREMENTAL=0
-  -e SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}"
-  -e TZ=UTC
-  -e LANG=C.UTF-8
-  -e LC_ALL=C.UTF-8
-  -v "${WORKTREE}:/workspace:ro"
-  -v "${PRIVATE_CARGO_HOME}/registry:/cargo-home/registry:ro"
-  -v "${PRIVATE_CARGO_HOME}/git:/cargo-home/git:ro"
-  -v "${PRIVATE_CARGO_RELEASE_TARGET}:/cargo-target"
-  -w /workspace
-  "${RUST_IMAGE_ID}"
-)
-
 readonly NODE_INSTALL_RUN=(
   docker run --rm
   --network bridge
@@ -2521,6 +3206,7 @@ readonly NODE_INSTALL_RUN=(
   -e CI=true
   -e HOME=/tmp/node-home
   -e XDG_CACHE_HOME=/tmp/cache
+  -e npm_config_enable_global_virtual_store=false
   -e SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}"
   -e TZ=UTC
   -e LANG=C.UTF-8
@@ -2539,6 +3225,7 @@ readonly NODE_RUN=(
   -e CI=true
   -e HOME=/tmp/node-home
   -e XDG_CACHE_HOME=/tmp/cache
+  -e npm_config_enable_global_virtual_store=false
   -e SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}"
   -e TZ=UTC
   -e LANG=C.UTF-8
@@ -2547,43 +3234,12 @@ readonly NODE_RUN=(
   "${NODE_IMAGE_ID}"
 )
 
-readonly LICENSE_RUN=(
-  docker run --rm
-  --network none
-  --read-only
-  --tmpfs /tmp:rw,nosuid,nodev,mode=1777
-  --tmpfs /cargo-home:rw,nosuid,nodev,mode=0755
-  -e HOME=/tmp/license-home
-  -e CARGO_HOME=/cargo-home
-  -e RUSTUP_HOME=/usr/local/rustup
-  -e CARGO_NET_OFFLINE=true
-  -e RUSTUP_TOOLCHAIN=1.98.0
-  -e SOURCE_REVISION="${SOURCE_REVISION}"
-  -e SOURCE_REPOSITORY="${GITHUB_REPOSITORY}"
-  -e PATH=/node-runtime/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-  -v "${NODE_WORKSPACE}:/workspace:ro"
-  -v "${PRIVATE_CARGO_HOME}/registry:/cargo-home/registry:ro"
-  -v "${PRIVATE_CARGO_HOME}/git:/cargo-home/git:ro"
-  -v "${LICENSE_NODE_RUNTIME}/usr/local:/node-runtime:ro"
-  -v "${LICENSE_NODE_RUNTIME}/pnpm-store:/pnpm/store"
-  -v "${LICENSE_REBUILD_DIR}:/rebuilt"
-  -w /workspace
-  "${RUST_IMAGE_ID}"
-  sh -euc
-  'test "$(command -v node)" = /node-runtime/bin/node
-   test "$(command -v pnpm)" = /node-runtime/bin/pnpm
-   test "$(node --version)" = v24.19.0
-   test "$(pnpm --version)" = 11.24.0
-   test -d /rebuilt && test ! -L /rebuilt
-   test -z "$(find /rebuilt -mindepth 1 -print -quit)"
-   exec /node-runtime/bin/node tools/collect_third_party_licenses.mjs /rebuilt'
-)
-
 run_stage cargo-fetch-private "${CARGO_FETCH_RUN[@]}" cargo fetch --locked
 run_stage cargo-fetch-source-integrity verify_source_revision_integrity
 run_stage cargo-input-closure write_directory_closure \
   "${PRIVATE_CARGO_HOME}" "${CARGO_INPUT_CLOSURE}" "private Cargo home"
-run_stage pnpm-install-private "${NODE_INSTALL_RUN[@]}" pnpm install \
+run_stage pnpm-install-private "${NODE_INSTALL_RUN[@]}" pnpm \
+  --config.enable-global-virtual-store=false install \
   --frozen-lockfile --ignore-scripts --package-import-method=copy --store-dir /pnpm/store
 run_stage pnpm-install-source-integrity verify_node_workspace_integrity
 run_stage pnpm-input-closure write_directory_closure \
@@ -2593,21 +3249,8 @@ run_stage private-input-manifest record_private_input_closures
 run_stage cargo-fmt "${RUST_RUN[@]}" cargo fmt --all -- --check
 run_stage cargo-test "${RUST_RUN[@]}" cargo test --locked --workspace --all-targets
 run_stage cargo-clippy "${RUST_RUN[@]}" cargo clippy --locked --workspace --all-targets -- -D warnings
-run_stage cargo-release "${RUST_RELEASE_RUN[@]}" cargo build --locked --workspace --bins --release
-run_stage cargo-release-package prepare_vps_release
-run_stage vps-release-elf-check verify_elf_binaries "${VPS_RELEASE_ROOT}"
-run_stage master-release-reproducible cmp \
-  "${ACTIONS_ARTIFACT_ROOT}/bin/nodecontroll-master" \
-  "${VPS_RELEASE_ROOT}/bin/nodecontroll-master"
-run_stage agent-release-reproducible cmp \
-  "${ACTIONS_ARTIFACT_ROOT}/bin/nodecontroll-agent" \
-  "${VPS_RELEASE_ROOT}/bin/nodecontroll-agent"
-run_stage vps-openapi-export export_vps_openapi
-run_stage vps-openapi-source-match cmp "${VPS_OPENAPI}" openapi/nodecontroll-v1.json
-run_stage vps-openapi-actions-match cmp \
-  "${VPS_OPENAPI}" "${ACTIONS_ARTIFACT_ROOT}/openapi/nodecontroll-v1.json"
-run_stage cargo-post-build-source-integrity verify_source_revision_integrity
-run_stage cargo-input-closure-after-build verify_directory_closure \
+run_stage cargo-post-test-source-integrity verify_source_revision_integrity
+run_stage cargo-input-closure-after-tests verify_directory_closure \
   "${PRIVATE_CARGO_HOME}" "${CARGO_INPUT_CLOSURE}" "private Cargo home"
 run_stage actions-openapi-match cmp \
   "${ACTIONS_ARTIFACT_ROOT}/openapi/nodecontroll-v1.json" \
@@ -2636,7 +3279,9 @@ run_stage web-artifact-check docker run --rm \
   "${NODE_IMAGE_ID}" \
   node tools/verify_web_artifact.mjs /compiled/web
 run_stage node-toolchain-versions "${NODE_RUN[@]}" sh -euc \
-  'test "$(node --version)" = v24.19.0 && test "$(pnpm --version)" = 11.24.0'
+  'test "$(node --version)" = v24.19.0
+   test "$(pnpm --version)" = 11.24.0
+   test "$(pnpm config get enable-global-virtual-store)" = false'
 run_stage license-source-integrity verify_source_revision_integrity
 run_stage npm-installed-license-inventory docker run --rm \
   --network none \
@@ -2647,24 +3292,17 @@ run_stage npm-installed-license-inventory docker run --rm \
   -w /workspace \
   "${NODE_IMAGE_ID}" \
   node tools/verify_installed_npm_license_inventory.mjs /inventory/DEPENDENCIES.json
-run_stage license-node-runtime-extract extract_pinned_node_runtime
-run_stage license-rebuild-directory prepare_license_rebuild_directory
-run_stage license-notices-rebuild "${LICENSE_RUN[@]}"
-run_stage license-notices-reproducible compare_notice_trees \
-  "${ACTIONS_ARTIFACT_ROOT}/notices" \
-  "${LICENSE_REBUILD_DIR}"
-run_stage web-generate "${NODE_RUN[@]}" pnpm --filter @nodecontroll/web generate:api
+run_stage web-generate "${NODE_RUN[@]}" pnpm \
+  --config.enable-global-virtual-store=false --filter @nodecontroll/web generate:api
 run_stage generated-contract-drift verify_node_workspace_integrity
-run_stage web-typecheck "${NODE_RUN[@]}" pnpm --filter @nodecontroll/web typecheck
-run_stage web-lint "${NODE_RUN[@]}" pnpm --filter @nodecontroll/web lint
-run_stage web-test "${NODE_RUN[@]}" pnpm --filter @nodecontroll/web test
-run_stage web-prebuild-source-integrity verify_node_workspace_integrity
-run_stage web-build "${NODE_RUN[@]}" pnpm --filter @nodecontroll/web exec vite build
-run_stage vps-web-artifact-check "${NODE_RUN[@]}" node tools/verify_web_artifact.mjs apps/web/dist
-run_stage web-release-reproducible compare_notice_trees \
-  "${ACTIONS_ARTIFACT_ROOT}/web" "${NODE_WORKSPACE}/apps/web/dist"
-run_stage node-post-build-source-integrity verify_node_workspace_integrity build
-run_stage pnpm-input-closure-after-build verify_directory_closure \
+run_stage web-typecheck "${NODE_RUN[@]}" pnpm \
+  --config.enable-global-virtual-store=false --filter @nodecontroll/web typecheck
+run_stage web-lint "${NODE_RUN[@]}" pnpm \
+  --config.enable-global-virtual-store=false --filter @nodecontroll/web lint
+run_stage web-test "${NODE_RUN[@]}" pnpm \
+  --config.enable-global-virtual-store=false --filter @nodecontroll/web test
+run_stage web-post-test-source-integrity verify_node_workspace_integrity
+run_stage pnpm-input-closure-after-tests verify_directory_closure \
   "${NODE_PNPM_STORE}" "${PNPM_INPUT_CLOSURE}" "private pnpm store"
 
 run_stage secret-key-create bash -c \
@@ -2711,37 +3349,92 @@ run_stage master-smoke docker run --rm \
   "${NODE_IMAGE_ID}" \
   node tools/smoke_master.mjs http://127.0.0.1:18080
 run_stage master-stop-capture stop_and_capture_master "${RUN_DIR}/logs/master-runtime.log"
-run_stage runtime-log-secret-scan scan_runtime_secrets "${RUN_DIR}/logs/master-runtime.log"
+run_stage runtime-log-secret-scan scan_runtime_secrets_or_remove "${RUN_DIR}/logs/master-runtime.log"
 
-run_stage node-final-source-integrity verify_node_workspace_integrity build
+run_stage e2e-node-runtime-extract extract_pinned_node_runtime
+run_stage auth-e2e-fixtures prepare_auth_e2e_fixtures
+run_stage auth-e2e-master-start start_auth_e2e_master
+run_stage auth-e2e-browser-start start_auth_e2e_browser
+run_stage auth-e2e-behavior-ready wait_auth_e2e_behavior_ready
+run_stage auth-e2e-freeze freeze_auth_e2e_artifacts
+run_stage auth-e2e-scan-release publish_auth_e2e_scan_ready
+run_stage auth-e2e-browser-finish wait_auth_e2e_browser_finish
+run_stage auth-e2e-evidence-validate verify_auth_e2e_evidence
+run_stage auth-e2e-evidence-fixture-scan \
+  scan_auth_e2e_fixture_secrets_or_remove "${AUTH_E2E_EVIDENCE}"
+run_stage auth-e2e-seal seal_auth_e2e_artifacts
+run_stage auth-e2e-artifact-closure write_directory_closure \
+  "${AUTH_E2E_ROOT}" "${AUTH_E2E_CLOSURE}" "browser auth E2E evidence"
+run_stage auth-e2e-manifest-record record_auth_e2e_manifest
+
+run_stage node-final-source-integrity verify_node_workspace_integrity
 run_stage cargo-input-closure-final verify_directory_closure \
   "${PRIVATE_CARGO_HOME}" "${CARGO_INPUT_CLOSURE}" "private Cargo home"
 run_stage pnpm-input-closure-final verify_directory_closure \
   "${NODE_PNPM_STORE}" "${PNPM_INPUT_CLOSURE}" "private pnpm store"
+run_stage auth-e2e-artifact-closure-final verify_directory_closure \
+  "${AUTH_E2E_ROOT}" "${AUTH_E2E_CLOSURE}" "browser auth E2E evidence"
 run_stage source-clean-after-tests verify_source_clean_after_tests
 
-cleanup
+run_stage verifier-cleanup cleanup
+run_stage verifier-cleanup-closure verify_cleanup_complete
 
+readonly CHECKSUMS_TEMP="${RUN_DIR}/checksums.txt.temporary"
+if [[ -e "${RUN_DIR}/checksums.txt" || -L "${RUN_DIR}/checksums.txt" \
+  || -e "${CHECKSUMS_TEMP}" || -L "${CHECKSUMS_TEMP}" ]]; then
+  echo "refusing to overwrite formal checksum evidence" >&2
+  exit 2
+fi
+umask 077
 {
   sha256sum Cargo.lock pnpm-lock.yaml openapi/nodecontroll-v1.json
   sha256sum \
     "${SOURCE_VERIFIER}" \
     "${CARGO_INPUT_CLOSURE}" \
     "${PNPM_INPUT_CLOSURE}" \
-    "${VPS_OPENAPI}" \
-    "${VPS_RELEASE_ROOT}/bin/nodecontroll-master" \
-    "${VPS_RELEASE_ROOT}/bin/nodecontroll-agent"
+    "${AUTH_E2E_CLOSURE}"
   printf '%s  %s\n' "${ACTIONS_ARTIFACT_SHA}" "github-actions/nodecontroll-linux-x86_64-glibc2.36.tar.gz"
   (
     cd "${ACTIONS_ARTIFACT_ROOT}"
     sha256sum \
       BUILD-METADATA \
       CONTENTS.sha256 \
+      bin/nodecontroll-master \
+      bin/nodecontroll-agent \
+      openapi/nodecontroll-v1.json \
       notices/DEPENDENCIES.json \
       notices/LICENSES.sha256 \
       notices/bom.cdx.json
+    find web -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
   )
-} > "${RUN_DIR}/checksums.txt"
+  (
+    cd "${RUN_DIR}"
+    find browser -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+  )
+} > "${CHECKSUMS_TEMP}"
+python3 - "${CHECKSUMS_TEMP}" <<'PY'
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+with path.open("rb+") as stream:
+    os.fsync(stream.fileno())
+PY
+ln -- "${CHECKSUMS_TEMP}" "${RUN_DIR}/checksums.txt"
+rm -f -- "${CHECKSUMS_TEMP}"
+python3 - "${RUN_DIR}" <<'PY'
+import os
+import pathlib
+import sys
+
+directory = os.open(pathlib.Path(sys.argv[1]), os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
+record_checksums_manifest
 
 readonly FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 finalize_manifest completed

@@ -30,6 +30,7 @@ env:
   PYTHON_VERSION: 3.11.2
   NODE_VERSION: 24.19.0
   PNPM_VERSION: 11.24.0
+  npm_config_enable_global_virtual_store: "false"
 
 jobs:
   build:
@@ -155,7 +156,7 @@ jobs:
         run: node tools/sanitize_upstream_generated.mjs
 
       - name: Install Web dependencies from the frozen lockfile
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        run: pnpm --config.enable-global-virtual-store=false install --frozen-lockfile --ignore-scripts
 
       - name: Collect third-party licenses and component inventory
         shell: bash
@@ -165,13 +166,13 @@ jobs:
         run: node tools/collect_third_party_licenses.mjs artifacts/notices
 
       - name: Generate the typed Web API SDK
-        run: pnpm web:generate
+        run: pnpm --config.enable-global-virtual-store=false web:generate
 
       - name: Type-check the Web application
-        run: pnpm web:typecheck
+        run: pnpm --config.enable-global-virtual-store=false web:typecheck
 
       - name: Build the Web application
-        run: pnpm --filter @nodecontroll/web exec vite build
+        run: pnpm --config.enable-global-virtual-store=false --filter @nodecontroll/web exec vite build
 
       - name: Reject stale generated contracts
         shell: bash

@@ -10,7 +10,7 @@ use axum::{
     routing::{get, post},
 };
 use nodecontroll_application::{BootstrapCommand, BootstrapServiceError, ControlPlane, ProbeError};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -111,8 +111,16 @@ pub struct BootstrapRequest {
     #[schema(min_length = 3, max_length = 32, pattern = "^[A-Za-z0-9_.-]{3,32}$")]
     pub username: String,
     /// At least 12 Unicode scalar values and at most 1024 UTF-8 bytes.
-    #[schema(format = Password, min_length = 12, max_length = 1024, write_only)]
-    pub password: String,
+    #[serde(deserialize_with = "deserialize_secret_string")]
+    #[schema(value_type = String, format = Password, min_length = 12, max_length = 1024, write_only)]
+    pub password: Zeroizing<String>,
+}
+
+fn deserialize_secret_string<'de, D>(deserializer: D) -> Result<Zeroizing<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Zeroizing::new)
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -152,20 +160,20 @@ pub struct Problem {
     #[serde(skip)]
     #[schema(ignore)]
     pub retry_after_seconds: Option<u32>,
-    #[serde(skip)]
-    #[schema(ignore)]
-    pub clear_session_cookies: bool,
 }
 
 impl IntoResponse for Problem {
     fn into_response(self) -> Response {
         let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let retry_after = self.retry_after_seconds;
-        let clear_session_cookies = self.clear_session_cookies;
         let mut response = (status, Json(self)).into_response();
         response.headers_mut().insert(
             axum::http::header::CONTENT_TYPE,
             axum::http::HeaderValue::from_static("application/problem+json"),
+        );
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
         );
         if let Some(retry_after) = retry_after
             && let Ok(value) = axum::http::HeaderValue::from_str(&retry_after.to_string())
@@ -173,16 +181,6 @@ impl IntoResponse for Problem {
             response
                 .headers_mut()
                 .insert(axum::http::header::RETRY_AFTER, value);
-        }
-        if clear_session_cookies {
-            response.headers_mut().append(
-                axum::http::header::SET_COOKIE,
-                axum::http::HeaderValue::from_static(web_security::clear_session_cookie()),
-            );
-            response.headers_mut().append(
-                axum::http::header::SET_COOKIE,
-                axum::http::HeaderValue::from_static(web_security::clear_csrf_cookie()),
-            );
         }
         response
     }
@@ -270,7 +268,6 @@ fn bootstrap_projection_problem(error: ProbeError, headers: &HeaderMap) -> Probl
             request_id: request_id(headers),
             errors: Box::default(),
             retry_after_seconds: None,
-            clear_session_cookies: false,
         }
     }
 }
@@ -338,11 +335,11 @@ pub async fn initialize_control_plane(
         .web_security
         .validate_browser_origin(&headers)
         .map_err(|_| auth::browser_security_problem(&headers))?;
-    let Json(mut request) = request.map_err(|error| bootstrap_json_problem(error, &headers))?;
+    let Json(request) = request.map_err(|error| bootstrap_json_problem(error, &headers))?;
     let command = BootstrapCommand {
         instance_name: request.instance_name,
         username: request.username,
-        password: Zeroizing::new(std::mem::take(&mut request.password)),
+        password: request.password,
         setup_token: Zeroizing::new(
             headers
                 .get(&SETUP_TOKEN_HEADER)
@@ -401,7 +398,6 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             request_id,
             errors: Box::default(),
             retry_after_seconds: None,
-            clear_session_cookies: false,
         },
         BootstrapServiceError::AlreadyInitialized => Problem {
             type_uri: "urn:nodecontroll:problem:already-initialized",
@@ -412,7 +408,6 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             request_id,
             errors: Box::default(),
             retry_after_seconds: None,
-            clear_session_cookies: false,
         },
         BootstrapServiceError::IdentityConflict => Problem {
             type_uri: "urn:nodecontroll:problem:identity-conflict",
@@ -423,7 +418,6 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             request_id,
             errors: Box::default(),
             retry_after_seconds: None,
-            clear_session_cookies: false,
         },
         BootstrapServiceError::InconsistentState => Problem {
             type_uri: "urn:nodecontroll:problem:bootstrap-state-inconsistent",
@@ -434,7 +428,6 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             request_id,
             errors: Box::default(),
             retry_after_seconds: None,
-            clear_session_cookies: false,
         },
         BootstrapServiceError::RateLimited => Problem {
             type_uri: "urn:nodecontroll:problem:rate-limited",
@@ -445,7 +438,6 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             request_id,
             errors: Box::default(),
             retry_after_seconds: Some(2),
-            clear_session_cookies: false,
         },
         BootstrapServiceError::Unavailable => Problem {
             type_uri: "urn:nodecontroll:problem:dependency-unavailable",
@@ -456,7 +448,6 @@ fn bootstrap_problem(error: BootstrapServiceError, headers: &HeaderMap) -> Probl
             request_id,
             errors: Box::default(),
             retry_after_seconds: None,
-            clear_session_cookies: false,
         },
     }
 }
@@ -501,7 +492,6 @@ fn bootstrap_json_problem(error: JsonRejection, headers: &HeaderMap) -> Problem 
         request_id: request_id(headers),
         errors: Box::default(),
         retry_after_seconds: None,
-        clear_session_cookies: false,
     }
 }
 
@@ -525,7 +515,6 @@ fn validation_problem(
         }]
         .into_boxed_slice(),
         retry_after_seconds: None,
-        clear_session_cookies: false,
     }
 }
 
@@ -558,13 +547,18 @@ pub async fn system_version(
     info(title = "NodeControll API", version = "0.1.0"),
     paths(
         healthz, readyz, get_bootstrap, initialize_control_plane, system_version,
-        auth::login, auth::current_actor, auth::logout
+        auth::login, auth::reauthenticate, auth::current_actor, auth::change_password,
+        auth::list_sessions, auth::logout, auth::logout_all, auth::revoke_session
     ),
     components(schemas(
         HealthResponse, DependencyCheck, ReadinessResponse, ResponseMeta, VersionInfo,
         VersionEnvelope, BootstrapInfo, BootstrapEnvelope, BootstrapRequest, BootstrapCreated,
         BootstrapCreatedEnvelope, FieldError, Problem, auth::LoginRequest, auth::ActorResponse,
-        auth::SessionResponse, auth::AuthenticatedData, auth::AuthenticatedEnvelope
+        auth::SessionResponse, auth::AuthenticatedData, auth::AuthenticatedEnvelope,
+        auth::ReauthenticationMethod, auth::ReauthenticateRequest, auth::ChangePasswordRequest,
+        auth::PasswordChangedData, auth::PasswordChangedEnvelope, auth::LogoutAllRequest,
+        auth::LogoutAllRetainedData, auth::LogoutAllRetainedEnvelope, auth::UserSessionResponse,
+        auth::UserSessionsData, auth::UserSessionsEnvelope
     )),
     modifiers(&SecurityAddon),
     tags(
@@ -623,7 +617,6 @@ async fn not_found(headers: HeaderMap) -> Problem {
         request_id: request_id(&headers),
         errors: Box::default(),
         retry_after_seconds: None,
-        clear_session_cookies: false,
     }
 }
 
@@ -649,8 +642,16 @@ pub fn router(state: AppState) -> Router {
             get(get_bootstrap).post(initialize_control_plane),
         )
         .route("/api/v1/auth/login", post(auth::login))
+        .route("/api/v1/auth/reauth", post(auth::reauthenticate))
         .route("/api/v1/me", get(auth::current_actor))
+        .route("/api/v1/me/password", post(auth::change_password))
+        .route("/api/v1/me/sessions", get(auth::list_sessions))
+        .route(
+            "/api/v1/me/sessions/{session_id}",
+            axum::routing::delete(auth::revoke_session),
+        )
         .route("/api/v1/auth/logout", post(auth::logout))
+        .route("/api/v1/auth/logout-all", post(auth::logout_all))
         .route("/api/v1/system/version", get(system_version))
         .route("/api-docs/openapi.json", get(openapi_json))
         .fallback(not_found)
@@ -679,12 +680,16 @@ mod tests {
         Json,
         extract::State,
         http::{HeaderMap, HeaderValue, header},
+        response::IntoResponse,
     };
     use nodecontroll_application::{
-        AuthServiceError, BootstrapOutcome, ControlPlane, LoginCommand, LoginOutcome,
-        MutatingSessionCredential, SessionCredential,
+        AuthServiceError, BootstrapOutcome, ChangePasswordCommand, ControlPlane, LoginCommand,
+        LoginOutcome, LogoutAllCommand, LogoutAllOutcome, MutatingSessionCredential,
+        PasswordChangeOutcome, ReauthenticateCommand, RevokeSessionCommand, RevokeSessionOutcome,
+        SessionCredential, UserSessionProjection,
     };
     use nodecontroll_config::PublicOrigin;
+    use zeroize::Zeroizing;
 
     use super::{
         AppState, BootstrapCommand, BootstrapRequest, BootstrapServiceError, ProbeError,
@@ -733,6 +738,20 @@ mod tests {
             Err(AuthServiceError::InvalidCredentials)
         }
 
+        async fn reauthenticate(
+            &self,
+            _command: ReauthenticateCommand,
+        ) -> Result<LoginOutcome, AuthServiceError> {
+            Err(AuthServiceError::InvalidProof)
+        }
+
+        async fn change_password(
+            &self,
+            _command: ChangePasswordCommand,
+        ) -> Result<PasswordChangeOutcome, AuthServiceError> {
+            Err(AuthServiceError::SessionInvalid)
+        }
+
         async fn current_actor(
             &self,
             _credential: SessionCredential,
@@ -751,6 +770,27 @@ mod tests {
             _credential: MutatingSessionCredential,
         ) -> Result<(), AuthServiceError> {
             Ok(())
+        }
+
+        async fn logout_all(
+            &self,
+            _command: LogoutAllCommand,
+        ) -> Result<LogoutAllOutcome, AuthServiceError> {
+            Err(AuthServiceError::SessionInvalid)
+        }
+
+        async fn list_sessions(
+            &self,
+            _credential: SessionCredential,
+        ) -> Result<Vec<UserSessionProjection>, AuthServiceError> {
+            Err(AuthServiceError::SessionInvalid)
+        }
+
+        async fn revoke_session(
+            &self,
+            _command: RevokeSessionCommand,
+        ) -> Result<RevokeSessionOutcome, AuthServiceError> {
+            Err(AuthServiceError::SessionInvalid)
         }
     }
 
@@ -815,7 +855,7 @@ mod tests {
             Ok(Json(BootstrapRequest {
                 instance_name: "My instance".to_owned(),
                 username: "owner".to_owned(),
-                password: "a sufficiently long password".to_owned(),
+                password: Zeroizing::new("a sufficiently long password".to_owned()),
             })),
         )
         .await;
@@ -843,9 +883,29 @@ mod tests {
         assert!(paths.contains_key("/readyz"));
         assert!(paths.contains_key("/api/v1/bootstrap"));
         assert!(paths.contains_key("/api/v1/auth/login"));
+        assert!(paths.contains_key("/api/v1/auth/reauth"));
         assert!(paths.contains_key("/api/v1/me"));
+        assert!(paths.contains_key("/api/v1/me/password"));
+        assert!(paths.contains_key("/api/v1/me/sessions"));
+        assert!(paths.contains_key("/api/v1/me/sessions/{session_id}"));
         assert!(paths.contains_key("/api/v1/auth/logout"));
+        assert!(paths.contains_key("/api/v1/auth/logout-all"));
         assert!(paths.contains_key("/api/v1/system/version"));
+    }
+
+    #[test]
+    fn openapi_uses_unambiguous_current_user_session_revocation_operation_id() {
+        let document = serde_json::to_value(openapi());
+        assert!(matches!(
+            document,
+            Ok(ref value)
+                if value
+                    .pointer(
+                        "/paths/~1api~1v1~1me~1sessions~1{session_id}/delete/operationId"
+                    )
+                    .and_then(serde_json::Value::as_str)
+                    == Some("revokeCurrentUserSession")
+        ));
     }
 
     #[test]
@@ -890,5 +950,19 @@ mod tests {
             bootstrap_projection_problem(ProbeError::BootstrapStateInconsistent, &HeaderMap::new());
         assert_eq!(get_problem.code, "BOOTSTRAP_STATE_INCONSISTENT");
         assert_eq!(get_problem.type_uri, post_problem.type_uri);
+    }
+
+    #[test]
+    fn problem_details_are_never_cacheable() {
+        let response =
+            bootstrap_problem(BootstrapServiceError::CapabilityInvalid, &HeaderMap::new())
+                .into_response();
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
     }
 }

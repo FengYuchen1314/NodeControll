@@ -15,10 +15,13 @@ const DEFAULT_SETUP_TOKEN_TTL_SECONDS: u64 = 1_800;
 const MAX_SETUP_TOKEN_TTL_SECONDS: u64 = 3_600;
 const DEFAULT_SESSION_IDLE_SECONDS: u64 = 1_800;
 const DEFAULT_SESSION_ABSOLUTE_SECONDS: u64 = 86_400;
+const DEFAULT_RECENT_AUTH_SECONDS: u64 = 300;
 const MIN_SESSION_IDLE_SECONDS: u64 = 60;
 const MAX_SESSION_IDLE_SECONDS: u64 = 86_400;
 const MIN_SESSION_ABSOLUTE_SECONDS: u64 = 300;
 const MAX_SESSION_ABSOLUTE_SECONDS: u64 = 2_592_000;
+const MIN_RECENT_AUTH_SECONDS: u64 = 60;
+const MAX_RECENT_AUTH_SECONDS: u64 = 3_600;
 const DEFAULT_LOGIN_WINDOW_SECONDS: u64 = 300;
 const DEFAULT_LOGIN_BLOCK_SECONDS: u64 = 900;
 const MIN_LOGIN_WINDOW_SECONDS: u64 = 10;
@@ -447,6 +450,7 @@ impl Default for BootstrapConfig {
 pub struct AuthConfig {
     pub session_idle_seconds: u64,
     pub session_absolute_seconds: u64,
+    pub recent_auth_seconds: u64,
     pub login_window_seconds: u64,
     pub login_block_seconds: u64,
     pub login_account_limit: u32,
@@ -461,6 +465,7 @@ impl Default for AuthConfig {
         Self {
             session_idle_seconds: DEFAULT_SESSION_IDLE_SECONDS,
             session_absolute_seconds: DEFAULT_SESSION_ABSOLUTE_SECONDS,
+            recent_auth_seconds: DEFAULT_RECENT_AUTH_SECONDS,
             login_window_seconds: DEFAULT_LOGIN_WINDOW_SECONDS,
             login_block_seconds: DEFAULT_LOGIN_BLOCK_SECONDS,
             login_account_limit: DEFAULT_LOGIN_ACCOUNT_LIMIT,
@@ -488,6 +493,10 @@ pub enum ConfigError {
         "auth.session_absolute_seconds must be between 300 and 2592000 and not shorter than the idle lifetime"
     )]
     InvalidSessionAbsolute,
+    #[error(
+        "auth.recent_auth_seconds must be between 60 and 3600 and not longer than the absolute session lifetime"
+    )]
+    InvalidRecentAuth,
     #[error("auth.login_window_seconds must be between 10 and 3600")]
     InvalidLoginWindow,
     #[error("auth.login_block_seconds must be between auth.login_window_seconds and 86400")]
@@ -520,6 +529,7 @@ pub fn load(path: Option<&Path>) -> Result<MasterConfig, ConfigError> {
             "auth.session_absolute_seconds",
             DEFAULT_SESSION_ABSOLUTE_SECONDS,
         )?
+        .set_default("auth.recent_auth_seconds", DEFAULT_RECENT_AUTH_SECONDS)?
         .set_default("auth.login_window_seconds", DEFAULT_LOGIN_WINDOW_SECONDS)?
         .set_default("auth.login_block_seconds", DEFAULT_LOGIN_BLOCK_SECONDS)?
         .set_default("auth.login_account_limit", DEFAULT_LOGIN_ACCOUNT_LIMIT)?
@@ -567,6 +577,12 @@ pub fn load(path: Option<&Path>) -> Result<MasterConfig, ConfigError> {
         || loaded.auth.session_absolute_seconds < loaded.auth.session_idle_seconds
     {
         return Err(ConfigError::InvalidSessionAbsolute);
+    }
+    if !(MIN_RECENT_AUTH_SECONDS..=MAX_RECENT_AUTH_SECONDS)
+        .contains(&loaded.auth.recent_auth_seconds)
+        || loaded.auth.recent_auth_seconds > loaded.auth.session_absolute_seconds
+    {
+        return Err(ConfigError::InvalidRecentAuth);
     }
     if !(MIN_LOGIN_WINDOW_SECONDS..=MAX_LOGIN_WINDOW_SECONDS)
         .contains(&loaded.auth.login_window_seconds)
@@ -635,6 +651,7 @@ mod tests {
             assert_eq!(loaded.bootstrap.setup_token_ttl_seconds, 1_800);
             assert_eq!(loaded.auth.session_idle_seconds, 1_800);
             assert_eq!(loaded.auth.session_absolute_seconds, 86_400);
+            assert_eq!(loaded.auth.recent_auth_seconds, 300);
             assert_eq!(loaded.auth.login_window_seconds, 300);
             assert_eq!(loaded.auth.login_block_seconds, 900);
             assert_eq!(loaded.auth.login_account_limit, 5);
@@ -794,6 +811,17 @@ mod tests {
                 "[auth]\nsession_idle_seconds = 3600\nsession_absolute_seconds = 3599\n"
             ),
             Err(ConfigError::InvalidSessionAbsolute)
+        ));
+        assert!(matches!(
+            load_toml("auth-recent-short", "[auth]\nrecent_auth_seconds = 59\n"),
+            Err(ConfigError::InvalidRecentAuth)
+        ));
+        assert!(matches!(
+            load_toml(
+                "auth-recent-longer-than-session",
+                "[auth]\nsession_idle_seconds = 60\nsession_absolute_seconds = 300\nrecent_auth_seconds = 301\n"
+            ),
+            Err(ConfigError::InvalidRecentAuth)
         ));
         assert!(matches!(
             load_toml("auth-window", "[auth]\nlogin_window_seconds = 9\n"),

@@ -6,7 +6,7 @@
 
 登录不是无界的 Argon2 工作队列。初始化状态确认后，请求必须先取得进程内登录/Argon2 并发许可；许可耗尽立即返回 429，而且不会读取或写入 limiter bucket。许可从 limiter 之前一直持有到密码验证结束，因此并发请求触发的额度预检、bucket 写入、凭据读取与 Argon2 都受同一个 1～64 上限约束；验证结束后释放，不占用后续安全事件或 session 提交时间。取得许可后，repository 先只读检查 account、IP prefix、global 三个精确 bucket：已有封禁时不更新 blocked hit、不创建其他 scope 的 row；未命中才进入 account→IP→global 的权威事务。不存在的用户也验证固定 dummy PHC，HTTP 响应不区分不存在、密码错误和停用账号。
 
-这不是完整 WP-02。当前尚未实现 TOTP、WebAuthn、恢复码、recent-auth 动作门、密码修改与透明 rehash、个人/API token、session 管理页、完整对象级 RBAC、用户 CRUD/删除生命周期、Turnstile 和浏览器 Playwright 安全套件。`owner/admin/operator/support/auditor/member` 与 capability 基线只是后续授权骨架，不能据此宣称用户管理或 IDOR 矩阵已经完成。需求矩阵继续保持诚实的 `planned`，直到对应完整验收合同通过。
+这不是完整 WP-02。公开 `ecd8dea` 基线在本文正式验收时尚未实现 TOTP、WebAuthn、恢复码、recent-auth 动作门、密码修改与透明 rehash、个人/API token、session 管理页、完整对象级 RBAC、用户 CRUD/删除生命周期、Turnstile 和浏览器 Playwright 安全套件；其中 recent-auth、改密、登录透明 rehash 与 session 管理后来已进入 [C1 开发候选](./WP02_C1_PASSWORD_RECENT_AUTH_SESSION_IMPLEMENTATION.md)。历史 v4 应用代码与 v6 门工具候选已通过各自 VPS 测试，但最新 Actions/VPS 编译边界修正尚待最终 freeze，也还没有公开同 SHA commit、Actions 制品和 fresh-clone formal provenance。其余能力仍未实现。`owner/admin/operator/support/auditor/member` 与 capability 基线只是后续授权骨架，不能据此宣称用户管理或 IDOR 矩阵已经完成。需求矩阵继续保持诚实的 `planned`，直到对应完整验收合同通过。
 
 ## 2. 数据与密码边界
 
@@ -18,9 +18,6 @@
 | `UserStatus::{as_str,parse}` | 映射 active、suspended、disabled、pending_deletion | 登录仅允许 active |
 | `CapabilityScope::{as_str,parse}` | 定义稳定 capability 字符串 | 未知 scope 不进入投影 |
 | `BaselineCapabilities::for_role` | 生成每种角色的只读基线投影 | 当前不是对象关系授权判定器 |
-| `AuthLevel::{as_str,parse}` | 保存当前 session 的认证等级 | 本纵切只签发 `password` |
-| `SessionStatus`、`SessionRevocationReason` | 描述服务端 session 生命周期 | active、revoked、expired 与 logout/security/password/admin 等原因 |
-| `LoginSecurityReason` | 规范登录安全事件原因 | 成功、通用失败、停用账号和退出登录 |
 
 ### 2.2 `crates/identity`
 
@@ -34,9 +31,17 @@
 
 ### 2.3 `crates/secrets`
 
-`EnvelopeCipher::keyed_digest` 使用根密钥经 HKDF-SHA256 派生不同用途的 HMAC-SHA256 key。`KeyedDigestPurpose` 分开 `Session`、`Csrf`、`LoginAccount`、`LoginIp`、`LoginGlobal`，避免同一输入跨协议得到可关联 digest。返回值包含 `key_version`；数据库唯一键也包含版本，后续可以引入有限旧 key ring。`EnvelopeCipher::key_version` 给安全事件写入当前版本。数据库从不保存浏览器 token、规范化账号、原始 IP 或 User-Agent；User-Agent 只保留 SHA-256，账号/IP/全局 bucket 使用 keyed digest。
+`EnvelopeCipher::keyed_digest` 使用根密钥经 HKDF-SHA256 派生不同用途的 HMAC-SHA256 key。`KeyedDigestPurpose` 分开 `Session`、`Csrf`、`LoginAccount`、`LoginIp`、`LoginGlobal`，避免同一输入跨协议得到可关联 digest。返回值包含 `key_version`；数据库唯一键也包含版本，后续可以引入有限旧 key ring。`EnvelopeCipher::key_version` 给安全事件写入当前版本。`auth_sessions`、`login_rate_buckets` 和 `login_security_events` 不保存浏览器 token、明文规范化账号、原始 IP 或 User-Agent；用户主表仍以 `users.username_norm` 持久化规范化账号，用于唯一约束和登录查询。User-Agent 只保留 SHA-256，账号/IP/全局 bucket 使用 keyed digest。
 
 当前 key rotation 仍缺旧 key ring 和 session 渐进迁移。直接切换根 key 会使旧 session 失效，这一行为必须在实现正式轮换工作流前保持明确。
+
+### 2.4 `crates/persistence` 的认证枚举
+
+| 类型 | 责任 | 当前约束 |
+|---|---|---|
+| `AuthLevel` | 保存 session 的认证等级 | 已支持 `password`、`mfa`、`phishing_resistant`、`recovery`；初始密码登录创建 `password`，rotation 保留原 session 的等级 |
+| `AuthSessionStatus`、`SessionRevocationReason` | 描述服务端 session 生命周期 | status 为 active/revoked；logout、expired、security_policy、password_changed、user_revoked、administrator 等原因只用于 revoked row |
+| `LoginSecurityReason` | 规范登录、近期认证、改密、撤销和限流事件 | 枚举值受数据库 CHECK 与 typed repository outcome 双重约束，`rate_limited` 不能经通用事件入口独立写入 |
 
 ## 3. 配置函数与启动接线
 
@@ -65,7 +70,7 @@ SQLite/PostgreSQL 的 `0003_auth_core.sql` 新增四组持久状态：
 | `user_auth_state` | 每个用户的 `auth_revision`；密码或高风险认证状态变化时可批量使旧 session 失效 |
 | `auth_sessions` | token/CSRF HMAC、认证等级、idle/absolute 期限、最近使用、创建来源摘要、撤销状态与 revision |
 | `login_rate_buckets` | scope + key version + bucket HMAC 唯一的共享固定窗口计数与封禁截止时间 |
-| `login_security_events` | 只含 request ID、原因和不可逆摘要的登录/退出审计原语 |
+| `login_security_events` | 只含 request ID、原因和不可逆摘要的认证与会话安全审计原语，覆盖登录、重新认证、改密、撤销、退出和限流 |
 
 ### 4.1 对外 repository 方法
 
@@ -73,13 +78,18 @@ SQLite/PostgreSQL 的 `0003_auth_core.sql` 新增四组持久状态：
 |---|---|
 | `user_credentials_by_normalized_username` | 只投影登录需要的用户、PHC、状态、角色、强制改密和 auth revision；deleted/损坏记录不被冒充成有效凭据 |
 | `reserve_login_attempt` | 先以一条只读 MAX 查询检查三个精确 HMAC bucket；已有封禁时返回最长 `Retry-After`，不更新或创建 row。未命中才在同一事务按 account→IP→global 更新，权威事务仍负责处理并发竞争 |
-| `create_auth_session` | session、登录成功事件和 account bucket 清理在同一事务中完成；任一步失败都不签发一个数据库不存在的 Cookie |
+| `create_auth_session_with_optional_password_upgrade` | 生产登录入口；session、登录成功事件、account bucket 清理和可选透明 PHC 升级在同一事务中完成，并用 user/auth/password snapshot 做 CAS |
 | `authenticate_session` | 用 token key version/HMAC 查找 active session，联表核对用户状态和 auth revision，再检查 absolute/idle；可选 CSRF 也在数据库比对；达到 touch interval 才延长 idle |
-| `list_auth_sessions` | 为后续 session 管理页提供不含 token/HMAC 的投影 |
-| `revoke_auth_session` / `revoke_all_auth_sessions` | 服务端即时撤销单个或某用户全部 session |
-| `revoke_current_session_with_event` | 只有 active→revoked 真正发生时才写一条 Logout 事件；撤销与事件原子提交，重复退出不制造事件 |
-| `rotate_session_credentials` | 为 MFA/recent-auth 后的 fixation 防护预留 token/CSRF rotation 原语；本纵切尚无公开调用 |
-| `record_login_security_event` | 记录受登录 limiter 约束的失败事件；已被 limiter 拒绝的请求不会无限写事件表 |
+| `authenticate_session_read_only` | 在共享凭据读取路径中完成同一套 active/user/auth-revision/deadline 校验，但不 touch session；供需要稳定 snapshot 的近期认证与并发协议使用 |
+| `list_user_sessions` | 返回指定用户的全量会话投影，不含 token/HMAC，也不按 active、期限或 auth revision 过滤 |
+| `list_active_user_sessions` | 在数据库侧过滤 active、idle/absolute 期限和 auth revision；application 的会话管理列表使用这一查询 |
+| `rotate_current_session` | reauth 成功后在一个事务内撤销旧凭据、签发 replacement，并继承 absolute expiry |
+| `change_password_and_rotate` | 原子写入新 PHC、推进 auth revision、撤销全部旧 session 并创建唯一 replacement |
+| `revoke_current_session_with_event` | 普通 logout 的原子撤销与事件入口；重复或已失效目标不制造事件 |
+| `revoke_user_session_with_event` | 会话管理页 actor-aware DELETE；事务内重验调用方、近期认证、时间线与目标，再写 `session_revoked`/`user_revoked` |
+| `logout_all_sessions_with_event` | `logout-all(false)`；撤销包括当前会话在内的全部活动 session，并写单条权威事件 |
+| `logout_all_sessions_and_rotate` | `logout-all(true)`；撤销其他凭据并以新 token pair 替换当前 session |
+| `record_login_security_event` | 写普通独立安全事件并明确拒绝 `rate_limited`；限流事件只能随 `reserve_login_attempt` 的 durable block transition 原子提交 |
 
 ### 4.2 bucket 状态函数
 
@@ -113,7 +123,7 @@ SQLite/PostgreSQL 的 `0003_auth_core.sql` 新增四组持久状态：
 
 ### 5.4 `current_actor` 与 `logout`
 
-`current_actor` 只返回 server-side actor/session 投影。`logout` 先完成 session + CSRF 认证，再从当前请求生成审计摘要，调用 `revoke_current_session_with_event`；用户换网或 User-Agent 变化不会被硬绑定拒绝。API 无 session，或 Cookie 结构合法但 token 格式错误、未知、撤销、过期时，都是幂等 204 并清 Cookie；只有重复目标 Cookie、超长 header 等 Cookie 结构歧义走 401。有效 session 的 CSRF 失败仍是 403。
+`current_actor` 只返回 server-side actor/session 投影。`logout` 先完成 session + CSRF 认证，再从当前请求生成审计摘要，调用 `revoke_current_session_with_event`；用户换网或 User-Agent 变化不会被硬绑定拒绝。`logout` 请求未携带 session，或 Cookie 结构合法但 token 格式错误、未知、撤销、过期时，返回显式成功的幂等 204，并由该成功响应清两枚 Cookie；重复目标 Cookie、超长 header 等 Cookie header 结构歧义返回 401 Problem，且该 Problem 不写 `Set-Cookie`。`/me` 等其他受保护 API 缺少有效 session 仍返回 401 Problem；有效 session 的 CSRF 失败则是 403。
 
 ## 6. HTTP 与浏览器安全边界
 
@@ -138,24 +148,27 @@ SQLite/PostgreSQL 的 `0003_auth_core.sql` 新增四组持久状态：
 | `GET /api/v1/me` | 200 当前 actor/session，刷新页面可恢复 | 401 缺失/格式错/撤销/过期/用户状态变化；403 Host；503 依赖失败 |
 | `POST /api/v1/auth/logout` | 204，撤销当前 session 并清两个 Cookie；缺 session 或结构合法但无效的 token 也幂等成功 | 401 Cookie header 结构歧义，403 Origin/Host/有效 session 的 CSRF，503 原子撤销失败 |
 
-`Problem` 的内部 `clear_session_cookies` 与 `retry_after_seconds` 都不进入 JSON/OpenAPI；前者由 `IntoResponse` 附加清 Cookie，后者只生成标准 `Retry-After` header。错误映射只使用本地固定 title/detail/code，不把 SQL、Argon2、header 解析器或用户输入错误原文返回浏览器。
+`Problem` 只可按本地 allowlist 附加普通响应头；`retry_after_seconds` 不进入 JSON/OpenAPI，只生成标准 `Retry-After`。任何 Problem，包括 `401 SESSION_INVALID`，都不得写 `Set-Cookie`。这是跨标签页安全边界：较早请求的迟到 401 不能清掉另一标签页刚轮换出的新 Cookie。只有路由明确选用的成功响应可以签发、轮换或清 Cookie；其中 logout、撤销当前 session 与 `logout-all(false)` 的权威 204 复用同一个清理响应。错误映射只使用本地固定 title/detail/code，不把 SQL、Argon2、header 解析器或用户输入错误原文返回浏览器。
 
-OpenAPI 增加 session cookie 与 CSRF header security scheme；生成 SDK 暴露 `login`、`getCurrentActor`、`logout`。生成文件只由最终 Rust schema 在 VPS 导出后生成，不手工编辑。
+OpenAPI 增加 session cookie 与 CSRF header security scheme；当前生成 SDK 暴露 `login`、`logout`、`logoutAll`、`reauthenticate`、`getCurrentActor`、`changeCurrentPassword`、`listCurrentSessions` 与 `revokeCurrentUserSession`。生成文件只由最终 Rust schema 在 VPS 导出后生成，不手工编辑。
 
 ## 7. Vue 3 / Vuetify 前端
 
 ### 7.1 session store
 
-`useSessionStore` 是纯内存 Pinia store，不启用 persistence plugin，也不读写 `localStorage`/`sessionStorage`。状态机为：
+`useSessionStore` 的 actor、session 与凭据仍只存在内存，不启用 Pinia persistence plugin。浏览器存储只允许一个固定键 `nodecontroll:credential-coordination:v1`：它保存不含 token、CSRF、密码或用户资料的协调 journal；`sessionStorage` 必须为空。状态机为：
 
 ```text
 unknown → loading → setup-required
                   → anonymous
                   → authenticated
                   → unavailable
+                  → relogin-required
 ```
 
-`refresh` 合并并发请求：先读 bootstrap，未初始化就不探测 `/me`；已初始化才读 `/me`。只有明确 401 会转 anonymous，其他协议/网络失败转 unavailable，避免把控制面故障误当成登出。`login` 只消费白名单 HTTP 状态并生成本地文案，不渲染服务端 Problem 文本；`logout` 从 `document.cookie` 读取唯一、严格格式的 CSRF token并显式写 header。账号、密码、session token 和 CSRF token都不进入 store state；密码由页面在请求结束后清空。
+`credential-coordinator.ts` 用同源 Web Locks 串行化会轮换 Cookie 的 mutation，并让受保护读取在共享锁内完成请求、解析和运行时投影校验。journal 使用随机 epoch 和规范十进制 revision；mutation terminal 必须精确引用它实际观察到的 inflight，并按 `inflight → settled` 转换。受保护读取观察到 401 时，另以 `read-401/invalidated` 记录绑定原 base cursor，取得 exclusive 后只有 cursor 未变才持久化。持久 quarantine、BroadcastChannel 和 storage event 分别承担权威状态与唤醒，防止崩溃、丢事件与 ABA。损坏、revision 回滚或同值篡改、跳号、未观察到的 epoch 替换和未知 mutation 结果都会先关闭 actor/session 与受保护 DOM。journal 缺失时，fresh setup/anonymous 且无 CSRF Cookie 是合法初始态；已有 CSRF 或 authenticated/unavailable/relogin-required 投影时则进入隔离。只有结构完整且 generation 匹配的显式登录 200，或路由明确声明的权威清理 204，才能解除 sticky quarantine。
+
+`refresh` 合并并发请求：先读 bootstrap，未初始化就不探测 `/me`；已初始化才在共享凭据锁内读 `/me`。明确 401 会按所观察的 session/cursor 发布并持久化条件失效；其他协议或网络失败转 unavailable，协调状态不可信则进入 relogin-required。`login` 只消费白名单 HTTP 状态和经过运行时结构校验的 200 投影，不渲染服务端 Problem 文本；等待 exclusive lease 时，自身 inflight 引起的 generation 精确 `+1` 才是正常推进，额外推进说明外部 mutation，401/429 也不能解除 quarantine。`logout` 从 `document.cookie` 读取唯一、严格格式的 CSRF token并显式写 header。账号、密码、session token 和 CSRF token都不进入 store 或 journal；密码由页面在请求结束后清空。
 
 ### 7.2 router 与页面
 
@@ -169,15 +182,20 @@ unknown → loading → setup-required
 
 2026-08-26 的 VPS 候选树已经通过：Rust `fmt/check/test/clippy -D warnings/release build`，共 68 个 workspace test，SQLite 与固定 PostgreSQL 均执行；最终 Rust 导出的 OpenAPI 为 7 paths/8 operations，生成 OpenAPI/SDK 与工作树逐字节一致；Vue 通过 typecheck、零 warning lint、29/29 Vitest 和 341-module production build。真实 PostgreSQL 上完成 bootstrap→login→`/me`→logout→撤销拒绝，并在 Master 重启后再次完成同一会话闭环。重启前后日志按真实 setup token、root key、测试口令、PHC 与 token 前缀扫描，均为零命中。
 
-这些是未提交候选树的预检，不是公开 SHA 的正式验收。verifier 在候选预检后又修正了运行时秘密扫描，避免把秘密正文放入子进程 argv；因此必须等同一公开 commit 的 GitHub Actions 制品和 fresh-checkout VPS run 通过，才能补写正式 run/artifact ID。需求矩阵在此之前继续保持 358 项 `planned`。
+公开 commit `ecd8deaecd6dcfad8fd365dada67e5fc487046ad` 随后完成正式验收。GitHub Actions run `32919113045` attempt 1、artifact `9589258880` 全绿；artifact 为 4,569,681 bytes，SHA-256 `1798c3746856f33deef36fe657ccd70294916ce0d6662d0c247827425ecc7b40`。fresh full clone 的 VPS run `20260826T013832936716270Z-p5` 为 `completed`，源码测试前后洁净；正式门重跑 68 个双库 Rust tests、29 个 Web tests、release/Web 重建和真实 Master smoke，并把 ELF、OpenAPI、Web dist、notices 与 Actions 逐字节比较。runtime log secret scan 通过，临时 secret/container/network 已清理。
 
-当前已确认的后续债务也不隐藏：`login_rate_buckets`、`login_security_events` 及撤销/过期 session 还没有 retention job，长期允许的失败会以有限速率永久增长数据库；root-key canary 还不是持久化的 keyring 指纹，格式正确但错误的根密钥不能仅靠启动时自加解密发现。墙钟回拨到 session 创建时间之前时，当前 logout 的创建时间过滤可能使服务端记录暂时保留 active，需在 WP02-E 用可控时钟修正并回归。超长密码失败事件、亚毫秒 policy 输入、Windows ACL 与真实浏览器 Secure Cookie 套件也要在后续门中补齐。
+以上 68/29/341 是 `ecd8dea` 基线的历史正式数字。历史 v4 C1 应用代码另以 226-file archive `0c2eb2a94256ee3b5795e9811b2833090989244c5d8370a9ce05beb8f5fabe5c` 在 VPS 固定 builder 中通过 78/78 Rust workspace all-targets tests、Clippy、release、9 文件 81/81 Vitest、362-module Web production build、生成目录 16 个物理文件零漂移，以及 SQLite/PostgreSQL 同合同 runtime smoke；逐文件清单 SHA-256 为 `772172f85e38d94ba67846f66252a588631ecb6a342566af1949357a5a7f61dc`。双页 HTTPS candidate v4 `20260826T112446112732525Z-wp02c-candidate-v4` 还验证了旧凭据 401 零 `Set-Cookie`、logout 503 quarantine、跨 reload 保持、显式登录恢复、迟到旧 cursor invalidation 不覆盖新状态，以及真实 logout 204；外层 validator 复算 33 个冻结文件、10,087,567 bytes 后通过。最新 v6 archive `e2a055...8cb58` 又覆盖 global virtual store=false、完整静态/Web、许可证闭包和两库 smoke。三者都是候选行为证据，不绑定随后形成的 Actions/VPS 编译边界修正，也不是 C1 的正式 provenance。
+
+这个结论只覆盖本文纵切。需求矩阵仍保持 358 项 `planned`，因为 MFA、token、完整 RBAC/用户生命周期和对应产品验收还没有完成。
+
+当前已确认的后续债务也不隐藏：`login_rate_buckets`、`login_security_events` 及撤销/过期 session 还没有 retention job，长期允许的失败会以有限速率永久增长数据库；root-key canary 还不是持久化的 keyring 指纹，格式正确但错误的根密钥不能仅靠启动时自加解密发现。C1 已把撤销时间钳制为 `max(created_at, now)`，并在一般认证、活动列表和 rotation 选择器拒绝 `now < last_seen_at`；WP02-E 仍需用可控时钟扩展完整回拨/跳跃矩阵。超长密码失败事件、亚毫秒 policy 输入、Windows ACL 与完整真实浏览器 Secure Cookie 套件也要在后续门中补齐。
 
 ## 9. 下一步
 
-1. WP02-C：TOTP、WebAuthn、一次性恢复码、recent-auth、认证等级提升、密码修改/rehash 和 session rotation。
-2. WP02-D：personal/service token、六角色 RBAC、object relationship、字段投影、用户 CRUD/停用/软删、最后一个 Owner 保护和 IDOR 矩阵。
-3. WP02-E：Playwright 真实浏览器 setup→login→reload→CSRF reject→logout、SQLite/PostgreSQL 重启恢复、并发/封禁/过期时钟、可信代理与 HTTPS/loopback Cookie 安全套件。
-4. WP03 前先补过期/撤销 session、bucket 和安全事件的 durable retention job；再增加持久化 canary、HMAC 旧 key ring、认证指标和不含 secret 的安全审计查询面。
+1. WP02-C1：recent-auth、透明密码 rehash、密码修改与 session rotation/管理已通过历史 v4 应用代码门、v6 门工具测试和真实双页 HTTPS candidate；代码与候选证据见 [C1 实现记录](./WP02_C1_PASSWORD_RECENT_AUTH_SESSION_IMPLEMENTATION.md)。先把最新 Actions/VPS 编译边界与账本纳入最终 freeze，再执行单父公开提交、Actions 同 SHA 制品和 fresh-clone 正式门。
+2. WP02-C2～C7：持久化 key canary/keyring、一次性恢复码、统一 challenge、TOTP、WebAuthn、所有高危 use case guard 与真实浏览器/并发/故障注入验收。
+3. WP02-D：personal/service token、六角色 RBAC、object relationship、字段投影、用户 CRUD/停用/软删、最后一个 Owner 保护和 IDOR 矩阵。
+4. WP02-E：在 C1 双页凭据协调候选之上补齐 MFA/WebAuthn、token、RBAC/IDOR 的真实浏览器路径，以及 SQLite/PostgreSQL 重启恢复、并发/封禁/过期时钟、可信代理与 HTTPS/loopback Cookie 完整套件。
+5. WP03 前先补过期/撤销 session、bucket 和安全事件的 durable retention job；再增加持久化 canary、HMAC 旧 key ring、认证指标和不含 secret 的安全审计查询面。
 
 完成这些内容并通过 [WP-02 完成门](../04-rebuild/IMPLEMENTATION_PLAN.md#6-wp-02身份会话mfa角色与用户基础) 之前，不进入“完整身份系统已完成”的口径。

@@ -120,6 +120,7 @@ fn auth_policy(config: &AuthConfig) -> AuthPolicy {
         session_idle: Duration::from_secs(config.session_idle_seconds),
         session_absolute: Duration::from_secs(config.session_absolute_seconds),
         session_touch_interval: Duration::from_secs(session_touch_interval_seconds),
+        recent_auth: Duration::from_secs(config.recent_auth_seconds),
         login_window: Duration::from_secs(config.login_window_seconds),
         login_block: Duration::from_secs(config.login_block_seconds),
         login_account_limit: config.login_account_limit,
@@ -194,6 +195,7 @@ mod tests {
         assert_eq!(policy.session_idle, Duration::from_secs(60));
         assert_eq!(policy.session_absolute, Duration::from_secs(300));
         assert_eq!(policy.session_touch_interval, Duration::from_secs(15));
+        assert_eq!(policy.recent_auth, Duration::from_secs(300));
         assert_eq!(policy.login_window, Duration::from_secs(10));
         assert_eq!(policy.login_block, Duration::from_secs(20));
         assert_eq!(policy.login_account_limit, 3);

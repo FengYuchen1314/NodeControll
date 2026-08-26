@@ -7,8 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { vuetify } from '../../plugins/vuetify'
 
 const sdk = vi.hoisted(() => ({
+  changeCurrentPassword: vi.fn(),
   getBootstrapState: vi.fn(),
+  getCurrentActor: vi.fn(),
   initializeControlPlane: vi.fn(),
+  listCurrentSessions: vi.fn(),
+  login: vi.fn(),
+  logout: vi.fn(),
+  logoutAll: vi.fn(),
+  reauthenticate: vi.fn(),
+  revokeCurrentUserSession: vi.fn(),
 }))
 
 vi.mock('../../api/generated/sdk.gen', () => sdk)
@@ -170,9 +178,7 @@ describe('SetupPage', () => {
     await fillValidForm()
     const setupTokenInput = screen.getByLabelText('一次性 Setup Token') as HTMLInputElement
     const passwordInput = screen.getByLabelText('Owner 密码') as HTMLInputElement
-    const passwordConfirmationInput = screen.getByLabelText(
-      '确认 Owner 密码',
-    ) as HTMLInputElement
+    const passwordConfirmationInput = screen.getByLabelText('确认 Owner 密码') as HTMLInputElement
     await submit()
 
     await waitFor(() => expect(sdk.getBootstrapState).toHaveBeenCalledTimes(2))

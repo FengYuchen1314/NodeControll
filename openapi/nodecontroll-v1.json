@@ -29,6 +29,14 @@
         "responses": {
           "200": {
             "description": "Password authentication succeeded and host-only session cookies were issued",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Two separate host-only header fields issue the session and CSRF cookies"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -77,8 +85,48 @@
               }
             }
           },
+          "413": {
+            "description": "The JSON request exceeds the configured body limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request media type is unsupported",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON value does not match the login schema",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "429": {
             "description": "A shared login limit is active",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Bounded delay in seconds"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -108,7 +156,25 @@
         "operationId": "logout",
         "responses": {
           "204": {
-            "description": "The current server-side session was revoked and browser cookies were expired"
+            "description": "The current server-side session was revoked and browser cookies were expired",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Two separate host-only header fields expire the session and CSRF cookies"
+              }
+            }
+          },
+          "400": {
+            "description": "Required request metadata is malformed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           },
           "401": {
             "description": "The Cookie header is oversized, ambiguous, or structurally malformed",
@@ -122,6 +188,265 @@
           },
           "403": {
             "description": "Origin, host, or double-submit CSRF verification failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication dependencies are unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/logout-all": {
+      "post": {
+        "tags": [
+          "authentication"
+        ],
+        "operationId": "logoutAll",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LogoutAllRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "All sessions were revoked and this browser received a replacement session",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Two separate host-only header fields issue the replacement session and CSRF cookies"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutAllRetainedEnvelope"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "All sessions, including this browser, were revoked and cookies were expired",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Two separate host-only header fields expire the session and CSRF cookies"
+              }
+            }
+          },
+          "400": {
+            "description": "The request body is malformed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The current session is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin, CSRF, or recent-auth verification failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request media type is unsupported",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON value does not match the logout-all schema",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication dependencies are unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/reauth": {
+      "post": {
+        "tags": [
+          "authentication"
+        ],
+        "operationId": "reauthenticate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReauthenticateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The recent-auth proof succeeded and both browser credentials were rotated",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Two separate host-only header fields rotate the session and CSRF cookies"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticatedEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request body is malformed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The current session is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin, CSRF, or the reauthentication proof is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request media type is unsupported",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON value does not match the reauthentication schema",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A shared authentication limit is active",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Bounded delay in seconds"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -315,6 +640,16 @@
               }
             }
           },
+          "400": {
+            "description": "Required request metadata is malformed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The session is absent, invalid, revoked, inactive, or expired",
             "content": {
@@ -348,6 +683,283 @@
         },
         "security": [
           {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/password": {
+      "post": {
+        "tags": [
+          "authentication"
+        ],
+        "operationId": "changeCurrentPassword",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The password changed, all sessions were revoked, and this browser received a replacement session",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Two separate host-only header fields issue the replacement session and CSRF cookies"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordChangedEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request body is malformed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The current session is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin, CSRF, or recent-auth verification failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request media type is unsupported",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The new password is rejected by policy or is unchanged",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Password hashing capacity is temporarily exhausted",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Bounded delay in seconds"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication dependencies are unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/sessions": {
+      "get": {
+        "tags": [
+          "authentication"
+        ],
+        "operationId": "listCurrentSessions",
+        "responses": {
+          "200": {
+            "description": "Active server-side sessions with coarse, secret-free projections",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSessionsEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Required request metadata is malformed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The current session is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request host is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication dependencies are unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/sessions/{session_id}": {
+      "delete": {
+        "tags": [
+          "authentication"
+        ],
+        "operationId": "revokeCurrentUserSession",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Session UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "While the caller session remains valid, the selected session is revoked or was already unavailable",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Two separate header fields expire the session and CSRF cookies when the current session was selected"
+              }
+            }
+          },
+          "400": {
+            "description": "The session identifier or required request metadata is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The current session is invalid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin, CSRF, or recent-auth verification failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authentication dependencies are unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
             "sessionCookie": []
           }
         ]
@@ -583,6 +1195,23 @@
         },
         "additionalProperties": false
       },
+      "ChangePasswordRequest": {
+        "type": "object",
+        "required": [
+          "new_password"
+        ],
+        "properties": {
+          "new_password": {
+            "type": "string",
+            "format": "password",
+            "description": "At least 12 Unicode scalar values and at most 1024 UTF-8 bytes.",
+            "writeOnly": true,
+            "maxLength": 1024,
+            "minLength": 12
+          }
+        },
+        "additionalProperties": false
+      },
       "DependencyCheck": {
         "type": "object",
         "required": [
@@ -656,6 +1285,90 @@
         },
         "additionalProperties": false
       },
+      "LogoutAllRequest": {
+        "type": "object",
+        "required": [
+          "keep_current"
+        ],
+        "properties": {
+          "keep_current": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LogoutAllRetainedData": {
+        "type": "object",
+        "required": [
+          "actor",
+          "session",
+          "revoked_sessions"
+        ],
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/ActorResponse"
+          },
+          "revoked_sessions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionResponse"
+          }
+        }
+      },
+      "LogoutAllRetainedEnvelope": {
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/LogoutAllRetainedData"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ResponseMeta"
+          }
+        }
+      },
+      "PasswordChangedData": {
+        "type": "object",
+        "required": [
+          "actor",
+          "session",
+          "revoked_sessions"
+        ],
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/ActorResponse"
+          },
+          "revoked_sessions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionResponse"
+          }
+        }
+      },
+      "PasswordChangedEnvelope": {
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PasswordChangedData"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ResponseMeta"
+          }
+        }
+      },
       "Problem": {
         "type": "object",
         "required": [
@@ -713,6 +1426,32 @@
           }
         }
       },
+      "ReauthenticateRequest": {
+        "type": "object",
+        "required": [
+          "method",
+          "password"
+        ],
+        "properties": {
+          "method": {
+            "$ref": "#/components/schemas/ReauthenticationMethod"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "writeOnly": true,
+            "maxLength": 1024,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReauthenticationMethod": {
+        "type": "string",
+        "enum": [
+          "password"
+        ]
+      },
       "ResponseMeta": {
         "type": "object",
         "required": [
@@ -732,15 +1471,20 @@
         "type": "object",
         "required": [
           "id",
+          "auth_level",
           "created_at_ms",
           "last_seen_at_ms",
           "idle_expires_at_ms",
-          "absolute_expires_at_ms"
+          "absolute_expires_at_ms",
+          "recent_auth_expires_at_ms"
         ],
         "properties": {
           "absolute_expires_at_ms": {
             "type": "integer",
             "format": "int64"
+          },
+          "auth_level": {
+            "type": "string"
           },
           "created_at_ms": {
             "type": "integer",
@@ -756,6 +1500,83 @@
           "last_seen_at_ms": {
             "type": "integer",
             "format": "int64"
+          },
+          "recent_auth_expires_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "UserSessionResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "is_current",
+          "auth_level",
+          "created_at_ms",
+          "last_seen_at_ms",
+          "idle_expires_at_ms",
+          "absolute_expires_at_ms",
+          "recent_auth_expires_at_ms"
+        ],
+        "properties": {
+          "absolute_expires_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "auth_level": {
+            "type": "string"
+          },
+          "created_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "idle_expires_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "is_current": {
+            "type": "boolean"
+          },
+          "last_seen_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "recent_auth_expires_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "UserSessionsData": {
+        "type": "object",
+        "required": [
+          "sessions"
+        ],
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserSessionResponse"
+            }
+          }
+        }
+      },
+      "UserSessionsEnvelope": {
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/UserSessionsData"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ResponseMeta"
           }
         }
       },

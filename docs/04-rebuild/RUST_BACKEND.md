@@ -93,7 +93,7 @@ Query use case 不写 audit/outbox，不开启 write transaction；所有列表�
 |---|---|
 | `PasswordPolicy::validate(candidate,context)` | 长度/已知弱密码/与用户名相似；不强制易预测字符类别 |
 | `PasswordHasher::hash(secret)` | Argon2id 参数来自配置并在 VPS benchmark；生成随机 salt |
-| `PasswordHasher::verify_and_upgrade(hash,secret)` | 常数时间验证，参数落后时登录事务内 rehash |
+| `PasswordHasher::verify_and_upgrade(hash,secret)` | 验证资源有界的旧 Argon2 PHC；算法、版本、m/t/p、输出或 salt 落后时生成当前 Argon2id PHC，登录事务内做 snapshot CAS |
 | `LoginService::authenticate(input,request_meta)` | 归一用户名→分层限速→Turnstile→password→TOTP→session；错误外观统一 |
 | `LoginThrottle::record_failure/success()` | IP prefix、username hash 和全局三桶；返回 retry_after |
 
@@ -106,6 +106,10 @@ Query use case 不写 audit/outbox，不开启 write transaction；所有列表�
 | `SessionService::rotate(session)` | privilege/password变化后防 fixation |
 | `SessionService::revoke(id/revoke_all_except)` | 事务撤销并发安全；推 security event |
 | `CsrfService::issue/verify()` | same-site cookie + header token，所有 cookie-auth写请求必须验证 |
+| `RecentAuth::verify_password(session,proof)` | 共享 Argon2 limiter；成功只替换当前 session/CSRF，继承 absolute expiry，sibling 不变 |
+| `ChangeCurrentPassword::execute(session,new_password)` | 服务端检查 freshness；原子更新 PHC/auth revision、撤销全部旧会话并给当前浏览器唯一 replacement |
+| `ListActiveSessions::query(actor,now)` | 只投影未过 idle/absolute 且 auth revision 当前有效的本人会话，不返回来源原文或凭据摘要 |
+| `LogoutAll::execute(session,keep_current)` | 事务内对发起 session 做 CAS；可选 replacement 继承原证明时间，普通 mutation 不能续期 recent-auth |
 
 ### 5.3 `auth/totp.rs` 与 credential
 
