@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 mod auth_challenge;
 mod totp;
+mod webauthn;
 
 pub use auth_challenge::{
     AuthChallenge, AuthChallengePolicy, AuthChallengePolicyError, AuthChallengePurpose,
@@ -22,6 +23,14 @@ pub use auth_challenge::{
 pub use totp::{
     TOTP_DIGITS, TOTP_PERIOD_SECONDS, TOTP_VALIDATION_WINDOW, TotpCredential, TotpCredentialStatus,
     TotpCredentialStatusParseError, TotpEnrollmentPolicy, TotpEnrollmentPolicyError,
+};
+pub use webauthn::{
+    WEBAUTHN_CREDENTIAL_ID_MAX_BYTES, WEBAUTHN_CREDENTIAL_ID_MIN_BYTES,
+    WEBAUTHN_NICKNAME_MAX_CHARS, WEBAUTHN_USER_HANDLE_MAX_BYTES, WebAuthnAaguid, WebAuthnCredential,
+    WebAuthnCredentialId, WebAuthnCredentialIdError, WebAuthnCredentialStatus,
+    WebAuthnCredentialStatusParseError, WebAuthnNickname, WebAuthnNicknameError,
+    WebAuthnOrigin, WebAuthnOriginError, WebAuthnTransport, WebAuthnTransportParseError,
+    WebAuthnUserHandle, WebAuthnUserHandleError,
 };
 
 /// Stable internal identity. New values are UUIDv7 so indexed writes remain time ordered.

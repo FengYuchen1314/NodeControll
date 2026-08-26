@@ -23,6 +23,9 @@ pub const TOTP_SEED_BYTES: usize = 20;
 pub const TOTP_CODE_DIGITS: usize = 6;
 pub const TOTP_PERIOD_MILLISECONDS: i64 = 30_000;
 pub const TOTP_SEED_SCHEMA_VERSION: u32 = 1;
+pub const WEBAUTHN_REGISTRATION_STATE_SCHEMA_VERSION: u32 = 1;
+pub const WEBAUTHN_AUTHENTICATION_STATE_SCHEMA_VERSION: u32 = 1;
+pub const WEBAUTHN_CREDENTIAL_MATERIAL_SCHEMA_VERSION: u32 = 1;
 pub const RECOVERY_CODE_COUNT: usize = 8;
 pub const AUTH_CHALLENGE_TOKEN_BYTES: usize = 32;
 pub const AUTH_CHALLENGE_TOKEN_HEX_LENGTH: usize = AUTH_CHALLENGE_TOKEN_BYTES * 2;
@@ -63,6 +66,9 @@ impl KeyedDigestPurpose {
 pub enum SecretPurpose {
     RootKeyCanary,
     TotpSeed,
+    WebAuthnRegistrationState,
+    WebAuthnAuthenticationState,
+    WebAuthnCredentialMaterial,
 }
 
 impl SecretPurpose {
@@ -71,6 +77,9 @@ impl SecretPurpose {
         match self {
             Self::RootKeyCanary => "root_key_canary",
             Self::TotpSeed => "totp_seed",
+            Self::WebAuthnRegistrationState => "webauthn_registration_state",
+            Self::WebAuthnAuthenticationState => "webauthn_authentication_state",
+            Self::WebAuthnCredentialMaterial => "webauthn_credential_material",
         }
     }
 
@@ -78,6 +87,9 @@ impl SecretPurpose {
         match value {
             "root_key_canary" => Ok(Self::RootKeyCanary),
             "totp_seed" => Ok(Self::TotpSeed),
+            "webauthn_registration_state" => Ok(Self::WebAuthnRegistrationState),
+            "webauthn_authentication_state" => Ok(Self::WebAuthnAuthenticationState),
+            "webauthn_credential_material" => Ok(Self::WebAuthnCredentialMaterial),
             _ => Err(SecretError::InvalidSecretPurpose),
         }
     }
@@ -88,6 +100,8 @@ pub enum SecretOwnerKind {
     System,
     Instance,
     User,
+    WebAuthnCeremony,
+    WebAuthnCredential,
 }
 
 impl SecretOwnerKind {
@@ -97,6 +111,8 @@ impl SecretOwnerKind {
             Self::System => "system",
             Self::Instance => "instance",
             Self::User => "user",
+            Self::WebAuthnCeremony => "webauthn_ceremony",
+            Self::WebAuthnCredential => "webauthn_credential",
         }
     }
 
@@ -105,6 +121,8 @@ impl SecretOwnerKind {
             "system" => Ok(Self::System),
             "instance" => Ok(Self::Instance),
             "user" => Ok(Self::User),
+            "webauthn_ceremony" => Ok(Self::WebAuthnCeremony),
+            "webauthn_credential" => Ok(Self::WebAuthnCredential),
             _ => Err(SecretError::InvalidSecretOwnerKind),
         }
     }
@@ -142,6 +160,19 @@ impl SecretBinding {
             return Err(SecretError::InvalidSecretOwner);
         }
         if purpose == SecretPurpose::TotpSeed && owner_kind != SecretOwnerKind::User {
+            return Err(SecretError::InvalidSecretOwner);
+        }
+        if matches!(
+            purpose,
+            SecretPurpose::WebAuthnRegistrationState
+                | SecretPurpose::WebAuthnAuthenticationState
+        ) && owner_kind != SecretOwnerKind::WebAuthnCeremony
+        {
+            return Err(SecretError::InvalidSecretOwner);
+        }
+        if purpose == SecretPurpose::WebAuthnCredentialMaterial
+            && owner_kind != SecretOwnerKind::WebAuthnCredential
+        {
             return Err(SecretError::InvalidSecretOwner);
         }
         Ok(Self {
@@ -693,6 +724,95 @@ impl Keyring {
         TotpSeed::from_bytes(plaintext.as_slice())
     }
 
+    /// Encrypts a library-owned registration state. Callers must serialize a concrete
+    /// `PasskeyRegistration`; untyped JSON values are not accepted by this boundary.
+    pub fn encrypt_webauthn_registration_state(
+        &self,
+        ceremony_id: uuid::Uuid,
+        plaintext: &[u8],
+    ) -> Result<SecretEnvelope, SecretError> {
+        let binding = SecretBinding::new(
+            SecretPurpose::WebAuthnRegistrationState,
+            SecretOwnerKind::WebAuthnCeremony,
+            ceremony_id,
+            WEBAUTHN_REGISTRATION_STATE_SCHEMA_VERSION,
+        )?;
+        self.encrypt(&binding, plaintext)
+    }
+
+    pub fn decrypt_webauthn_registration_state(
+        &self,
+        ceremony_id: uuid::Uuid,
+        envelope: &SecretEnvelope,
+    ) -> Result<Zeroizing<Vec<u8>>, SecretError> {
+        let binding = SecretBinding::new(
+            SecretPurpose::WebAuthnRegistrationState,
+            SecretOwnerKind::WebAuthnCeremony,
+            ceremony_id,
+            WEBAUTHN_REGISTRATION_STATE_SCHEMA_VERSION,
+        )?;
+        self.decrypt(&binding, envelope)
+    }
+
+    /// Encrypts a library-owned authentication state under a ceremony-specific AEAD binding.
+    pub fn encrypt_webauthn_authentication_state(
+        &self,
+        ceremony_id: uuid::Uuid,
+        plaintext: &[u8],
+    ) -> Result<SecretEnvelope, SecretError> {
+        let binding = SecretBinding::new(
+            SecretPurpose::WebAuthnAuthenticationState,
+            SecretOwnerKind::WebAuthnCeremony,
+            ceremony_id,
+            WEBAUTHN_AUTHENTICATION_STATE_SCHEMA_VERSION,
+        )?;
+        self.encrypt(&binding, plaintext)
+    }
+
+    pub fn decrypt_webauthn_authentication_state(
+        &self,
+        ceremony_id: uuid::Uuid,
+        envelope: &SecretEnvelope,
+    ) -> Result<Zeroizing<Vec<u8>>, SecretError> {
+        let binding = SecretBinding::new(
+            SecretPurpose::WebAuthnAuthenticationState,
+            SecretOwnerKind::WebAuthnCeremony,
+            ceremony_id,
+            WEBAUTHN_AUTHENTICATION_STATE_SCHEMA_VERSION,
+        )?;
+        self.decrypt(&binding, envelope)
+    }
+
+    /// Encrypts only the typed `webauthn-rs::Passkey` persistence representation. The response
+    /// structures containing raw attestation and client/authenticator data must never cross here.
+    pub fn encrypt_webauthn_credential_material(
+        &self,
+        credential_id: uuid::Uuid,
+        plaintext: &[u8],
+    ) -> Result<SecretEnvelope, SecretError> {
+        let binding = SecretBinding::new(
+            SecretPurpose::WebAuthnCredentialMaterial,
+            SecretOwnerKind::WebAuthnCredential,
+            credential_id,
+            WEBAUTHN_CREDENTIAL_MATERIAL_SCHEMA_VERSION,
+        )?;
+        self.encrypt(&binding, plaintext)
+    }
+
+    pub fn decrypt_webauthn_credential_material(
+        &self,
+        credential_id: uuid::Uuid,
+        envelope: &SecretEnvelope,
+    ) -> Result<Zeroizing<Vec<u8>>, SecretError> {
+        let binding = SecretBinding::new(
+            SecretPurpose::WebAuthnCredentialMaterial,
+            SecretOwnerKind::WebAuthnCredential,
+            credential_id,
+            WEBAUTHN_CREDENTIAL_MATERIAL_SCHEMA_VERSION,
+        )?;
+        self.decrypt(&binding, envelope)
+    }
+
     pub fn keyed_digest(
         &self,
         purpose: KeyedDigestPurpose,
@@ -983,6 +1103,61 @@ mod tests {
                         Err(SecretError::AssociatedDataMismatch)
                     ));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn webauthn_state_and_material_are_purpose_and_owner_bound() {
+        let cipher = EnvelopeCipher::from_hex(KEY, 1);
+        assert!(cipher.is_ok());
+        if let Ok(cipher) = cipher {
+            let keyring = Keyring::from_ciphers(cipher, Vec::new());
+            assert!(keyring.is_ok());
+            if let Ok(keyring) = keyring {
+                let ceremony_id = uuid::Uuid::now_v7();
+                let credential_id = uuid::Uuid::now_v7();
+                let registration = keyring
+                    .encrypt_webauthn_registration_state(ceremony_id, b"typed-registration");
+                assert!(registration.is_ok());
+                if let Ok(registration) = registration {
+                    assert!(matches!(
+                        keyring.decrypt_webauthn_registration_state(ceremony_id, &registration),
+                        Ok(plaintext) if plaintext.as_slice() == b"typed-registration"
+                    ));
+                    assert!(matches!(
+                        keyring.decrypt_webauthn_registration_state(
+                            uuid::Uuid::now_v7(),
+                            &registration,
+                        ),
+                        Err(SecretError::AssociatedDataMismatch)
+                    ));
+                    assert!(matches!(
+                        keyring.decrypt_webauthn_authentication_state(
+                            ceremony_id,
+                            &registration,
+                        ),
+                        Err(SecretError::AssociatedDataMismatch)
+                    ));
+                }
+                let material = keyring
+                    .encrypt_webauthn_credential_material(credential_id, b"typed-passkey");
+                assert!(material.is_ok());
+                if let Ok(material) = material {
+                    assert!(matches!(
+                        keyring.decrypt_webauthn_credential_material(credential_id, &material),
+                        Ok(plaintext) if plaintext.as_slice() == b"typed-passkey"
+                    ));
+                }
+                assert!(matches!(
+                    SecretBinding::new(
+                        SecretPurpose::WebAuthnCredentialMaterial,
+                        SecretOwnerKind::WebAuthnCeremony,
+                        credential_id,
+                        1,
+                    ),
+                    Err(SecretError::InvalidSecretOwner)
+                ));
             }
         }
     }
