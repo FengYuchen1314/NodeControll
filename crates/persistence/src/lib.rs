@@ -4658,6 +4658,8 @@ async fn insert_recovery_code_set_postgres(
     Ok(())
 }
 
+type RecoveryReplacementSnapshot = (i64, i64, i64, String, Option<i64>, i64, i64, i64);
+
 async fn replace_recovery_codes_sqlite(
     pool: &SqlitePool,
     command: &RecoveryCodeReplacement<'_>,
@@ -4676,7 +4678,7 @@ async fn replace_recovery_codes_sqlite(
     if locked != 1 {
         return Err(PersistenceError::SessionPrincipalUnavailable);
     }
-    let snapshot: Option<(i64, i64, i64, String, Option<i64>, i64, i64, i64)> = sqlx::query_as(
+    let snapshot: Option<RecoveryReplacementSnapshot> = sqlx::query_as(
         "SELECT u.revision,uas.auth_revision,s.auth_revision,s.status,s.revoked_at_ms,s.recent_auth_at_ms,s.idle_expires_at_ms,s.absolute_expires_at_ms FROM users u JOIN user_auth_state uas ON uas.user_id=u.id JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=? AND s.id=? AND u.status='active' AND u.deleted_at_ms IS NULL",
     )
     .bind(command.user_id.to_string())
@@ -4716,7 +4718,7 @@ async fn replace_recovery_codes_postgres(
     let mut transaction = pool.begin().await?;
     let expected_auth_revision = i64::try_from(command.expected_auth_revision.value())
         .map_err(|_| PersistenceError::RevisionOutOfRange)?;
-    let snapshot: Option<(i64, i64, i64, String, Option<i64>, i64, i64, i64)> = sqlx::query_as(
+    let snapshot: Option<RecoveryReplacementSnapshot> = sqlx::query_as(
         "SELECT u.revision,uas.auth_revision,s.auth_revision,s.status,s.revoked_at_ms,s.recent_auth_at_ms,s.idle_expires_at_ms,s.absolute_expires_at_ms FROM users u JOIN user_auth_state uas ON uas.user_id=u.id JOIN auth_sessions s ON s.user_id=u.id WHERE u.id=$1 AND s.id=$2 AND u.status='active' AND u.deleted_at_ms IS NULL AND uas.auth_revision=$3 FOR UPDATE OF u,uas,s",
     )
     .bind(command.user_id.into_uuid())
@@ -4750,7 +4752,7 @@ async fn replace_recovery_codes_postgres(
 }
 
 fn validate_recovery_replacement_snapshot(
-    snapshot: Option<(i64, i64, i64, String, Option<i64>, i64, i64, i64)>,
+    snapshot: Option<RecoveryReplacementSnapshot>,
     command: &RecoveryCodeReplacement<'_>,
 ) -> Result<(), PersistenceError> {
     let Some((
@@ -11134,6 +11136,29 @@ mod tests {
                 )
                 .await,
             Ok(true)
+        ));
+        let removed_session: Result<u64, sqlx::Error> = match database {
+            Database::Sqlite(pool) => sqlx::query(
+                "DELETE FROM auth_sessions WHERE id=? AND user_id=? AND status='revoked'",
+            )
+            .bind(session.id.to_string())
+            .bind(owner.id.to_string())
+            .execute(pool)
+            .await
+            .map(|result| result.rows_affected()),
+            Database::Postgres(pool) => sqlx::query(
+                "DELETE FROM auth_sessions WHERE id=$1 AND user_id=$2 AND status='revoked'",
+            )
+            .bind(session.id.into_uuid())
+            .bind(owner.id.into_uuid())
+            .execute(pool)
+            .await
+            .map(|result| result.rows_affected()),
+        };
+        assert!(matches!(removed_session, Ok(1)));
+        assert!(matches!(
+            database.list_user_sessions(owner.id).await,
+            Ok(ref sessions) if sessions.is_empty()
         ));
     }
 
