@@ -1513,13 +1513,14 @@ mod tests {
         secret_id: EntityId,
         deleted_at_ms: Option<i64>,
     ) {
-        let result = match database {
+        let result: Result<u64, sqlx::Error> = match database {
             Database::Sqlite(pool) => {
                 sqlx::query("UPDATE secret_records SET deleted_at_ms=? WHERE id=?")
                     .bind(deleted_at_ms)
                     .bind(secret_id.to_string())
                     .execute(pool)
                     .await
+                    .map(|result| result.rows_affected())
             }
             Database::Postgres(pool) => {
                 sqlx::query("UPDATE secret_records SET deleted_at_ms=$1 WHERE id=$2")
@@ -1527,9 +1528,10 @@ mod tests {
                     .bind(secret_id.into_uuid())
                     .execute(pool)
                     .await
+                    .map(|result| result.rows_affected())
             }
         };
-        assert!(result.is_ok_and(|result| result.rows_affected() == 1));
+        assert_eq!(result, Ok(1));
     }
 
     async fn set_session_revoked(
@@ -1538,35 +1540,39 @@ mod tests {
         revoked: bool,
         now_ms: i64,
     ) {
-        let result = match database {
+        let result: Result<u64, sqlx::Error> = match database {
             Database::Sqlite(pool) if revoked => sqlx::query(
                 "UPDATE auth_sessions SET status='revoked',revoked_at_ms=?,revoked_reason='security_policy',revision=revision+1 WHERE id=?",
             )
             .bind(now_ms)
             .bind(session_id.to_string())
             .execute(pool)
-            .await,
+            .await
+            .map(|result| result.rows_affected()),
             Database::Sqlite(pool) => sqlx::query(
                 "UPDATE auth_sessions SET status='active',revoked_at_ms=NULL,revoked_reason=NULL,revision=revision+1 WHERE id=?",
             )
             .bind(session_id.to_string())
             .execute(pool)
-            .await,
+            .await
+            .map(|result| result.rows_affected()),
             Database::Postgres(pool) if revoked => sqlx::query(
                 "UPDATE auth_sessions SET status='revoked',revoked_at_ms=$1,revoked_reason='security_policy',revision=revision+1 WHERE id=$2",
             )
             .bind(now_ms)
             .bind(session_id.into_uuid())
             .execute(pool)
-            .await,
+            .await
+            .map(|result| result.rows_affected()),
             Database::Postgres(pool) => sqlx::query(
                 "UPDATE auth_sessions SET status='active',revoked_at_ms=NULL,revoked_reason=NULL,revision=revision+1 WHERE id=$1",
             )
             .bind(session_id.into_uuid())
             .execute(pool)
-            .await,
+            .await
+            .map(|result| result.rows_affected()),
         };
-        assert!(result.is_ok_and(|result| result.rows_affected() == 1));
+        assert_eq!(result, Ok(1));
     }
 
     async fn schema_invariant_contract(database: &Database) {

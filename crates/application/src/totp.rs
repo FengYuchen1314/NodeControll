@@ -5,9 +5,10 @@ use nodecontroll_domain::{
 };
 use nodecontroll_persistence::{
     ActivateTotpCredential, ActivateTotpCredentialOutcome, BeginTotpEnrollmentOutcome, Database,
-    DisableTotpCredential, DisableTotpCredentialOutcome, NewRecoveryCode, NewRecoveryCodeSet,
-    NewSecretRecord, NewTotpEnrollment, PersistenceError, StoredTotpCredential,
-    TotpActivationResult, TotpSessionGuard, TotpStepAdvance, TotpStepAdvanceOutcome,
+    DisableTotpCredential, DisableTotpCredentialOutcome, AuthenticatedSession,
+    AuthSessionStatus, NewRecoveryCode, NewRecoveryCodeSet, NewSecretRecord, NewTotpEnrollment,
+    PersistenceError, StoredTotpCredential, TotpActivationResult, TotpSessionGuard,
+    TotpStepAdvance, TotpStepAdvanceOutcome,
 };
 use nodecontroll_secrets::{
     KeyedDigestPurpose, Keyring, RecoveryCode, SecretBinding, SecretOwnerKind, SecretPurpose,
@@ -40,6 +41,34 @@ pub struct TotpManagementBinding {
 }
 
 impl TotpManagementBinding {
+    /// Derives the immutable persistence guard from an authenticated session projection.
+    ///
+    /// The binding deliberately has no field-wise constructor. TOTP management callers must
+    /// first pass the ordinary session-authentication boundary, and a forced password change
+    /// cannot be bypassed by entering the credential-management flow. The repository still
+    /// revalidates the captured user/session/auth revisions, exact recent-auth timestamp, and
+    /// session lifetime inside every management transaction.
+    pub fn from_authenticated_session(
+        authenticated: &AuthenticatedSession,
+    ) -> Result<Self, TotpManagementBindingError> {
+        if authenticated.force_password_change {
+            return Err(TotpManagementBindingError::PasswordChangeRequired);
+        }
+        if authenticated.session.status != AuthSessionStatus::Active
+            || authenticated.session.revoked_at_ms.is_some()
+            || authenticated.session.revoked_reason.is_some()
+        {
+            return Err(TotpManagementBindingError::InvalidSession);
+        }
+        Ok(Self {
+            user_id: authenticated.user_id,
+            actor_session_id: authenticated.session.id,
+            expected_user_revision: authenticated.user_revision,
+            expected_auth_revision: authenticated.session.auth_revision,
+            expected_recent_auth_at_ms: authenticated.session.recent_auth_at_ms,
+        })
+    }
+
     fn guard(self, now_ms: i64) -> TotpSessionGuard {
         TotpSessionGuard {
             user_id: self.user_id,
@@ -50,6 +79,14 @@ impl TotpManagementBinding {
             now_ms,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum TotpManagementBindingError {
+    #[error("TOTP management is unavailable until the required password change is complete")]
+    PasswordChangeRequired,
+    #[error("TOTP management requires an active authenticated session")]
+    InvalidSession,
 }
 
 pub struct BeginTotpEnrollmentCommand {
@@ -508,13 +545,15 @@ mod tests {
     use async_trait::async_trait;
     use nodecontroll_domain::{
         AuthChallenge, AuthChallengePurpose, AuthChallengeRotationState, AuthChallengeStatus,
-        AuthenticationMethod, EntityId, Revision, TotpCredential, TotpCredentialStatus,
-        TotpEnrollmentPolicy,
+        AuthenticationMethod, EntityId, PrincipalLabel, Revision, TotpCredential,
+        TotpCredentialStatus, TotpEnrollmentPolicy, UserRole, Username,
     };
     use nodecontroll_persistence::{
-        ActivateTotpCredential, ActivateTotpCredentialOutcome, BeginTotpEnrollmentOutcome,
-        DisableTotpCredential, DisableTotpCredentialOutcome, NewTotpEnrollment, StoredSecretRecord,
-        StoredTotpCredential, TotpStepAdvance, TotpStepAdvanceOutcome,
+        ActivateTotpCredential, ActivateTotpCredentialOutcome, AuthLevel, AuthSessionStatus,
+        AuthSessionSummary, AuthenticatedSession, BeginTotpEnrollmentOutcome,
+        DisableTotpCredential, DisableTotpCredentialOutcome, NewTotpEnrollment,
+        SessionRevocationReason, StoredSecretRecord, StoredTotpCredential, TotpStepAdvance,
+        TotpStepAdvanceOutcome,
     };
     use nodecontroll_secrets::{
         EnvelopeCipher, Keyring, SecretBinding, SecretOwnerKind, SecretPurpose,
@@ -522,8 +561,8 @@ mod tests {
     };
 
     use super::{
-        TotpChallengeProofOutcome, TotpClock, TotpPort, TotpPortError, TotpService,
-        TotpServiceError,
+        TotpChallengeProofOutcome, TotpClock, TotpManagementBinding,
+        TotpManagementBindingError, TotpPort, TotpPortError, TotpService, TotpServiceError,
     };
     use crate::AuthChallengeVerificationClaim;
 
@@ -540,6 +579,79 @@ mod tests {
     struct FakePort {
         active: StoredTotpCredential,
         advanced: Arc<Mutex<Option<TotpStepAdvance>>>,
+    }
+
+    fn authenticated_session(force_password_change: bool) -> AuthenticatedSession {
+        let username = Username::parse("owner");
+        assert!(username.is_ok());
+        let Ok(username) = username else {
+            panic!("fixture username must be valid");
+        };
+        let principal_label = PrincipalLabel::parse("owner");
+        assert!(principal_label.is_ok());
+        let Ok(principal_label) = principal_label else {
+            panic!("fixture principal label must be valid");
+        };
+        AuthenticatedSession {
+            session: AuthSessionSummary {
+                id: EntityId::new(),
+                status: AuthSessionStatus::Active,
+                auth_revision: Revision::from_value(7),
+                auth_level: AuthLevel::Password,
+                created_at_ms: 1,
+                authenticated_at_ms: 2,
+                recent_auth_at_ms: 3,
+                last_seen_at_ms: 4,
+                idle_expires_at_ms: 5,
+                absolute_expires_at_ms: 6,
+                has_ip_context: false,
+                has_user_agent_context: false,
+                revoked_at_ms: None,
+                revoked_reason: None,
+                revision: Revision::from_value(8),
+            },
+            user_id: EntityId::new(),
+            username,
+            role: UserRole::Owner,
+            principal_label,
+            force_password_change,
+            user_revision: Revision::from_value(9),
+        }
+    }
+
+    #[test]
+    fn management_binding_only_derives_from_an_eligible_authenticated_session() {
+        let authenticated = authenticated_session(false);
+        let binding = TotpManagementBinding::from_authenticated_session(&authenticated);
+        assert!(binding.is_ok());
+        let Ok(binding) = binding else {
+            panic!("eligible session must create a management binding");
+        };
+        assert_eq!(
+            binding.guard(10),
+            nodecontroll_persistence::TotpSessionGuard {
+                user_id: authenticated.user_id,
+                actor_session_id: authenticated.session.id,
+                expected_user_revision: authenticated.user_revision,
+                expected_auth_revision: authenticated.session.auth_revision,
+                expected_recent_auth_at_ms: authenticated.session.recent_auth_at_ms,
+                now_ms: 10,
+            }
+        );
+
+        assert_eq!(
+            TotpManagementBinding::from_authenticated_session(&authenticated_session(true)),
+            Err(TotpManagementBindingError::PasswordChangeRequired)
+        );
+
+        let mut revoked = authenticated_session(false);
+        revoked.session.status = AuthSessionStatus::Revoked;
+        revoked.session.revoked_at_ms = Some(11);
+        revoked.session.revoked_reason = Some(SessionRevocationReason::SecurityPolicy);
+        assert_eq!(
+            TotpManagementBinding::from_authenticated_session(&revoked),
+            Err(TotpManagementBindingError::InvalidSession)
+        );
     }
 
     #[async_trait]

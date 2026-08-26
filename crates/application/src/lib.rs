@@ -49,7 +49,8 @@ pub use auth_challenge::{
 pub use totp::{
     ActivateTotpEnrollmentCommand, ActivatedTotpCredential, BeginTotpEnrollmentCommand,
     BegunTotpEnrollment, DisableTotpCredentialCommand, SystemTotpClock, TotpChallengeProofOutcome,
-    TotpClock, TotpManagementBinding, TotpPort, TotpPortError, TotpService, TotpServiceError,
+    TotpClock, TotpManagementBinding, TotpManagementBindingError, TotpPort, TotpPortError,
+    TotpService, TotpServiceError,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
