@@ -4,11 +4,11 @@ use nodecontroll_domain::{
     TotpEnrollmentPolicy,
 };
 use nodecontroll_persistence::{
-    ActivateTotpCredential, ActivateTotpCredentialOutcome, BeginTotpEnrollmentOutcome, Database,
-    DisableTotpCredential, DisableTotpCredentialOutcome, AuthenticatedSession,
-    AuthSessionStatus, NewRecoveryCode, NewRecoveryCodeSet, NewSecretRecord, NewTotpEnrollment,
-    PersistenceError, StoredTotpCredential, TotpActivationResult, TotpSessionGuard,
-    TotpStepAdvance, TotpStepAdvanceOutcome,
+    ActivateTotpCredential, ActivateTotpCredentialOutcome, AuthSessionStatus, AuthenticatedSession,
+    BeginTotpEnrollmentOutcome, Database, DisableTotpCredential, DisableTotpCredentialOutcome,
+    NewRecoveryCode, NewRecoveryCodeSet, NewSecretRecord, NewTotpEnrollment, PersistenceError,
+    StoredTotpCredential, TotpActivationResult, TotpSessionGuard, TotpStepAdvance,
+    TotpStepAdvanceOutcome,
 };
 use nodecontroll_secrets::{
     KeyedDigestPurpose, Keyring, RecoveryCode, SecretBinding, SecretOwnerKind, SecretPurpose,
@@ -561,8 +561,8 @@ mod tests {
     };
 
     use super::{
-        TotpChallengeProofOutcome, TotpClock, TotpManagementBinding,
-        TotpManagementBindingError, TotpPort, TotpPortError, TotpService, TotpServiceError,
+        TotpChallengeProofOutcome, TotpClock, TotpManagementBinding, TotpManagementBindingError,
+        TotpPort, TotpPortError, TotpService, TotpServiceError,
     };
     use crate::AuthChallengeVerificationClaim;
 

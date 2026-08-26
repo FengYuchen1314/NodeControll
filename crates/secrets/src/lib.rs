@@ -1105,8 +1105,7 @@ mod tests {
             let rollback_digits = totp_digits(&seed, 90);
             assert!(rollback_digits.is_ok());
             if let Ok(rollback_digits) = rollback_digits {
-                let text =
-                    std::str::from_utf8(rollback_digits.as_slice()).unwrap_or_default();
+                let text = std::str::from_utf8(rollback_digits.as_slice()).unwrap_or_default();
                 let code = TotpCode::parse(text);
                 assert!(matches!(
                     code.and_then(|code| verify_totp_at_utc_ms(

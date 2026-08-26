@@ -40,7 +40,7 @@ pub struct StoredTotpCredential {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BeginTotpEnrollmentOutcome {
-    Created(StoredTotpCredential),
+    Created(Box<StoredTotpCredential>),
     AlreadyPending,
     Stale,
 }
@@ -358,8 +358,8 @@ async fn begin_enrollment_sqlite(
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
-    Ok(BeginTotpEnrollmentOutcome::Created(project_new_enrollment(
-        enrollment,
+    Ok(BeginTotpEnrollmentOutcome::Created(Box::new(
+        project_new_enrollment(enrollment),
     )))
 }
 
@@ -398,8 +398,8 @@ async fn begin_enrollment_postgres(
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
-    Ok(BeginTotpEnrollmentOutcome::Created(project_new_enrollment(
-        enrollment,
+    Ok(BeginTotpEnrollmentOutcome::Created(Box::new(
+        project_new_enrollment(enrollment),
     )))
 }
 
@@ -1531,7 +1531,7 @@ mod tests {
                     .map(|result| result.rows_affected())
             }
         };
-        assert_eq!(result, Ok(1));
+        assert!(matches!(result, Ok(1)));
     }
 
     async fn set_session_revoked(
@@ -1572,7 +1572,7 @@ mod tests {
             .await
             .map(|result| result.rows_affected()),
         };
-        assert_eq!(result, Ok(1));
+        assert!(matches!(result, Ok(1)));
     }
 
     async fn schema_invariant_contract(database: &Database) {
@@ -1978,8 +1978,8 @@ mod tests {
             disabled,
             Ok(DisableTotpCredentialOutcome::Disabled {
                 disabled_credentials: 1,
-                auth_revision: Revision::from_value(3),
-            })
+                auth_revision,
+            }) if auth_revision == Revision::from_value(3)
         ));
         assert_eq!(active_recovery_version(&database, user_id).await, None);
         assert!(
