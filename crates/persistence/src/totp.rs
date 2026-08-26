@@ -261,9 +261,7 @@ fn validate_activation(activation: &ActivateTotpCredential<'_>) -> Result<(), Pe
     Ok(())
 }
 
-fn validate_challenge_binding(
-    binding: &TotpChallengeBinding,
-) -> Result<(), PersistenceError> {
+fn validate_challenge_binding(binding: &TotpChallengeBinding) -> Result<(), PersistenceError> {
     validate_access(&binding.access)?;
     validate_non_negative_timestamp(binding.challenge_created_at_ms)?;
     validate_non_negative_timestamp(binding.challenge_expires_at_ms)?;
@@ -1726,8 +1724,8 @@ mod tests {
     use super::{
         ActivateTotpCredential, ActivateTotpCredentialOutcome, BeginTotpEnrollmentOutcome,
         Database, DisableTotpCredential, DisableTotpCredentialOutcome, NewRecoveryCodeSet,
-        NewSecretRecord, NewTotpEnrollment, PersistenceError, StoredSecretRecord, TotpSessionGuard,
-        TotpChallengeBinding, TotpStepAdvance, TotpStepAdvanceOutcome,
+        NewSecretRecord, NewTotpEnrollment, PersistenceError, StoredSecretRecord,
+        TotpChallengeBinding, TotpSessionGuard, TotpStepAdvance, TotpStepAdvanceOutcome,
         insert_recovery_code_set_postgres, insert_recovery_code_set_sqlite,
     };
     use crate::{
@@ -1968,13 +1966,13 @@ mod tests {
         TotpChallengeBinding {
             access,
             claim_id,
-            purpose: challenge.purpose,
-            user_id: challenge.user_id,
-            session_id: challenge.session_id,
-            expected_auth_revision: challenge.auth_revision,
-            expected_challenge_revision: challenge.revision,
-            challenge_created_at_ms: challenge.created_at_ms,
-            challenge_expires_at_ms: challenge.expires_at_ms,
+            purpose: reserved.purpose,
+            user_id: reserved.user_id,
+            session_id: reserved.session_id,
+            expected_auth_revision: reserved.auth_revision,
+            expected_challenge_revision: reserved.revision,
+            challenge_created_at_ms: reserved.created_at_ms,
+            challenge_expires_at_ms: reserved.expires_at_ms,
             reserved_at_ms,
             verification_expires_at_ms,
         }
@@ -2512,7 +2510,11 @@ mod tests {
             Ok(TotpStepAdvanceOutcome::Stale)
         ));
         let mut wrong_context = advance.clone();
-        wrong_context.challenge.access.client_context.user_agent_hash = Some([244; 32]);
+        wrong_context
+            .challenge
+            .access
+            .client_context
+            .user_agent_hash = Some([244; 32]);
         assert!(matches!(
             database.advance_totp_step(&wrong_context).await,
             Ok(TotpStepAdvanceOutcome::Stale)
@@ -2800,9 +2802,8 @@ mod tests {
         );
         let advance_database = database.clone();
         let advance_command = first_advance.clone();
-        let advance_task = tokio::spawn(async move {
-            advance_database.advance_totp_step(&advance_command).await
-        });
+        let advance_task =
+            tokio::spawn(async move { advance_database.advance_totp_step(&advance_command).await });
         wait_for_blocked_postgres_query(
             pool,
             "%SELECT 1::BIGINT FROM auth_challenges c WHERE c.id=$1%",
@@ -2816,9 +2817,10 @@ mod tests {
             claim_id: first_binding.claim_id,
             method: AuthenticationMethod::Totp,
         };
-        let resume_task = tokio::spawn(async move {
-            resume_database.resume_auth_challenge_attempt(&resume).await
-        });
+        let resume_task =
+            tokio::spawn(
+                async move { resume_database.resume_auth_challenge_attempt(&resume).await },
+            );
         wait_for_blocked_postgres_query(
             pool,
             "%SELECT id FROM auth_challenges WHERE id=$1 AND token_key_version%",
@@ -2891,18 +2893,18 @@ mod tests {
             claim_id: second_binding.claim_id,
             method: AuthenticationMethod::Totp,
         };
-        let resume_task = tokio::spawn(async move {
-            resume_database.resume_auth_challenge_attempt(&resume).await
-        });
+        let resume_task =
+            tokio::spawn(
+                async move { resume_database.resume_auth_challenge_attempt(&resume).await },
+            );
         wait_for_blocked_postgres_query(
             pool,
             "%SELECT id FROM auth_challenges WHERE id=$1 AND token_key_version%",
         )
         .await;
         let advance_database = database.clone();
-        let advance_task = tokio::spawn(async move {
-            advance_database.advance_totp_step(&second_advance).await
-        });
+        let advance_task =
+            tokio::spawn(async move { advance_database.advance_totp_step(&second_advance).await });
         wait_for_blocked_postgres_query(
             pool,
             "%SELECT 1::BIGINT FROM auth_challenges c WHERE c.id=$1%",

@@ -591,18 +591,14 @@ where
 }
 
 fn claim_context_is_live(claim: &AuthChallengeVerificationClaim, now_ms: i64) -> bool {
-    now_ms >= claim.reserved_at_ms()
-        && now_ms < claim.challenge().expires_at_ms
+    now_ms >= claim.reserved_at_ms() && now_ms < claim.challenge().expires_at_ms
 }
 
 fn claim_verifier_lease_is_live(claim: &AuthChallengeVerificationClaim, now_ms: i64) -> bool {
     now_ms < claim.verification_expires_at_ms()
 }
 
-fn challenge_binding(
-    claim: &AuthChallengeVerificationClaim,
-    now_ms: i64,
-) -> TotpChallengeBinding {
+fn challenge_binding(claim: &AuthChallengeVerificationClaim, now_ms: i64) -> TotpChallengeBinding {
     TotpChallengeBinding {
         access: claim.access_at(now_ms),
         claim_id: claim.claim_id(),
@@ -636,11 +632,9 @@ fn verified_handoff_evidence(
     {
         return Err(TotpServiceError::InvalidChallengeClaim);
     }
-    let evidence = VerifiedAuthChallengeEvidence::from_method_verifier(
-        claim,
-        AuthenticationAssurance::Mfa,
-    )
-    .map_err(|_| TotpServiceError::InvalidChallengeClaim)?;
+    let evidence =
+        VerifiedAuthChallengeEvidence::from_method_verifier(claim, AuthenticationAssurance::Mfa)
+            .map_err(|_| TotpServiceError::InvalidChallengeClaim)?;
     Ok(evidence)
 }
 
@@ -700,13 +694,13 @@ mod tests {
         TotpCredential, TotpCredentialStatus, TotpEnrollmentPolicy, UserRole, Username,
     };
     use nodecontroll_persistence::{
-        ActivateTotpCredential, ActivateTotpCredentialOutcome, AuthLevel, AuthSessionStatus,
-        AuthSessionSummary, AuthenticatedSession, AuthChallengeAccess,
+        ActivateTotpCredential, ActivateTotpCredentialOutcome, AuthChallengeAccess,
         AuthChallengeAttemptFailure, AuthChallengeAttemptOutcome, AuthChallengeAttemptReservation,
         AuthChallengeAttemptReservationOutcome, AuthChallengeAttemptResume,
         AuthChallengeClientContext, AuthChallengeConsumption, AuthChallengeConsumptionOutcome,
         AuthChallengeRotationReservation, AuthChallengeRotationReservationOutcome,
-        AuthChallengeTokenLookup, BeginTotpEnrollmentOutcome, CreateAuthChallengeOutcome,
+        AuthChallengeTokenLookup, AuthLevel, AuthSessionStatus, AuthSessionSummary,
+        AuthenticatedSession, BeginTotpEnrollmentOutcome, CreateAuthChallengeOutcome,
         DisableTotpCredential, DisableTotpCredentialOutcome, NewAuthChallenge, NewTotpEnrollment,
         ResumedAuthChallengeAttempt, SessionRevocationReason, StoredSecretRecord,
         StoredTotpCredential, TotpChallengeBinding, TotpStepAdvance, TotpStepAdvanceOutcome,
@@ -859,11 +853,14 @@ mod tests {
         ) -> Result<Option<TotpVerifiedHandoff>, TotpPortError> {
             let handoff = self.handoff.lock();
             Ok(handoff.ok().and_then(|stored| {
-                stored.as_ref().filter(|handoff| {
-                    handoff.challenge_id == binding.access.id
-                        && handoff.claim_id == binding.claim_id
-                        && binding.access.now_ms < binding.challenge_expires_at_ms
-                }).cloned()
+                stored
+                    .as_ref()
+                    .filter(|handoff| {
+                        handoff.challenge_id == binding.access.id
+                            && handoff.claim_id == binding.claim_id
+                            && binding.access.now_ms < binding.challenge_expires_at_ms
+                    })
+                    .cloned()
             }))
         }
 
@@ -1208,9 +1205,7 @@ mod tests {
         let Ok(policy) = policy else {
             panic!("policy must be valid");
         };
-        let clock = SequenceClock(Arc::new(Mutex::new(VecDeque::from([
-            90_001, 90_005,
-        ]))));
+        let clock = SequenceClock(Arc::new(Mutex::new(VecDeque::from([90_001, 90_005]))));
         let service = TotpService::new(port, keyring, policy, 300_000, clock);
         assert!(service.is_ok());
         if let Ok(service) = service {
@@ -1295,13 +1290,8 @@ mod tests {
             if let (Ok(policy), Ok(auth_policy)) = (policy, auth_policy) {
                 let auth_challenges =
                     AuthChallengeService::new(auth_port, keyring.clone(), auth_policy);
-                let service = TotpService::new(
-                    port,
-                    keyring.clone(),
-                    policy,
-                    300_000,
-                    FixedClock(100_000),
-                );
+                let service =
+                    TotpService::new(port, keyring.clone(), policy, 300_000, FixedClock(100_000));
                 assert!(service.is_ok());
                 if let Ok(service) = service {
                     assert!(matches!(
