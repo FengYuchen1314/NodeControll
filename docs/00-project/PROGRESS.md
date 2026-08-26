@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2 后端、Web 主体与生成 SDK 已进入本地主线，后端/Web 修补候选正在 VPS 分别收口，C3 仍在安全重写，整片合并态验收尚未开始；P0～P4 已完成。
+- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2 Web 已通过独立 VPS 门，C2 后端第三候选仍在重跑，C3 源码已进入本地主线但尚未编译，整片合并态验收尚未开始；P0～P4 已完成。
 - 总体状态：进行中。
 - 当前上游基线：`iluobei/miaomiaowu@0b47f10c52aee10b9f759a593ca5f61a823cbb72`（`main`，2026-08-25 获取）。
 - 妙妙屋 X 文档基线：`https://miaomiaowux.com/docs/tutorial` 及同站文档页，2026-08-25 开始抓取。
@@ -27,13 +27,15 @@
 
 ## 已完成内容与代码说明
 
-### 2026-08-26 23:12 — C2 前后端进入本地主线；精确候选暴露的问题已最小化修补
+### 2026-08-26 23:24 — C2 Web 独立门通过；C2 后端第三候选与 C3 合并态待验
 
-- C2 后端第一次精确候选以 `dea2b96…` 为源码基线，在隔离 Rust/PostgreSQL 环境中真实执行。Node 侧 OpenAPI、文档和源码门通过；Rust 门准确拦下两项源码问题：`crates/secrets/src/lib.rs` 有两处 `rustfmt` 漂移，一条负向测试用 `Result<bool, SecretError> == Ok(false)`，而含 I/O 错误的 `SecretError` 不应为了测试派生 `PartialEq`。修补改用嵌套 `matches!(…, Ok(false))`，两处格式由固定 VPS builder 产出；后端分支提交为 `9b2f5f63…`，合入本地主线后是 `d5b6ee8…`。新的 229-file 精确候选正在全量重跑，结果返回前不登记后端门通过。
+- C2 后端第一次精确候选以 `dea2b96…` 为源码基线，在隔离 Rust/PostgreSQL 环境中真实执行。Node 侧 OpenAPI、文档和源码门通过；Rust 门准确拦下两项源码问题：`crates/secrets/src/lib.rs` 有两处 `rustfmt` 漂移，一条负向测试用 `Result<bool, SecretError> == Ok(false)`，而含 I/O 错误的 `SecretError` 不应为了测试派生 `PartialEq`。修补改用嵌套 `matches!(…, Ok(false))`，两处格式由固定 VPS builder 产出；后端分支提交为 `9b2f5f63…`，合入本地主线后是 `d5b6ee8…`。
+- 第二候选的 fmt/check 和 Node 三门通过，SQLite/PostgreSQL 却在同一既有 session 列表断言失败：恢复码合同先创建并撤销了一条 session，随后 `list_user_sessions` 会按设计返回所有状态，污染了下一个合同的 `len == 1` 前提。修补没有放宽旧断言，而是在恢复码合同完成 revoke 后按 `session.id + owner.id + revoked` 精确删除自己的测试夹具、断言只删一行并确认 owner 暂无 session；三个 Clippy `type_complexity` 则收敛成私有 `RecoveryReplacementSnapshot`，没有增加 `allow`。分支提交 `2ddb143…` 已合入本地主线为 `0fb6562…`，第三个全新候选正在重跑，结果返回前不登记后端门通过。
 - C2 Web 主体已以 `e8b821e…` 合入本地主线。一次性明文只有在 terminal journal 成功 settle、持久化并广播后才交给页面；失败会清空 staged/transfer 数组并进入 quarantine。bootstrap 改成 status-first：只有结构正确、可证明未提交的 Problem 4xx 可以重新开放表单；畸形/空 5xx、意外 2xx 和无法验证的 201 都锁定并只做 GET 对账，不自动重放。恢复码响应限定为恰好 8 枚、每枚 8 组小写十六进制；运输层拒绝重定向，以流式读取强制 64 KiB 上限，并只接受精确成功状态、媒体类型与 `no-store`。
-- VPS 从合入态 OpenAPI 重生成了 recovery-code SDK：tracked 生成文件对应分支提交 `3000941…`，安全运输层随后以生成请求/响应类型和字面路径取代临时手写类型，提交 `ba5b117…`；两者已分别合入本地主线为 `4fc0a34…`、`d04f157…`。生成客户端仍会跟随重定向并先做无界 `response.text()`，所以这里只复用合同，不删除专门的受限运输层。VPS 第一轮又发现 TypeScript 无法证明闭包内 disposition 的窄化；`5c00d8c…` 把每个安全分支的 `reconcile` 赋值改成显式语句，`426280b…` 修复严格浏览器 lint 边界。这两笔仍在 Web 精确候选中跑完整 lint/Vitest，尚未合入主线。
+- VPS 从合入态 OpenAPI 重生成了 recovery-code SDK：tracked 生成文件对应分支提交 `3000941…`，安全运输层随后以生成请求/响应类型和字面路径取代临时手写类型，提交 `ba5b117…`；两者已分别合入本地主线为 `4fc0a34…`、`d04f157…`。生成客户端仍会跟随重定向并先做无界 `response.text()`，所以这里只复用合同，不删除专门的受限运输层。随后五笔修补把 terminal disposition 改为显式赋值、收紧浏览器 lint、在清空后销毁一次性对话框实例，并让账户安全页测试经真实 `RouterView` 挂载，避免“测试通过但离页 guard 没有注册”的假覆盖；它们已合入本地主线 `96c3f89…` 至 `40c0ecb…`。
+- C2 Web 最终精确候选为 `31c112e9…`，archive SHA-256 `d66b64e34b396e4b0b2025e7aa64139f114a2770537b011e69b0e2c42096d1fc`。固定 Node 24.19.0/pnpm 11.24.0 fresh install 下，OpenAPI 为 13 paths/15 operations，16 个生成文件前后 manifest 同为 `418cadbc…ca4b`；typecheck、零 warning ESLint、12 files/111 tests、358/358 文档、0 broken links 和 sanitizer 全绿，最终没有 Router guard warning。测试日志 SHA-256 为 `aad478f9…a45e`，final-gates manifest 为 `0f7d9821…bd1f`。按发布边界没有执行 production build；VPS 的 store、工作副本、临时文件和容器已清理，只保留最终源码、日志和 hash。
 - 本地主线 `f4786c5…` 扩展了 `tools/smoke_master.mjs` 的 C2 运行时合同：bootstrap 必须只返回一次 8 枚规范恢复码并带 `no-store`；活动会话可读取无秘密摘要；缺失 CSRF 的再生成必须 403 且 set 版本、余量和创建时间不变；有效再生成必须精确 200、版本加一、旧组整体替换，随后 GET 与新组一致。脚本在完成结构与不重合校验后立刻覆写响应对象中的明文数组，只输出布尔结论，不把恢复码写入日志。这笔只做了静态 diff 审计，等待后续合并态 VPS runtime smoke。
-- C3 修正版仍在独立工作树。它已经把 proof 前 attempt reservation、同用户/目的单 active limiter、method/assurance 矩阵、opaque bearer、网络/UA 精确绑定和 replacement-session 事务 seam 放进同一模型。进一步审阅发现 proof 已提交为 `rotation_pending` 后、替换 session 前若进程退出，原先只有一次性内存 claim，会卡到 TTL；当前修版增加持久 handoff lease、受 bearer/context/revision 约束的 resume，以及超时后只释放 handoff 的恢复路径，并用 CAS 保证并发 resume 只有一个 transaction claim。迁移和双库并发合同仍在编写，未合入也未验收。
+- C3 修正版以源码提交 `591a1fa13…` 完成，已合入本地主线为 `5d32d18…`。它把 proof 前 attempt reservation、同用户/目的单 active limiter、method/assurance 矩阵、opaque bearer、网络/UA 精确绑定和 replacement-session 事务 seam 放进同一模型。进一步审阅发现 proof 已提交为 `rotation_pending` 后、替换 session 前若进程退出，原先只有一次性内存 claim，会卡到 TTL；修版增加持久 handoff lease、受 bearer/context/revision 约束的 resume，以及超时后只释放 handoff 的恢复路径，并用 CAS 保证并发 resume 只有一个 transaction claim。源码合同覆盖四路 proof/resume、最后 slot 成功、两层 lease 崩溃恢复、exhausted 发行绕过、上下文/认证版本/session 失效和 raw schema 破坏；独立实现说明见 `WP02_C3_AUTH_CHALLENGE_IMPLEMENTATION.md`。它尚未经过 cargo 或双库门，不能登记为通过。
 - 当前公开 `origin/main` 仍停在已正式验收的 `3f1bcb49…`。上述本地提交没有推送，GitHub Actions 也没有为它们生成正式 production artifact；只有 C2/C3 合并态在 VPS 通过开发门后才会显式推送 `HEAD:refs/heads/main`，随后由公开 Actions 进行唯一正式编译。
 
 ### 2026-08-26 22:40 — WP-02-C2 后端进入本地主线；Web/C3 互审阻断正在修正
