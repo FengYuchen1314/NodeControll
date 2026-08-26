@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2 Web 与后端各自通过独立 VPS 门，C3 的编译/门工具修复候选正在全量重跑；WP04-A 共享 SaaS 组件已通过独立 VPS 门并进入本地主线；P0～P4 已完成。
+- 当前阶段：P5，WP02-C1 已完成公开提交级验收；C2+C3 已通过合并态 VPS 开发门并进入本地主线，尚待含 WP04 的主线组合门与公开 Actions 正式制品门；WP04-A 共享 SaaS 组件已通过独立 VPS 门，WP04-B 应用壳层正在实现；P0～P4 已完成。
 - 总体状态：进行中。
 - 当前上游基线：`iluobei/miaomiaowu@0b47f10c52aee10b9f759a593ca5f61a823cbb72`（`main`，2026-08-25 获取）。
 - 妙妙屋 X 文档基线：`https://miaomiaowux.com/docs/tutorial` 及同站文档页，2026-08-25 开始抓取。
@@ -26,6 +26,15 @@
 | P7 | 系统验收和交付 | 未开始 | E2E、性能、安全、升级/回滚、备份恢复全部验收 |
 
 ## 已完成内容与代码说明
+
+### 2026-08-27 00:26 — C2+C3 合并态 31/31 门通过并合入本地主线
+
+- 最终不可变候选绑定源码 `e5f38be7b9f75fd8a39a75ce8d445da673015cef`，目录为 `/opt/nodecontroll/dev/e5f38be-c2c3-20260826T161714Z-527e6805`。三笔最小源码修补分别把 challenge SQL 改为 SQLx 可证明为 `'static` 的双后端字面量、把 SQLite/PostgreSQL 不同 `QueryResult` 只归一为共同的 `rows_affected: u64`、修正 migration 版本与大枚举布局，并让 completion-time 生产路径真实读取持久 reservation 时间。测试目标会实际调用 method-verifier 构造器，因此 lint expectation 只挂在非 test target；生产目标仍会在 C4 接入后以 unfulfilled expectation 提醒删除临时标记，没有改成 `allow`。
+- 失败过程没有被抹掉。首个候选由 12 处动态 SQL lifetime 错误和三处双库返回类型错误阻断；后续候选又发现 migration 断言仍停在 6、Clippy 大变体/未使用 seam，以及 SQLite `immutable=1` 忽略 WAL 的门脚本假设。WAL 门随后改为先证明运行态 WAL，再 checkpoint 到独立验证副本、关闭连接并只读重开。最终复核还发现旧 secret scan 同时使用互斥的 `grep -E/-F`，会把工具 `rc=2` 错当成无命中；该轮没有冒充通过，而是重新分离扫描输入和输出日志，并规定 `rc=0` 为泄漏失败、`rc=1` 为无命中、`rc>=2` 为扫描器故障失败，再从同一源码新归档全跑。
+- 最终 31/31 门 `overall_rc=0`：Rust fmt/check/workspace all-targets test/Clippy/debug Master 均通过，共 92 项测试；真实 PostgreSQL 18.6 与 SQLite repository contracts、0006/0007 migration/typed-secret guard、canary wrong/old key、恢复码整体替换和并发单次消费均执行。运行时 OpenAPI 与 tracked 文件精确一致，为 13 paths/15 operations；SDK 重生成零漂移。Web typecheck、零 warning ESLint 和 12 files/111 tests 全绿；设计矩阵仍为 358 条、0 broken links，sanitizer 零修改。
+- SQLite 与 PostgreSQL Master smoke 输出逐字一致：bootstrap 只返回恰好八枚规范恢复码且 `no-store`，缺 CSRF 不改状态，有效替换令版本精确 `+1` 且新旧集合不重叠；持久态均为 migration 7、set 1 replaced、set 2 active、8 remaining。SQLite Master 停止删除后 WAL 从 1,380,232 bytes checkpoint 为 0，`busy=0`，关闭连接后的只读重开验证通过。严格 secret scan 覆盖 37 个输入文件，canonical recovery-code 正则、四个运行时秘密和固定密码六项全部得到明确 `grep rc=1`。
+- archive、source pre/post manifest、`evidence.txt`、logs manifest、evidence-files manifest 和 gate script 的 SHA-256 依次为 `6510609a0619debe9725102f5a3ca2dd4c30b6d0bfbcf01ff6752c21d6c481ec`、`56efc974ec63a1565b89237b89bf9b2cb9b25821ba46f32dfbfb843e84cc37d9`、`800f4207142e7d6f78efbe1f94d4b5d9e8f27b94d4721996b4d191eedb423403`、`d913d16f96ec128f632d7785d14b8029391c8cec1a7fe87238d213201a7c2fea`、`cc30a48d305c10b66b26fc8e5af64cf6930875dde41b6ba70bf3ac9f8ef984cf`、`257c2bb6c0371fa3d74abfbf0894daaaf76fdc014aec0625fa759a963dc79dc2`；扫描输入 manifest 为 `d8b88ec06d3cfecb2106d09cb087c878e15eaf361f68fa25d1727aba3d90dbe7`。
+- 三笔经过验证的修补已按顺序合入本地主线为 `8018c5a…`、`1565454…`、`b99ec4e…`。VPS 未执行 release 或 Vite production build，具名容器、网络、PG 匿名卷与 build scratch 已精确清理；这仍是开发门，不冒充公开 Actions 制品验收。下一步先把 WP04-B 及必要合同修补收口，再对精确主线运行组合开发门，之后才显式推送公开 `main`。
 
 ### 2026-08-27 00:02 — WP04-A SaaS 共享组件通过独立 VPS 门并合入主线
 
