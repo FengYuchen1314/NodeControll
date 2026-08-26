@@ -24,6 +24,16 @@ export type AuthenticatedEnvelope = {
 
 export type BootstrapCreated = {
     instance_id: string;
+    one_time_recovery_codes: [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string
+    ];
     owner_id: string;
 };
 
@@ -122,6 +132,38 @@ export type ReauthenticateRequest = {
 };
 
 export type ReauthenticationMethod = 'password';
+
+export type RecoveryCodeSummaryData = {
+    created_at_ms: number;
+    remaining_count: number;
+    set_version: number;
+    total_count: number;
+};
+
+export type RecoveryCodeSummaryEnvelope = {
+    data: RecoveryCodeSummaryData;
+    meta: ResponseMeta;
+};
+
+export type RecoveryCodesCreatedData = {
+    created_at_ms: number;
+    one_time_recovery_codes: [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string
+    ];
+    set_version: number;
+};
+
+export type RecoveryCodesCreatedEnvelope = {
+    data: RecoveryCodesCreatedData;
+    meta: ResponseMeta;
+};
 
 export type ResponseMeta = {
     api_version: string;
@@ -561,6 +603,76 @@ export type ChangeCurrentPasswordResponses = {
 };
 
 export type ChangeCurrentPasswordResponse = ChangeCurrentPasswordResponses[keyof ChangeCurrentPasswordResponses];
+
+export type GetCurrentRecoveryCodesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/me/recovery-codes';
+};
+
+export type GetCurrentRecoveryCodesErrors = {
+    /**
+     * The current session is invalid
+     */
+    401: Problem;
+    /**
+     * The request host is invalid or password change is required
+     */
+    403: Problem;
+    /**
+     * No active recovery-code set exists
+     */
+    409: Problem;
+    /**
+     * Authentication dependencies are unavailable
+     */
+    503: Problem;
+};
+
+export type GetCurrentRecoveryCodesError = GetCurrentRecoveryCodesErrors[keyof GetCurrentRecoveryCodesErrors];
+
+export type GetCurrentRecoveryCodesResponses = {
+    /**
+     * Secret-free summary of the active recovery-code set
+     */
+    200: RecoveryCodeSummaryEnvelope;
+};
+
+export type GetCurrentRecoveryCodesResponse = GetCurrentRecoveryCodesResponses[keyof GetCurrentRecoveryCodesResponses];
+
+export type RegenerateCurrentRecoveryCodesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/me/recovery-codes';
+};
+
+export type RegenerateCurrentRecoveryCodesErrors = {
+    /**
+     * The current session is invalid
+     */
+    401: Problem;
+    /**
+     * Origin, CSRF, recent-auth, or password-change policy rejected the request
+     */
+    403: Problem;
+    /**
+     * Authentication dependencies are unavailable
+     */
+    503: Problem;
+};
+
+export type RegenerateCurrentRecoveryCodesError = RegenerateCurrentRecoveryCodesErrors[keyof RegenerateCurrentRecoveryCodesErrors];
+
+export type RegenerateCurrentRecoveryCodesResponses = {
+    /**
+     * The old set was atomically invalidated and eight replacement codes are returned once
+     */
+    200: RecoveryCodesCreatedEnvelope;
+};
+
+export type RegenerateCurrentRecoveryCodesResponse = RegenerateCurrentRecoveryCodesResponses[keyof RegenerateCurrentRecoveryCodesResponses];
 
 export type ListCurrentSessionsData = {
     body?: never;

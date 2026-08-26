@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { ChangeCurrentPasswordData, ChangeCurrentPasswordErrors, ChangeCurrentPasswordResponses, GetBootstrapStateData, GetBootstrapStateErrors, GetBootstrapStateResponses, GetCurrentActorData, GetCurrentActorErrors, GetCurrentActorResponses, GetLivenessData, GetLivenessResponses, GetReadinessData, GetReadinessErrors, GetReadinessResponses, GetSystemVersionData, GetSystemVersionResponses, InitializeControlPlaneData, InitializeControlPlaneErrors, InitializeControlPlaneResponses, ListCurrentSessionsData, ListCurrentSessionsErrors, ListCurrentSessionsResponses, LoginData, LoginErrors, LoginResponses, LogoutAllData, LogoutAllErrors, LogoutAllResponses, LogoutData, LogoutErrors, LogoutResponses, ReauthenticateData, ReauthenticateErrors, ReauthenticateResponses, RevokeCurrentUserSessionData, RevokeCurrentUserSessionErrors, RevokeCurrentUserSessionResponses } from './types.gen';
+import type { ChangeCurrentPasswordData, ChangeCurrentPasswordErrors, ChangeCurrentPasswordResponses, GetBootstrapStateData, GetBootstrapStateErrors, GetBootstrapStateResponses, GetCurrentActorData, GetCurrentActorErrors, GetCurrentActorResponses, GetCurrentRecoveryCodesData, GetCurrentRecoveryCodesErrors, GetCurrentRecoveryCodesResponses, GetLivenessData, GetLivenessResponses, GetReadinessData, GetReadinessErrors, GetReadinessResponses, GetSystemVersionData, GetSystemVersionResponses, InitializeControlPlaneData, InitializeControlPlaneErrors, InitializeControlPlaneResponses, ListCurrentSessionsData, ListCurrentSessionsErrors, ListCurrentSessionsResponses, LoginData, LoginErrors, LoginResponses, LogoutAllData, LogoutAllErrors, LogoutAllResponses, LogoutData, LogoutErrors, LogoutResponses, ReauthenticateData, ReauthenticateErrors, ReauthenticateResponses, RegenerateCurrentRecoveryCodesData, RegenerateCurrentRecoveryCodesErrors, RegenerateCurrentRecoveryCodesResponses, RevokeCurrentUserSessionData, RevokeCurrentUserSessionErrors, RevokeCurrentUserSessionResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -98,6 +98,26 @@ export const changeCurrentPassword = <ThrowOnError extends boolean = false>(opti
         'Content-Type': 'application/json',
         ...options.headers
     }
+});
+
+export const getCurrentRecoveryCodes = <ThrowOnError extends boolean = false>(options?: Options<GetCurrentRecoveryCodesData, ThrowOnError>): RequestResult<GetCurrentRecoveryCodesResponses, GetCurrentRecoveryCodesErrors, ThrowOnError> => (options?.client ?? client).get<GetCurrentRecoveryCodesResponses, GetCurrentRecoveryCodesErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: '__Host-nodecontroll_session',
+            type: 'apiKey'
+        }],
+    url: '/api/v1/me/recovery-codes',
+    ...options
+});
+
+export const regenerateCurrentRecoveryCodes = <ThrowOnError extends boolean = false>(options?: Options<RegenerateCurrentRecoveryCodesData, ThrowOnError>): RequestResult<RegenerateCurrentRecoveryCodesResponses, RegenerateCurrentRecoveryCodesErrors, ThrowOnError> => (options?.client ?? client).post<RegenerateCurrentRecoveryCodesResponses, RegenerateCurrentRecoveryCodesErrors, ThrowOnError>({
+    security: [{ name: 'x-nodecontroll-csrf', type: 'apiKey' }, {
+            in: 'cookie',
+            name: '__Host-nodecontroll_session',
+            type: 'apiKey'
+        }],
+    url: '/api/v1/me/recovery-codes',
+    ...options
 });
 
 export const listCurrentSessions = <ThrowOnError extends boolean = false>(options?: Options<ListCurrentSessionsData, ThrowOnError>): RequestResult<ListCurrentSessionsResponses, ListCurrentSessionsErrors, ThrowOnError> => (options?.client ?? client).get<ListCurrentSessionsResponses, ListCurrentSessionsErrors, ThrowOnError>({
