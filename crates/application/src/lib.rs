@@ -2,8 +2,9 @@
 //!
 //! HTTP adapters depend on [`ControlPlane`]; persistence and cryptographic details stay behind the
 //! concrete [`ControlPlaneApplication`]. The current authenticated slice includes password login,
-//! password recent-auth, self-service password rotation, and server-side session management. MFA,
-//! API tokens, full authorization, and user administration extend this boundary later in WP-02.
+//! password recent-auth, self-service password rotation, server-side session management, and the
+//! typed TOTP core. HTTP MFA wiring, API tokens, full authorization, and user administration extend
+//! this boundary later in WP-02.
 
 use std::{
     net::IpAddr,
@@ -36,6 +37,7 @@ use tokio::sync::{Mutex, Semaphore};
 use zeroize::Zeroizing;
 
 mod auth_challenge;
+mod totp;
 
 pub use auth_challenge::{
     AuthChallengePort, AuthChallengePortError, AuthChallengeReservationOutcome,
@@ -43,6 +45,11 @@ pub use auth_challenge::{
     AuthChallengeRotationTransactionPort, AuthChallengeService, AuthChallengeServiceError,
     AuthChallengeVerificationClaim, IssueAuthChallengeCommand, IssuedAuthChallenge,
     PresentAuthChallengeCommand, VerifiedAuthChallengeEvidence, VerifiedAuthChallengeOutcome,
+};
+pub use totp::{
+    ActivateTotpEnrollmentCommand, ActivatedTotpCredential, BeginTotpEnrollmentCommand,
+    BegunTotpEnrollment, DisableTotpCredentialCommand, SystemTotpClock, TotpChallengeProofOutcome,
+    TotpClock, TotpManagementBinding, TotpPort, TotpPortError, TotpService, TotpServiceError,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -69,6 +69,26 @@ impl AuthChallengeVerificationClaim {
     pub(crate) const fn reserved_at_ms(&self) -> i64 {
         self.access.now_ms
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_fixture(
+        challenge: AuthChallenge,
+        method: AuthenticationMethod,
+        reserved_at_ms: i64,
+    ) -> Self {
+        Self {
+            access: AuthChallengeAccess {
+                id: challenge.id,
+                token_key_version: 1,
+                token_hmac: [7; 32],
+                client_context: AuthChallengeClientContext::unbound(),
+                now_ms: reserved_at_ms,
+            },
+            claim_id: EntityId::new(),
+            method,
+            challenge,
+        }
+    }
 }
 
 /// Accepted evidence can only be emitted by a method verifier inside the application crate.
@@ -79,10 +99,6 @@ pub struct VerifiedAuthChallengeEvidence {
 }
 
 impl VerifiedAuthChallengeEvidence {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "reserved for the C4 method verifier boundary")
-    )]
     pub(crate) fn from_method_verifier(
         claim: AuthChallengeVerificationClaim,
         achieved_assurance: AuthenticationAssurance,

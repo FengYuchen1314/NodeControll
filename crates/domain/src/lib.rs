@@ -10,6 +10,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 mod auth_challenge;
+mod totp;
 
 pub use auth_challenge::{
     AuthChallenge, AuthChallengePolicy, AuthChallengePolicyError, AuthChallengePurpose,
@@ -17,6 +18,10 @@ pub use auth_challenge::{
     AuthChallengeRotationStateParseError, AuthChallengeStatus, AuthChallengeStatusParseError,
     AuthenticationAssurance, AuthenticationAssuranceParseError, AuthenticationMethod,
     AuthenticationMethodParseError,
+};
+pub use totp::{
+    TOTP_DIGITS, TOTP_PERIOD_SECONDS, TOTP_VALIDATION_WINDOW, TotpCredential, TotpCredentialStatus,
+    TotpCredentialStatusParseError, TotpEnrollmentPolicy, TotpEnrollmentPolicyError,
 };
 
 /// Stable internal identity. New values are UUIDv7 so indexed writes remain time ordered.

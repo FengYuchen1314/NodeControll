@@ -14,6 +14,7 @@ use sqlx::{
 use thiserror::Error;
 
 mod auth_challenge;
+mod totp;
 
 pub use auth_challenge::{
     AuthChallengeAccess, AuthChallengeAttemptFailure, AuthChallengeAttemptOutcome,
@@ -21,6 +22,11 @@ pub use auth_challenge::{
     AuthChallengeClientContext, AuthChallengeConsumption, AuthChallengeConsumptionOutcome,
     AuthChallengeRotationReservation, AuthChallengeRotationReservationOutcome,
     AuthChallengeTokenLookup, CreateAuthChallengeOutcome, NewAuthChallenge,
+};
+pub use totp::{
+    ActivateTotpCredential, ActivateTotpCredentialOutcome, BeginTotpEnrollmentOutcome,
+    DisableTotpCredential, DisableTotpCredentialOutcome, NewTotpEnrollment, StoredTotpCredential,
+    TotpActivationResult, TotpSessionGuard, TotpStepAdvance, TotpStepAdvanceOutcome,
 };
 
 static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("./migrations/sqlite");
@@ -609,16 +615,26 @@ impl Database {
         record: &NewSecretRecord,
     ) -> Result<StoredSecretRecord, PersistenceError> {
         validate_secret_record(record)?;
+        // TOTP permits one active and one pending encrypted seed during replacement. Its records
+        // must therefore go through the credential transaction instead of this single-binding API.
+        if record.binding.purpose == SecretPurpose::TotpSeed {
+            return Err(PersistenceError::InvalidSecretRecord);
+        }
         match self {
             Self::Sqlite(pool) => ensure_secret_record_sqlite(pool, record).await,
             Self::Postgres(pool) => ensure_secret_record_postgres(pool, record).await,
         }
     }
 
+    /// Loads a singleton secret binding. TOTP is rejected because an active credential and its
+    /// pending replacement may coexist; callers must load a TOTP seed through its credential ID.
     pub async fn active_secret_record(
         &self,
         binding: SecretBinding,
     ) -> Result<Option<StoredSecretRecord>, PersistenceError> {
+        if binding.purpose == SecretPurpose::TotpSeed {
+            return Err(PersistenceError::InvalidSecretRecord);
+        }
         match self {
             Self::Sqlite(pool) => {
                 let row = sqlx::query(
@@ -645,6 +661,8 @@ impl Database {
         }
     }
 
+    /// Rotates a singleton secret binding. TOTP is rejected until a credential-aware rewrap
+    /// transaction can identify and conditionally update one exact seed record.
     pub async fn rotate_secret_record(
         &self,
         expected: &StoredSecretRecord,
@@ -653,6 +671,11 @@ impl Database {
     ) -> Result<StoredSecretRecord, PersistenceError> {
         validate_non_negative_timestamp(now_ms)?;
         validate_secret_record(replacement)?;
+        if expected.binding.purpose == SecretPurpose::TotpSeed
+            || replacement.binding.purpose == SecretPurpose::TotpSeed
+        {
+            return Err(PersistenceError::InvalidSecretRecord);
+        }
         if expected.binding != replacement.binding
             || replacement.rotated_from != Some(expected.id)
             || replacement.created_at_ms != now_ms
@@ -5184,6 +5207,10 @@ pub enum PersistenceError {
     InvalidAuthChallenge,
     #[error("the stored authentication challenge violates its schema contract")]
     InvalidStoredAuthChallenge,
+    #[error("the TOTP credential command violates a durable state invariant")]
+    InvalidTotpCredential,
+    #[error("the stored TOTP credential violates its schema contract")]
+    InvalidStoredTotpCredential,
     #[error("the stored session revocation reason is invalid")]
     InvalidStoredRevocationReason,
     #[error("stored instance name is invalid: {0}")]
@@ -11043,7 +11070,7 @@ mod tests {
                 .is_ok()
         );
         assert!(database.migrate().await.is_ok());
-        assert!(matches!(migration_version(&database).await, Ok(Some(7))));
+        assert!(matches!(migration_version(&database).await, Ok(Some(8))));
         let typed_owner_column: Result<i64, _> = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('secret_records') WHERE name='owner_type'",
         )

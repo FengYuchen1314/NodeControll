@@ -6,6 +6,7 @@ use chacha20poly1305::{
 };
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -18,6 +19,10 @@ const TYPED_AAD_FORMAT: &[u8] = b"NCSECRET2\0";
 const ROOT_KEY_CANARY_PLAINTEXT: &[u8] = b"nodecontroll-root-key-canary-v1";
 const MAX_KEYRING_KEYS: usize = 4;
 const RECOVERY_CODE_BYTES: usize = 16;
+pub const TOTP_SEED_BYTES: usize = 20;
+pub const TOTP_CODE_DIGITS: usize = 6;
+pub const TOTP_PERIOD_MILLISECONDS: i64 = 30_000;
+pub const TOTP_SEED_SCHEMA_VERSION: u32 = 1;
 pub const RECOVERY_CODE_COUNT: usize = 8;
 pub const AUTH_CHALLENGE_TOKEN_BYTES: usize = 32;
 pub const AUTH_CHALLENGE_TOKEN_HEX_LENGTH: usize = AUTH_CHALLENGE_TOKEN_BYTES * 2;
@@ -226,6 +231,109 @@ impl RecoveryCode {
     pub fn normalized_bytes(&self) -> &[u8; RECOVERY_CODE_BYTES] {
         &self.normalized
     }
+}
+
+/// A generated or decrypted RFC 6238 HMAC-SHA-1 seed.
+///
+/// Debug and Clone are deliberately not implemented. The fixed-size plaintext buffer is zeroized
+/// on drop and must only be persisted through [`Keyring::encrypt_totp_seed`].
+pub struct TotpSeed {
+    bytes: Zeroizing<[u8; TOTP_SEED_BYTES]>,
+}
+
+impl TotpSeed {
+    pub fn generate() -> Result<Self, SecretError> {
+        let mut bytes = Zeroizing::new([0_u8; TOTP_SEED_BYTES]);
+        getrandom::fill(bytes.as_mut()).map_err(|_| SecretError::RandomUnavailable)?;
+        Ok(Self { bytes })
+    }
+
+    pub fn from_bytes(value: &[u8]) -> Result<Self, SecretError> {
+        let mut bytes = Zeroizing::new([0_u8; TOTP_SEED_BYTES]);
+        if value.len() != TOTP_SEED_BYTES {
+            return Err(SecretError::InvalidTotpSeed);
+        }
+        bytes.copy_from_slice(value);
+        Ok(Self { bytes })
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; TOTP_SEED_BYTES] {
+        &self.bytes
+    }
+}
+
+/// Canonical six-digit proof. Debug and Clone are deliberately not implemented and its bytes are
+/// zeroized on drop.
+pub struct TotpCode {
+    digits: Zeroizing<[u8; TOTP_CODE_DIGITS]>,
+}
+
+impl TotpCode {
+    pub fn parse(value: &str) -> Result<Self, SecretError> {
+        if value.len() != TOTP_CODE_DIGITS || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(SecretError::InvalidTotpCode);
+        }
+        let mut digits = Zeroizing::new([0_u8; TOTP_CODE_DIGITS]);
+        digits.copy_from_slice(value.as_bytes());
+        Ok(Self { digits })
+    }
+
+    fn as_bytes(&self) -> &[u8; TOTP_CODE_DIGITS] {
+        &self.digits
+    }
+}
+
+/// Verifies only the UTC 30-second steps `current - 1`, `current`, and `current + 1`.
+///
+/// `last_accepted_step` is an in-memory prefilter; persistence must still conditionally advance
+/// the durable value because two processes may verify the same code concurrently. Selecting the
+/// greatest matching step makes the result deterministic in the extremely unlikely event that a
+/// six-digit code collides inside the three-step window.
+pub fn verify_totp_at_utc_ms(
+    seed: &TotpSeed,
+    code: &TotpCode,
+    now_ms: i64,
+    last_accepted_step: Option<u64>,
+) -> Result<Option<u64>, SecretError> {
+    if now_ms < 0 {
+        return Err(SecretError::TotpTimeOutOfRange);
+    }
+    let current_step = u64::try_from(now_ms / TOTP_PERIOD_MILLISECONDS)
+        .map_err(|_| SecretError::TotpTimeOutOfRange)?;
+    let mut accepted = None;
+    let candidates = [
+        current_step.checked_sub(1),
+        Some(current_step),
+        current_step.checked_add(1),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        let expected = totp_digits(seed, candidate)?;
+        let is_newer = last_accepted_step.is_none_or(|last| candidate > last);
+        if is_newer && bool::from(expected.as_slice().ct_eq(code.as_bytes().as_slice())) {
+            accepted = Some(accepted.map_or(candidate, |previous: u64| previous.max(candidate)));
+        }
+    }
+    Ok(accepted)
+}
+
+fn totp_digits(seed: &TotpSeed, time_step: u64) -> Result<[u8; TOTP_CODE_DIGITS], SecretError> {
+    let mut mac = <Hmac<Sha1> as hmac::KeyInit>::new_from_slice(seed.as_bytes())
+        .map_err(|_| SecretError::TotpCalculationFailed)?;
+    mac.update(&time_step.to_be_bytes());
+    let digest = Zeroizing::new(<[u8; 20]>::from(mac.finalize().into_bytes()));
+    let offset = usize::from(digest[19] & 0x0f);
+    let binary = (u32::from(digest[offset] & 0x7f) << 24)
+        | (u32::from(digest[offset + 1]) << 16)
+        | (u32::from(digest[offset + 2]) << 8)
+        | u32::from(digest[offset + 3]);
+    let mut value = binary % 1_000_000;
+    let mut digits = [b'0'; TOTP_CODE_DIGITS];
+    for digit in digits.iter_mut().rev() {
+        *digit = b'0' + u8::try_from(value % 10).unwrap_or_default();
+        value /= 10;
+    }
+    Ok(digits)
 }
 
 pub fn generate_recovery_codes() -> Result<Vec<RecoveryCode>, SecretError> {
@@ -553,6 +661,35 @@ impl Keyring {
             .decrypt_bound(binding, envelope)
     }
 
+    pub fn encrypt_totp_seed(
+        &self,
+        user_id: uuid::Uuid,
+        seed: &TotpSeed,
+    ) -> Result<SecretEnvelope, SecretError> {
+        let binding = SecretBinding::new(
+            SecretPurpose::TotpSeed,
+            SecretOwnerKind::User,
+            user_id,
+            TOTP_SEED_SCHEMA_VERSION,
+        )?;
+        self.encrypt(&binding, seed.as_bytes())
+    }
+
+    pub fn decrypt_totp_seed(
+        &self,
+        user_id: uuid::Uuid,
+        envelope: &SecretEnvelope,
+    ) -> Result<TotpSeed, SecretError> {
+        let binding = SecretBinding::new(
+            SecretPurpose::TotpSeed,
+            SecretOwnerKind::User,
+            user_id,
+            TOTP_SEED_SCHEMA_VERSION,
+        )?;
+        let plaintext = self.decrypt(&binding, envelope)?;
+        TotpSeed::from_bytes(plaintext.as_slice())
+    }
+
     pub fn keyed_digest(
         &self,
         purpose: KeyedDigestPurpose,
@@ -756,6 +893,14 @@ pub enum SecretError {
     InvalidRecoveryCode,
     #[error("authentication challenge token must be 64 lowercase hexadecimal characters")]
     InvalidAuthChallengeToken,
+    #[error("TOTP seed must contain exactly 160 bits")]
+    InvalidTotpSeed,
+    #[error("TOTP code must contain exactly six ASCII digits")]
+    InvalidTotpCode,
+    #[error("TOTP UTC timestamp is outside the supported range")]
+    TotpTimeOutOfRange,
+    #[error("TOTP HMAC-SHA-1 calculation failed")]
+    TotpCalculationFailed,
     #[error("secret binding exceeds the supported size")]
     BindingTooLarge,
     #[error("operating-system randomness is unavailable")]
@@ -790,7 +935,8 @@ mod tests {
     use super::{
         AUTH_CHALLENGE_TOKEN_HEX_LENGTH, AuthChallengeToken, EnvelopeCipher, KeyedDigest,
         KeyedDigestPurpose, Keyring, RecoveryCode, SecretBinding, SecretError, SecretOwnerKind,
-        SecretPurpose, generate_recovery_codes,
+        SecretPurpose, TotpCode, TotpSeed, generate_recovery_codes, totp_digits,
+        verify_totp_at_utc_ms,
     };
 
     const KEY: &str = "f97c2563b4609f964f83ecf3c874f545698b8e360bbca06316547d2af8928f62";
@@ -889,6 +1035,138 @@ mod tests {
                 RecoveryCode::parse_presented(invalid),
                 Err(SecretError::InvalidRecoveryCode)
             ));
+        }
+    }
+
+    #[test]
+    fn rfc_6238_sha1_vectors_reduce_to_the_fixed_six_digit_profile() {
+        let seed = TotpSeed::from_bytes(b"12345678901234567890");
+        assert!(seed.is_ok());
+        if let Ok(seed) = seed {
+            for (utc_seconds, expected) in [
+                (59_u64, b"287082"),
+                (1_111_111_109, b"081804"),
+                (1_111_111_111, b"050471"),
+                (1_234_567_890, b"005924"),
+                (2_000_000_000, b"279037"),
+                (20_000_000_000, b"353130"),
+            ] {
+                let digits = totp_digits(&seed, utc_seconds / 30);
+                assert!(matches!(digits, Ok(actual) if actual.as_slice() == expected));
+            }
+        }
+    }
+
+    #[test]
+    fn verifier_accepts_only_one_adjacent_step_and_never_reaccepts_history() {
+        let seed = TotpSeed::from_bytes(b"12345678901234567890");
+        assert!(seed.is_ok());
+        if let Ok(seed) = seed {
+            let now_step = 100_u64;
+            for candidate in [99_u64, 100, 101] {
+                let digits = totp_digits(&seed, candidate);
+                assert!(digits.is_ok());
+                if let Ok(digits) = digits {
+                    let text = std::str::from_utf8(&digits).unwrap_or_default();
+                    let code = TotpCode::parse(text);
+                    assert!(matches!(
+                        code.and_then(|code| verify_totp_at_utc_ms(
+                            &seed,
+                            &code,
+                            i64::try_from(now_step * 30_000).unwrap_or_default(),
+                            None,
+                        )),
+                        Ok(Some(step)) if step == candidate
+                    ));
+                }
+            }
+            for (candidate, last_accepted_step) in
+                [(98_u64, None), (99, Some(100)), (100, Some(100))]
+            {
+                let digits = totp_digits(&seed, candidate);
+                assert!(digits.is_ok());
+                if let Ok(digits) = digits {
+                    let text = std::str::from_utf8(&digits).unwrap_or_default();
+                    let code = TotpCode::parse(text);
+                    assert!(matches!(
+                        code.and_then(|code| verify_totp_at_utc_ms(
+                            &seed,
+                            &code,
+                            i64::try_from(now_step * 30_000).unwrap_or_default(),
+                            last_accepted_step,
+                        )),
+                        Ok(None)
+                    ));
+                }
+            }
+            let rollback_digits = totp_digits(&seed, 90);
+            assert!(rollback_digits.is_ok());
+            if let Ok(rollback_digits) = rollback_digits {
+                let text = std::str::from_utf8(&rollback_digits).unwrap_or_default();
+                let code = TotpCode::parse(text);
+                assert!(matches!(
+                    code.and_then(|code| verify_totp_at_utc_ms(
+                        &seed,
+                        &code,
+                        90 * 30_000,
+                        Some(100),
+                    )),
+                    Ok(None)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn totp_code_format_is_exact() {
+        assert!(TotpCode::parse("012345").is_ok());
+        for invalid in [
+            "12345",
+            "1234567",
+            "１２３４５６",
+            "123 45",
+            "12a456",
+            " 123456",
+        ] {
+            assert!(matches!(
+                TotpCode::parse(invalid),
+                Err(SecretError::InvalidTotpCode)
+            ));
+        }
+    }
+
+    #[test]
+    fn totp_seed_aad_and_key_rotation_are_owner_bound() {
+        let old = EnvelopeCipher::from_hex(OLD_KEY, 1);
+        let current = EnvelopeCipher::from_hex(KEY, 2);
+        assert!(old.is_ok());
+        assert!(current.is_ok());
+        if let (Ok(old), Ok(current)) = (old, current) {
+            let old_keyring = Keyring::from_ciphers(old.clone(), Vec::new());
+            let rotating = Keyring::from_ciphers(current, vec![old]);
+            assert!(old_keyring.is_ok());
+            assert!(rotating.is_ok());
+            if let (Ok(old_keyring), Ok(rotating)) = (old_keyring, rotating) {
+                let owner = uuid::Uuid::now_v7();
+                let seed = TotpSeed::from_bytes(b"12345678901234567890");
+                assert!(seed.is_ok());
+                if let Ok(seed) = seed {
+                    let old_envelope = old_keyring.encrypt_totp_seed(owner, &seed);
+                    assert!(old_envelope.is_ok());
+                    if let Ok(old_envelope) = old_envelope {
+                        assert!(matches!(
+                            rotating.decrypt_totp_seed(owner, &old_envelope),
+                            Ok(decrypted) if decrypted.as_bytes() == seed.as_bytes()
+                        ));
+                        assert!(matches!(
+                            rotating.decrypt_totp_seed(uuid::Uuid::now_v7(), &old_envelope),
+                            Err(SecretError::AssociatedDataMismatch)
+                        ));
+                        let rewrapped = rotating.encrypt_totp_seed(owner, &seed);
+                        assert!(matches!(rewrapped, Ok(envelope) if envelope.key_version == 2));
+                    }
+                }
+            }
         }
     }
 
